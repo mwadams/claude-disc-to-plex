@@ -68,7 +68,8 @@ function Keep-AudioIdx($inspec,$na,$origLang){
   #  - English-original content (origLang eng/unset): keep English (+ commentary/untagged) only; drop foreign DUBS.
   #  - Foreign-original content (origLang e.g. deu/jpn): keep the ORIGINAL-language audio FIRST (becomes default)
   #    then the English dub as an alternative. English subtitles are defaulted on by the caller.
-  if($na -le 1){ return @(0..($na-1)) }
+  if($na -le 0){ return @() }        # no audio (e.g. a stills gallery) -> map none (0..-1 would wrongly yield 0,-1)
+  if($na -eq 1){ return @(0) }
   $langs = @(& $fp -v error @inspec -select_streams a -show_entries stream_tags=language -of csv=p=0 2>$null)
   if($langs.Count -gt $na){ $langs = $langs[0..($na-1)] }   # m2ts double-lists; first $na are the streams in order
   $eng = @('eng','en','und','')
