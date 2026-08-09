@@ -7,10 +7,17 @@
 
   Manifest = JSON array. Each item:
     out    (string, required)  full output .mkv path (already Plex-named)
-    kind   ("BD"|"DVD", req)   BD = H.264 m2ts (1080p); DVD = MPEG-2 VOB (SD PAL, interlaced)
-    src    (string, required)  BD: path to .m2ts.  DVD: "concat:VTS_xx_1.VOB|VTS_xx_2.VOB|..."
+    kind   ("BD"|"DVD", req)   BD = H.264 m2ts (1080p); DVD = MPEG-2 via dvdvideo demuxer (SD PAL)
+    src    (string, required)  BD: path to .m2ts.  DVD: the DVD ROOT (a decrypted VIDEO_TS
+                               parent folder, an ISO, or an optical drive like "F:" — libdvdcss
+                               decrypts a live CSS disc automatically).
     crop   ("auto"|"none")     BD only. auto = cropdetect (pillarboxed 4:3 -> ~1440). Stills/
                                split-screen/full-frame -> "none". DVD ignores (no crop).
+    title  (int)               DVD only, required. DVD title (PGC) number (see identification.md).
+    chapterStart / chapterEnd  DVD only, optional. Extract a chapter RANGE = one episode when a
+                               title holds several episodes as chapter ranges.
+    subTrack (int, optional)   0-based source subtitle index to keep (English). BD defaults to the
+                               single PGS track; on multi-language DVDs set this to the English one.
     commentary (int, optional) 0-based SOURCE audio index to tag as "Audio Commentary".
 
   Behaviour baked in (see references/gotchas.md for the why):
@@ -18,9 +25,10 @@
     - No-audio sources encode video-only (never map a missing 0:a:0).
     - Audio matrix: AAC stereo@160 (default) [+ AAC 5.1@160 if source a:0 is 6ch] + passthru
       of every original track. AAC forced to -ar 48000 (some DVD AC3 don't propagate rate).
-    - BD: per-item cropdetect; if PGS subs present AND cropped, reposition with SupMover so
-      subtitles stay aligned to the cropped canvas. English subs only.
-    - DVD: bwdif deinterlace + setsar 16/15 + -aspect 4:3 (anamorphic), stays SD, VOBSUB copy.
+    - BD: per-item cropdetect; if PGS subs present AND cropped, reposition with SupMover.
+    - DVD: read via `-f dvdvideo -title N [-chapter_start/-chapter_end]`; bwdif deinterlace +
+      setsar 16/15 + -aspect 4:3 (anamorphic), stays SD. Reads decrypted folders OR live CSS
+      discs (libdvdcss). Native title/chapter selection handles all DVD episode layouts.
 #>
 param(
   [Parameter(Mandatory)][string]$Manifest,
@@ -30,23 +38,29 @@ param(
 $ErrorActionPreference = 'Continue'
 $tp = Get-Content (Join-Path $ToolsDir "tool-paths.json") | ConvertFrom-Json
 $ff = $tp.ffmpeg; $sm = $tp.supmover
+$fp = Join-Path (Split-Path $ff) 'ffprobe.exe'    # our ffprobe (has dvdvideo demuxer + libdvdcss)
 $work = Join-Path $ToolsDir "work"; New-Item -ItemType Directory -Force $work | Out-Null
 $items = Get-Content $Manifest -Raw | ConvertFrom-Json
 
-function Audio-Count($src){   # distinct numeric audio indices (m2ts double-lists; DVD has blanks)
-  ((& ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 $src 2>$null) |
-    Where-Object { $_ -match '^\d+$' } | Sort-Object -Unique | Measure-Object).Count
+function Has($o,$n){ $o.PSObject.Properties.Name -contains $n -and $null -ne $o.$n -and "$($o.$n)" -ne '' }
+function InSpec($it){   # ffmpeg/ffprobe input args (demuxer + -i) for this item
+  if($it.kind -eq 'DVD'){
+    $s = @('-f','dvdvideo','-title',[string]$it.title)
+    if(Has $it 'chapterStart'){ $s += @('-chapter_start',[string]$it.chapterStart) }
+    if(Has $it 'chapterEnd'){   $s += @('-chapter_end',  [string]$it.chapterEnd) }
+    return ($s + @('-i',$it.src))
+  }
+  return @('-i',$it.src)
 }
-function Audio-Ch0($src){     # channel count of first audio stream (to decide AAC 5.1)
-  $c = (& ffprobe -v error -select_streams a:0 -show_entries stream=channels -of csv=p=0 $src 2>$null | Select-Object -First 1)
-  if($c){ [int]$c } else { 0 }
+function Audio-Count($inspec){ ((& $fp -v error @inspec -select_streams a -show_entries stream=index -of csv=p=0 2>$null) | Where-Object { $_ -match '^\d+$' } | Sort-Object -Unique | Measure-Object).Count }
+function Audio-Ch0($inspec){ $c=(& $fp -v error @inspec -select_streams a:0 -show_entries stream=channels -of csv=p=0 2>$null | Select-Object -First 1); if($c){[int]$c}else{0} }
+function Sub-Count($inspec){ ((& $fp -v error @inspec -select_streams s -show_entries stream=index -of csv=p=0 2>$null) | Where-Object { $_ -match '^\d+$' } | Sort-Object -Unique | Measure-Object).Count }
+function Get-DAR($inspec){   # source display aspect ("16:9"/"4:3"); preserve it, never force
+  $d="$(& $fp -v error @inspec -select_streams v:0 -show_entries stream=display_aspect_ratio -of csv=p=0 2>$null | Select-Object -First 1)"
+  if($d -match '(\d+):(\d+)' -and "$($Matches[1]):$($Matches[2])" -ne '0:1'){ "$($Matches[1]):$($Matches[2])" } else { '4:3' }
 }
-function Sub-Count($src){
-  ((& ffprobe -v error -select_streams s -show_entries stream=index -of csv=p=0 $src 2>$null) |
-    Where-Object { $_ -match '^\d+$' } | Sort-Object -Unique | Measure-Object).Count
-}
-function Get-Crop($src){      # sample by duration fraction; largest-area box; fallback 1440 pillarbox
-  $dur=[double](& ffprobe -v error -show_entries format=duration -of csv=p=0 $src 2>$null)
+function Get-Crop($src){
+  $dur=[double](& $fp -v error -show_entries format=duration -of csv=p=0 $src 2>$null)
   if(-not $dur -or $dur -lt 1){ return '1440:1080:240:0' }
   $crops=@{}
   foreach($fr in 0.2,0.4,0.6,0.8){
@@ -71,22 +85,25 @@ foreach($it in $items){
   New-Item -ItemType Directory -Force (Split-Path $it.out) | Out-Null
   if((Test-Path $it.out) -and ((Get-Item $it.out).Length -gt 5MB)){ Write-Output "   skip (exists)"; continue }
 
-  $na = Audio-Count $it.src
-  $ch0 = if($na -gt 0){ Audio-Ch0 $it.src } else { 0 }
-  $ns = Sub-Count $it.src
-  $a = @('-y','-hide_banner','-v','error','-stats','-i',$it.src)
+  $inspec = InSpec $it
+  $na = Audio-Count $inspec
+  $ch0 = if($na -gt 0){ Audio-Ch0 $inspec } else { 0 }
+  $ns = Sub-Count $inspec
+  $subIdx = if(Has $it 'subTrack'){ [int]$it.subTrack } else { 0 }
+
+  $a = @('-y','-hide_banner','-v','error','-stats') + $inspec
 
   # --- video filter + optional PGS subtitle repositioning (BD crop) ---
   $subInput = $null; $crop = $null
-  if($it.kind -eq 'DVD'){ $vf = 'bwdif=mode=send_frame,setsar=16/15' }
+  if($it.kind -eq 'DVD'){ $vf = 'bwdif=mode=send_frame' }   # deinterlace only; aspect set via -aspect below (preserve source DAR)
   else {
     if($it.crop -eq 'auto'){ $crop = Get-Crop $it.src; $vf = "crop=$crop"; Write-Output "   crop=$crop" }
     else { $vf = $null; Write-Output "   crop=none" }
-    if($ns -gt 0 -and $crop){                       # PGS present + cropped -> reposition
+    if($ns -gt 0 -and $crop){
       $crop -match '(\d+):(\d+):(\d+):(\d+)'|Out-Null
       $L=[int]$Matches[3]; $T=[int]$Matches[4]; $R=(1920-[int]$Matches[1]-[int]$Matches[3]); $B=(1080-[int]$Matches[2]-[int]$Matches[4])
       $sup="$work\s$i.sup"; $supf="$work\s${i}_fixed.sup"
-      & $ff -y -hide_banner -v error -i $it.src -map 0:s:0 -c copy $sup 2>&1 | Out-Null
+      & $ff -y -hide_banner -v error @inspec -map "0:s:$subIdx" -c copy $sup 2>&1 | Out-Null
       if((Test-Path $sup) -and ((Get-Item $sup).Length -gt 1KB)){ & $sm $sup $supf --crop $L $T $R $B 2>&1 | Out-Null; $subInput = $supf }
     }
   }
@@ -94,18 +111,18 @@ foreach($it in $items){
 
   # --- stream maps ---
   $a += @('-map','0:v:0')
-  $aacIdx = 0                                        # output audio stream counter
+  $aacIdx = 0
   if($na -gt 0){
-    if($ch0 -ge 6){ $a += @('-map','0:a:0') }        # AAC 5.1 (from a:0)
-    $a += @('-map','0:a:0')                          # AAC stereo (from a:0)
-    for($j=0;$j -lt $na;$j++){ $a += @('-map',"0:a:$j") }   # passthru every original
+    if($ch0 -ge 6){ $a += @('-map','0:a:0') }
+    $a += @('-map','0:a:0')
+    for($j=0;$j -lt $na;$j++){ $a += @('-map',"0:a:$j") }
   }
-  if($ns -gt 0){ if($subInput){ $a += @('-map','1:0') } elseif($it.kind -eq 'DVD'){ $a += @('-map','0:s:0') } else { $a += @('-map','0:s:0') } }
+  if($ns -gt 0){ if($subInput){ $a += @('-map','1:0') } else { $a += @('-map',"0:s:$subIdx") } }
 
   # --- video codec ---
   if($vf){ $a += @('-vf',$vf) }
   $a += @('-c:v','h264_nvenc','-preset','medium','-rc','vbr','-cq','20','-b:v','0','-pix_fmt','yuv420p')
-  if($it.kind -eq 'DVD'){ $a += @('-aspect','4:3') } else { $a += @('-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-color_range','tv') }
+  if($it.kind -eq 'DVD'){ $a += @('-aspect',(Get-DAR $inspec)) } else { $a += @('-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-color_range','tv') }
 
   # --- audio codecs ---
   if($na -gt 0){
@@ -118,7 +135,7 @@ foreach($it in $items){
     for($j=0;$j -lt $na;$j++){
       $oi = $aacIdx + $j
       $a += @("-c:a:$oi",'copy',"-metadata:s:a:$oi",'language=eng')
-      if($it.PSObject.Properties.Name -contains 'commentary' -and $it.commentary -eq $j){ $a += @("-disposition:a:$oi",'comment',"-metadata:s:a:$oi",'title=Audio Commentary') }
+      if(Has $it 'commentary' -and $it.commentary -eq $j){ $a += @("-disposition:a:$oi",'comment',"-metadata:s:a:$oi",'title=Audio Commentary') }
     }
   }
   if($ns -gt 0){ $a += @('-c:s','copy','-metadata:s:s:0','language=eng') }

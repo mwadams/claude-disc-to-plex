@@ -32,6 +32,21 @@ if (-not $ffExe) {
 $ff = $ffExe.FullName
 Write-Host ("ffmpeg: " + $ff)
 
+# 2b. libdvdcss — lets ffmpeg's dvdvideo demuxer read/decrypt CSS DVDs directly from a live disc.
+#     Not needed for already-decrypted VIDEO_TS folders. NOTE: VideoLAN ships libdvdcss as SOURCE
+#     ONLY (download.videolan.org/pub/libdvdcss = *.tar.xz, no prebuilt Windows DLL). The official
+#     binary reaches Windows bundled inside VideoLAN's own apps — VLC and HandBrake — so copying
+#     libdvdcss-2.dll from one of those IS the original binary (no trustworthy standalone download
+#     exists; the alternative is compiling the source yourself). Decrypted folders work regardless.
+$ffBin = Split-Path $ff
+if(-not (Test-Path (Join-Path $ffBin "libdvdcss-2.dll"))){
+  $dll = @("C:\Program Files\HandBrake\libdvdcss-2.dll","C:\Program Files\VideoLAN\VLC\libdvdcss-2.dll",
+           "C:\Program Files (x86)\VideoLAN\VLC\libdvdcss-2.dll") | Where-Object { Test-Path $_ } | Select-Object -First 1
+  if(-not $dll){ $dll = (Get-ChildItem "C:\Program Files*\" -Recurse -Filter "libdvdcss-2.dll" -EA SilentlyContinue | Select-Object -First 1).FullName }
+  if($dll){ Copy-Item $dll (Join-Path $ffBin "libdvdcss-2.dll") -Force; Write-Host ("libdvdcss: copied from " + $dll) }
+  else { Write-Warning "libdvdcss-2.dll not found (install HandBrake or VLC, or drop it next to ffmpeg.exe). Decrypted DVD folders still work; live CSS discs won't." }
+} else { Write-Host "libdvdcss: already present next to ffmpeg" }
+
 # 3. SupMover (PGS subtitle repositioning after crop — Blu-ray only)
 $smDir = Join-Path $ToolsDir "supmover"
 $sm = Get-ChildItem $smDir -Recurse -Filter supmover.exe -ErrorAction SilentlyContinue | Select-Object -First 1

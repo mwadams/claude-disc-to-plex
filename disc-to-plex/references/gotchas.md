@@ -31,6 +31,15 @@ Some tiny DVD titles carry an AC3 stream with `sample_rate=0, channels=0`. The A
 dies with "sample rate not set", and even passthru fails. These are menu/navigation artifacts —
 **exclude them** (see `identification.md`), don't try to encode them.
 
+## DVD aspect: never hard-code 4:3 (16:9 extras get squished)
+
+A DVD's main feature may be 4:3 while its **extras/featurettes are 16:9 anamorphic** (modern
+interviews, making-ofs). Forcing `-aspect 4:3` (or `setsar=16/15`) on a 16:9 source squishes it
+horizontally — faces look too narrow/tall. This shipped once on three Prisoner featurettes.
+**Fix:** read each source's `display_aspect_ratio` and pass `-aspect <that>`; add no `setsar`.
+`transcode.ps1`'s `Get-DAR` does this. Verify outputs with
+`ffprobe -select_streams v:0 -show_entries stream=display_aspect_ratio`.
+
 ## PGS subtitles drift when you crop
 
 Cropping the video without moving the PGS canvas leaves subtitles offset (or distorted,

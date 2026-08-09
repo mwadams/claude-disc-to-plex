@@ -21,13 +21,20 @@ featurettes, and genuine trailers (~1 min of episode footage). When in doubt, ex
 
 ## Episodes vs one-title-per-disc vs concatenated
 
-- **One title per episode** (many Blu-rays, some DVDs): each episode is its own `.m2ts`/VTS —
-  straightforward.
-- **Several episodes per disc as separate DVD titles/PGCs in one VTS**: the file view shows one
-  big `VTS_0x` but it holds multiple playable titles. Enumerate with `lsdvd` (or read the IFO) —
-  a file-size probe cannot see PGC boundaries.
-- **A whole serial concatenated into one title**: split by chapter markers / known runtimes into
-  numbered episodes.
+- **One title per episode** (many Blu-rays, some DVDs): each episode is its own `.m2ts` or DVD
+  title — straightforward (`-title N`).
+- **Several episodes as separate DVD titles/PGCs in one VTS**: the file view shows one big
+  `VTS_0x` but it holds multiple playable titles — a file-size probe can't see PGC boundaries.
+- **A whole serial as chapter RANGES inside one title**: one title, episodes delimited by
+  chapters (`-title N -chapter_start X -chapter_end Y` per episode → individual MKVs).
+
+Enumerate DVD titles with the `dvdvideo` demuxer — no `lsdvd` needed. Probe each title index for
+its duration and aspect:
+`ffprobe -f dvdvideo -title N -i <dvd-root> -show_entries format=duration:stream=display_aspect_ratio -select_streams v:0`.
+Walk N=1,2,3…; the durations reveal episodes (≈equal, long) vs extras (short) vs the whole-serial
+title (very long). For a chapter-range title, probe its chapter list
+(`-show_chapters`) and map chapter spans to episodes by runtime or the DVD's "episode selection"
+menu.
 
 ## The correct order = Plex/TMDB, not IMDb, not on-disc
 

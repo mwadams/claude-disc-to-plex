@@ -34,15 +34,30 @@ Keep English (and commentary); drop other languages.
   `SupMover --crop L T R B` (L/T/R/B derived from the crop), and mux the fixed `.sup` back in.
   Uncropped BD subtitles just copy.
 
-## DVD (VIDEO_TS / VOB, MPEG-2 SD PAL)
+## DVD (MPEG-2 SD PAL) — via the ffmpeg `dvdvideo` demuxer
 
-- **Concatenate** the title's VOB parts with the concat protocol:
-  `-i "concat:VTS_02_1.VOB|VTS_02_2.VOB|..."` (every part, in order). `-map 0:v:0` / `-map 0:a:0`
-  automatically drop the `dvd_nav_packet` data stream.
-- **Deinterlace + anamorphic**: `-vf "bwdif=mode=send_frame,setsar=16/15"` plus `-aspect 4:3`.
-  DVDs are interlaced (`field_order=tt`); `bwdif` outputs clean 25p and `setsar 16/15` + the DAR
-  flag preserve the 4:3 display without upscaling the 720×576 frame.
-- **Subtitles**: VOBSUB (`dvd_subtitle`) — `-c:s copy`, English only. DVD crop is ~0, so no
-  SupMover. Selecting the English track among several may need `lsdvd`/IFO language info.
-- DVDs do **not** hit the Blu-ray libbluray crash — HandBrake can read them natively — but this
-  pipeline gives one consistent, automated path for the whole library.
+Read DVDs with `-f dvdvideo -title N [-chapter_start X -chapter_end Y] -i <dvd-root>`, NOT a
+`concat:` of raw VOBs. The demuxer understands the DVD's title/PGC and chapter structure, which
+is what makes every episode layout tractable:
+
+- **one title per episode** → `-title N`
+- **several episodes as separate titles in a VTS** → `-title N` each
+- **several episodes as chapter RANGES inside one title** → `-title N -chapter_start X
+  -chapter_end Y` (Plex needs one file per episode, so split the ranges into individual MKVs).
+
+`<dvd-root>` is a decrypted `VIDEO_TS` parent folder, an ISO, or a live optical drive (`F:`);
+with **libdvdcss** next to ffmpeg it decrypts a live CSS disc on the fly (harmless CSS warnings
+appear when reading already-decrypted folders — ignore them). Enumerate titles by probing
+`-title 1,2,3…` and reading each `Duration`.
+
+- **Deinterlace**: `-vf "bwdif=mode=send_frame"` → clean 25p (DVDs are interlaced, `field_order=tt`).
+- **Aspect — PRESERVE the source, never hard-code**: read the source `display_aspect_ratio` and
+  pass `-aspect <that>`. DVD extras/featurettes are frequently **16:9 anamorphic** while the show
+  itself is 4:3; forcing 4:3 on 16:9 content squishes it horizontally (a real bug that shipped
+  once — see gotchas.md). Do NOT add `setsar`; let `-aspect` set the display aspect on the
+  720×576 frame. Stays SD (no upscale).
+- **Subtitles**: VOBSUB (`dvd_subtitle`) — `-c:s copy`, English only; set `subTrack` to the
+  English index on multi-language discs.
+- DVDs do **not** hit the Blu-ray libbluray crash — HandBrake reads them natively — but this
+  path gives one consistent, title/chapter-accurate automated route for the whole library, and
+  needs only MakeMKV for Blu-ray (AACS), not DVD.
