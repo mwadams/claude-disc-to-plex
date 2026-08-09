@@ -21,7 +21,17 @@ Rationale: the AAC tracks are universal compatibility/direct-play tracks for any
 passthru preserves the original 5.1/mono/commentary bit-for-bit. Force `-ar 48000` on the AAC
 encoders — some DVD AC3 streams don't propagate their sample rate and the encoder otherwise
 errors with "sample rate not set". Tag commentary with `-disposition comment` and a title.
-Keep English (and commentary); drop other languages.
+
+**Language selection (by the title's ORIGINAL language, set via the manifest `origLang`):**
+- **English-original** (origLang eng/unset — e.g. West Wing): keep English audio (+ commentary/
+  untagged) only; drop foreign-language *dubs* (e.g. the French dub). English subtitle track kept
+  (not defaulted on).
+- **Foreign-original** (origLang deu/jpn/… — e.g. Run Lola Run, Downfall): keep the **original-
+  language audio as the default track**, add the **English dub as an alternative**, and **default
+  the English subtitles ON** — so it plays in the original language with English subs, dub
+  available. `Keep-AudioIdx` orders original-first; the AAC default + `-disposition:s:0 default`
+  follow. (Note: a foreign disc whose only audio is an English dub — like the Water Margin DVDs —
+  has no original track to keep; you just get the dub.)
 
 ## Blu-ray (BDMV / m2ts, H.264 1080p)
 

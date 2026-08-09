@@ -19,6 +19,11 @@
     subTrack (int, optional)   0-based source subtitle index to keep (English). BD defaults to the
                                single PGS track; on multi-language DVDs set this to the English one.
     commentary (int, optional) 0-based SOURCE audio index to tag as "Audio Commentary".
+    origLang (str, optional)   ISO-639 code of the title's ORIGINAL language. Omit or 'eng' for
+                               English content -> keep English audio only (drop foreign dubs). For a
+                               foreign original (e.g. 'deu' Run Lola Run, 'jpn'): keep the original-
+                               language audio as the DEFAULT track, add the English dub as an
+                               alternative, and default the English subtitles ON.
 
   Behaviour baked in (see references/gotchas.md for the why):
     - Audio count de-duped to distinct numeric indices (m2ts double-lists streams).
@@ -53,7 +58,26 @@ function InSpec($it){   # ffmpeg/ffprobe input args (demuxer + -i) for this item
   return @('-i',$it.src)
 }
 function Audio-Count($inspec){ ((& $fp -v error @inspec -select_streams a -show_entries stream=index -of csv=p=0 2>$null) | Where-Object { $_ -match '^\d+$' } | Sort-Object -Unique | Measure-Object).Count }
-function Audio-Ch0($inspec){ $c=(& $fp -v error @inspec -select_streams a:0 -show_entries stream=channels -of csv=p=0 2>$null | Select-Object -First 1); if($c){[int]$c}else{0} }
+function Audio-Ch0($inspec,$idx){ $c=(& $fp -v error @inspec -select_streams "a:$idx" -show_entries stream=channels -of csv=p=0 2>$null | Select-Object -First 1); if($c){[int]$c}else{0} }
+function Keep-AudioIdx($inspec,$na,$origLang){
+  # Which audio ordinals to keep, and in what order (first = default track).
+  #  - English-original content (origLang eng/unset): keep English (+ commentary/untagged) only; drop foreign DUBS.
+  #  - Foreign-original content (origLang e.g. deu/jpn): keep the ORIGINAL-language audio FIRST (becomes default)
+  #    then the English dub as an alternative. English subtitles are defaulted on by the caller.
+  if($na -le 1){ return @(0..($na-1)) }
+  $langs = @(& $fp -v error @inspec -select_streams a -show_entries stream_tags=language -of csv=p=0 2>$null)
+  if($langs.Count -gt $na){ $langs = $langs[0..($na-1)] }   # m2ts double-lists; first $na are the streams in order
+  $eng = @('eng','en','und','')
+  if($origLang -and $origLang -notin @('eng','en')){
+    $fore=@(); $en=@()
+    for($i=0;$i -lt $na;$i++){ if($langs[$i] -eq $origLang){ $fore+=$i } elseif($langs[$i] -in $eng){ $en+=$i } }
+    $keep = @($fore + $en)
+  } else {
+    $keep=@(); for($i=0;$i -lt $na;$i++){ if($langs[$i] -in $eng){ $keep+=$i } }
+  }
+  if($keep.Count -eq 0){ return @(0..($na-1)) }   # nothing matched -> keep all rather than drop everything
+  return $keep
+}
 function Sub-Count($inspec){ ((& $fp -v error @inspec -select_streams s -show_entries stream=index -of csv=p=0 2>$null) | Where-Object { $_ -match '^\d+$' } | Sort-Object -Unique | Measure-Object).Count }
 function Get-DAR($inspec){   # source display aspect ("16:9"/"4:3"); preserve it, never force
   $d="$(& $fp -v error @inspec -select_streams v:0 -show_entries stream=display_aspect_ratio -of csv=p=0 2>$null | Select-Object -First 1)"
@@ -87,7 +111,10 @@ foreach($it in $items){
 
   $inspec = InSpec $it
   $na = Audio-Count $inspec
-  $ch0 = if($na -gt 0){ Audio-Ch0 $inspec } else { 0 }
+  $origLang = if(Has $it 'origLang'){ "$($it.origLang)" } else { 'eng' }   # ISO-639 of the ORIGINAL language; eng/unset = English content
+  $keep = @(Keep-AudioIdx $inspec $na $origLang)   # audio ordinals to keep (foreign original first, then English)
+  $nk = $keep.Count
+  $ch0 = if($nk -gt 0){ Audio-Ch0 $inspec $keep[0] } else { 0 }
   $ns = Sub-Count $inspec
   $subIdx = if(Has $it 'subTrack'){ [int]$it.subTrack } else { 0 }
 
@@ -112,10 +139,10 @@ foreach($it in $items){
   # --- stream maps ---
   $a += @('-map','0:v:0')
   $aacIdx = 0
-  if($na -gt 0){
-    if($ch0 -ge 6){ $a += @('-map','0:a:0') }
-    $a += @('-map','0:a:0')
-    for($j=0;$j -lt $na;$j++){ $a += @('-map',"0:a:$j") }
+  if($nk -gt 0){
+    if($ch0 -ge 6){ $a += @('-map',"0:a:$($keep[0])") }
+    $a += @('-map',"0:a:$($keep[0])")
+    foreach($k in $keep){ $a += @('-map',"0:a:$k") }
   }
   if($ns -gt 0){ if($subInput){ $a += @('-map','1:0') } else { $a += @('-map',"0:s:$subIdx") } }
 
@@ -125,20 +152,20 @@ foreach($it in $items){
   if($it.kind -eq 'DVD'){ $a += @('-aspect',(Get-DAR $inspec)) } else { $a += @('-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-color_range','tv') }
 
   # --- audio codecs ---
-  if($na -gt 0){
+  if($nk -gt 0){
     if($ch0 -ge 6){
       $a += @("-c:a:$aacIdx",'aac',"-b:a:$aacIdx",'160k',"-ac:a:$aacIdx",'6',"-ar:a:$aacIdx",'48000',"-metadata:s:a:$aacIdx",'title=Surround 5.1 (AAC)',"-metadata:s:a:$aacIdx",'language=eng',"-disposition:a:$aacIdx",'default'); $aacIdx++
       $a += @("-c:a:$aacIdx",'aac',"-b:a:$aacIdx",'160k',"-ac:a:$aacIdx",'2',"-ar:a:$aacIdx",'48000',"-metadata:s:a:$aacIdx",'title=Stereo (AAC)',"-metadata:s:a:$aacIdx",'language=eng'); $aacIdx++
     } else {
       $a += @("-c:a:$aacIdx",'aac',"-b:a:$aacIdx",'160k',"-ac:a:$aacIdx",'2',"-ar:a:$aacIdx",'48000',"-metadata:s:a:$aacIdx",'title=Stereo (AAC)',"-metadata:s:a:$aacIdx",'language=eng',"-disposition:a:$aacIdx",'default'); $aacIdx++
     }
-    for($j=0;$j -lt $na;$j++){
+    for($j=0;$j -lt $nk;$j++){
       $oi = $aacIdx + $j
       $a += @("-c:a:$oi",'copy',"-metadata:s:a:$oi",'language=eng')
-      if(Has $it 'commentary' -and $it.commentary -eq $j){ $a += @("-disposition:a:$oi",'comment',"-metadata:s:a:$oi",'title=Audio Commentary') }
+      if(Has $it 'commentary' -and $it.commentary -eq $keep[$j]){ $a += @("-disposition:a:$oi",'comment',"-metadata:s:a:$oi",'title=Audio Commentary') }
     }
   }
-  if($ns -gt 0){ $a += @('-c:s','copy','-metadata:s:s:0','language=eng') }
+  if($ns -gt 0){ $a += @('-c:s','copy','-metadata:s:s:0','language=eng'); if($origLang -and $origLang -notin @('eng','en')){ $a += @('-disposition:s:0','default') } }  # default English subs ON for foreign originals
   $a += @('-max_muxing_queue_size','1024',$it.out)
 
   $t0=Get-Date; & $ff @a; $secs=[int]((Get-Date)-$t0).TotalSeconds
