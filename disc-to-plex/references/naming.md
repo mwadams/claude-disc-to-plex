@@ -19,9 +19,37 @@ time).
   Movies/
     <Movie (Year)>/
       <Movie (Year)>.mkv
+      Behind The Scenes/              # movie extras: Plex local-extras subfolders
+        <descriptive name>.mkv
+      Featurettes/
+      Deleted Scenes/
+      Shorts/
+      Trailers/
+        <descriptive name>.mkv
 ```
 
 Seasons are two-digit (`Season 00`, `Season 01`, …).
+
+## Movie extras — where TV uses Season 00, movies use local-extras subfolders
+
+Plex has two equally-valid ways to attach movie extras; **this library uses the subfolder form**
+(chosen because it scales when a disc carries several of one kind — e.g. a classic-film disc with
+six trailers). Inside the movie's folder, create the Plex-recognised subfolders and drop each extra
+in the matching one, with a human-readable filename:
+
+- `Behind The Scenes/` — making-of / on-set featurettes
+- `Featurettes/` — promotional or documentary featurettes
+- `Deleted Scenes/`
+- `Shorts/` — vintage shorts bundled on classic-film discs ("Warner Night at the Movies": comedy
+  short, musical short, cartoon, newsreel)
+- `Trailers/` — theatrical trailers (the film's own and any series/companion trailers on the disc)
+- `Interviews/`, `Scenes/`, `Other/` as needed
+
+(The suffix alternative — `<Movie (Year)>-trailer.mkv`, `-behindthescenes.mkv`, `-featurette.mkv`,
+`-short.mkv`, `-deleted.mkv` in the movie root — is what Plex also accepts; don't mix the two in one
+library.) **Exclude** Warner/studio DVD-advert promos (short modern clips advertising *other*
+releases) and copyright/anti-piracy reels — those are boilerplate, not extras. Identify borderline
+titles from a frame before keeping or dropping (see `identification.md`, `scan-disc.ps1`).
 
 ## Conventions (confirm the user's preference; these are common defaults)
 

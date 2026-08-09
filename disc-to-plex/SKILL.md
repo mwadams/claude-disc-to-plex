@@ -36,11 +36,16 @@ skill does not perform or assist DRM circumvention.
    `tool-paths.json`. Do this first; the PATH ffmpeg is often too new for the installed
    NVIDIA driver. See `references/gotchas.md` (driver/ffmpeg pairing).
 
-2. **Inspect the disc(s)** — enumerate titles and classify. For BDMV, list
-   `BDMV/STREAM/*.m2ts` by size/duration. For DVD, list `VIDEO_TS/VTS_*_1.VOB` sets.
-   The big ~equal-length titles are episodes/features; smaller ones are extras. Get durations
-   and audio-track counts with `ffprobe`. Read the metadata files that often ship with a rip
-   (`mymovies.xml`, `*.dvdid.xml`) for the box-set identity and extras list.
+2. **Inspect the disc(s)** — enumerate titles and classify. For DVD, run
+   `pwsh -File scripts/scan-disc.ps1 -SrcRoot <parent> -Pattern "<Show> * Disk *"` (or `-Root
+   <one disc>`): it probes every title on every disc and labels each EPISODE?/PLAYALL?/REVIEW/
+   BOILERPLATE/ARTIFACT, using cross-disc identical-duration to unmask copyright/promo reels. For
+   BDMV, list `BDMV/STREAM/*.m2ts` by size/duration. **Account for every real title** — map it to an
+   episode, keep it as an extra, or exclude it only as *identified* boilerplate. Each REVIEW row is a
+   probable extra: look at a frame and place it (never drop a title just because it isn't
+   episode-length — that once silently discarded real extras; see `references/gotchas.md`, "Silent
+   extras drop"). Read any rip metadata (`mymovies.xml`, `*.dvdid.xml`) for the box-set identity and
+   extras list.
 
 3. **Identify & order content** — map each title to the right episode/feature and, for TV,
    the **Plex/TMDB episode number** (not IMDb, not on-disc order). See

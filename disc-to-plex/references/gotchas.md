@@ -31,6 +31,24 @@ Some tiny DVD titles carry an AC3 stream with `sample_rate=0, channels=0`. The A
 dies with "sample rate not set", and even passthru fails. These are menu/navigation artifacts —
 **exclude them** (see `identification.md`), don't try to encode them.
 
+## Silent extras drop — the episode-length filter is not a classifier
+
+A build shortcut that auto-selected titles by an absolute duration window (e.g. "keep 2000–3600 s
+titles as episodes") shipped once and **silently discarded every other title** — including any real
+featurette/documentary — with no report and no failure. It happened to be safe on that show (the
+only sub-episode title was a copyright reel), but on the next disc it would have thrown away genuine
+bonus content that can't be re-derived. Two things went wrong: the window doubles as the artifact
+filter (so anything outside it just vanishes), and nothing forced a human to look at what was
+dropped.
+
+**Rule: account for every real title.** Enumerate the whole disc with `scripts/scan-disc.ps1`
+(cross-disc-aware) and classify each title EPISODE / PLAYALL / extra / boilerplate / artifact. Every
+non-artifact title must become an episode, a `Season 00` extra, or an *identified* exclusion
+(boilerplate: a short title whose exact duration repeats across ≥3 discs — a copyright/anti-piracy
+or promo reel, e.g. the 273.000 s Warner "SCHWEIZ" warning on the West Wing DVDs). Never let a title
+disappear because it fell outside an episode-length window. When unsure what a title is, extract a
+frame and look. See `identification.md` → "Extras → Season 00".
+
 ## DVD aspect: never hard-code 4:3 (16:9 extras get squished)
 
 A DVD's main feature may be 4:3 while its **extras/featurettes are 16:9 anamorphic** (modern

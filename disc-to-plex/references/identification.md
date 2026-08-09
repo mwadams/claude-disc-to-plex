@@ -5,6 +5,15 @@ Get this wrong and the library is subtly broken. Confirm ambiguous cases with th
 
 ## Classify every title first — and exclude menu artifacts
 
+Run `scripts/scan-disc.ps1` over the whole show (`-SrcRoot <parent> -Pattern "<Show> * Disk *"`)
+before building a manifest. It probes every title on every disc and labels each EPISODE? / PLAYALL?
+/ REVIEW / BOILERPLATE / ARTIFACT, and — because it sees all discs at once — flags repeated
+copyright/promo reels as BOILERPLATE. **Every REVIEW row is a probable extra: look at a frame and
+place it (Season 00) or exclude it as identified boilerplate. Do not skip a title just because it is
+not episode-length** — that blind filter once dropped extras silently (see gotchas.md, "silent
+extras drop"). The classifier is a starting point, not the final word: you confirm the REVIEW and
+PLAYALL rows.
+
 A disc's `STREAM`/`VIDEO_TS` folder mixes real content with menu/navigation clips. **Only real
 content becomes an output.** Exclude menu artifacts explicitly and up front — do not discover
 them by encode failure. Tells of a menu artifact:
