@@ -48,8 +48,11 @@ skill does not perform or assist DRM circumvention.
    "episode selection" screens, extracted frames, runtime matching). Confirm ambiguous cases
    with the user.
 
-4. **Build a manifest and transcode** — write a JSON manifest (one object per output) and run
-   `pwsh -File scripts/transcode.ps1 -Manifest items.json -LogDir <dir>` in the background.
+4. **Build a manifest and transcode** — for a multi-episode show, don't hand-write the JSON
+   (error-prone at 26+ items): put the mapping in a pipe-delimited table (`disc|title|season|ep|name`,
+   one row per output, a disc may straddle seasons) and run `scripts/make-manifest.ps1` to emit the
+   manifest with correct Plex paths. For a handful of items (movies, extras) write the JSON directly.
+   Then run `pwsh -File scripts/transcode.ps1 -Manifest items.json -LogDir <dir>` in the background.
    The script handles BD vs DVD, cropping, subtitles, and the audio matrix automatically.
    Monitor by grepping the log for `OK|FAILED|DONE` — never read the whole log (ffmpeg's
    `-stats` writes ~1 line/second).
