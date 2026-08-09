@@ -1,0 +1,11 @@
+# toolchain + working files (fetched/created by the scripts, not source)
+.transcode-tools/
+work/
+tool-paths.json
+
+# media / build artifacts
+*.mkv
+*.m2ts
+*.vob
+*.sup
+*.log
