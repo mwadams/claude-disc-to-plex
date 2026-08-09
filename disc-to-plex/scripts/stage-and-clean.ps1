@@ -20,6 +20,20 @@ param(
 $ErrorActionPreference = 'Stop'
 if(-not (Test-Path $Src)){ throw "Source not found: $Src" }
 
+# Guard: a mangled UNC target. A path that starts with ONE backslash (not two) is almost always a
+# UNC path that lost a backslash in quoting — notably passing "\\NAS\share" through a bash shell,
+# which collapses \\ -> \. robocopy would then treat "\NAS\share\..." as a path on the CURRENT
+# drive and copy locally, and the verify below would happily pass against that wrong local folder.
+# (Pass Windows UNC paths via PowerShell, not the bash tool. See gotchas.md, "Mangled UNC target".)
+if($Target -match '^\\[^\\]'){
+  throw "Target '$Target' starts with a single backslash — a corrupted UNC path. A network target must begin with '\\' (e.g. \\NASTEAMV\multimedia\...). Aborting before copying to the wrong place."
+}
+$srcRoot = [System.IO.Path]::GetPathRoot((Resolve-Path $Src).Path)
+$tgtRoot = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetFullPath($Target))
+if($tgtRoot -eq $srcRoot -and $Target -notmatch '^\\\\'){
+  Write-Host ("WARNING: target resolves to the same volume as the source ($tgtRoot). If you meant a NAS/UNC target, stop now — the copy is going to a local folder.") -ForegroundColor Yellow
+}
+
 # 1. Copy — /XC /XN /XO means NEVER overwrite an existing target file (only add what's missing).
 Write-Host "=== copying (no-overwrite) $Src -> $Target ===" -ForegroundColor Cyan
 robocopy "$Src" "$Target" /E /XC /XN /XO /MT:8 /R:2 /W:5 /NP /NDL | Out-Null

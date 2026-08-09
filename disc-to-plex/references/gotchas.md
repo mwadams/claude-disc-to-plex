@@ -64,6 +64,21 @@ Cropping the video without moving the PGS canvas leaves subtitles offset (or dis
 player-dependent). Reposition with SupMover — see `pipelines.md`. Symptom if skipped: subtitles
 shifted toward one side on the cropped frame.
 
+## Mangled UNC target — copy silently lands on a local drive
+
+Staging to a NAS with a UNC target (`\\NAS\share\...`) can go wrong before the script even runs:
+if the path is passed through a **bash/POSIX shell**, `\\` collapses to `\`, so `\\NAS\share`
+becomes `\NAS\share`. robocopy then treats that single-backslash path as **relative to the current
+drive** and copies to `D:\NAS\share\...` locally. The byte-verify passes too — it checks that same
+wrong local folder — so a broken stage looks VERIFIED and (worse) could gate a delete. Nothing
+reaches the NAS.
+
+**Avoid it:** pass Windows UNC/backslash paths via the **PowerShell tool**, not the bash tool
+(bash eats one backslash). `stage-and-clean.ps1` now hard-aborts when `$Target` starts with a single
+backslash, and warns when the target resolves onto the source's own volume. Also: run long background
+jobs with the tool's own backgrounding (`run_in_background`) — a PowerShell `Start-Job` dies when the
+tool's shell session ends between calls, so its log never appears.
+
 ## Operational
 
 - **`-stats` spam**: ffmpeg writes ~1 progress line/second; a long encode log is thousands of
