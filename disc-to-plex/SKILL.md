@@ -54,9 +54,13 @@ skill does not perform or assist DRM circumvention.
    Monitor by grepping the log for `OK|FAILED|DONE` — never read the whole log (ffmpeg's
    `-stats` writes ~1 line/second).
 
-5. **Verify & stage** — `ffprobe` a sample of outputs (resolution, audio track order,
-   subtitle canvas) and confirm counts. Place files in the Plex layout described in
-   `references/naming.md`. Then the user reviews before any copy to a NAS/final target.
+5. **Verify & stage** — `ffprobe` a sample of outputs (resolution, **display aspect ratio**,
+   audio track order, subtitle canvas) and confirm counts. Place files in the Plex layout in
+   `references/naming.md`. After the user is happy, publish to the final target (NAS) and free
+   the local staging space with `scripts/stage-and-clean.ps1 -Src <staged> -Target <nas>
+   [-DeleteAfter]`: it copies WITHOUT overwriting anything already there, verifies every file
+   byte-for-byte, and only deletes the local copy if that verification passes — the verify is a
+   hard gate, so a bad/partial copy never costs you the local original.
 
 ## Manifest format
 
