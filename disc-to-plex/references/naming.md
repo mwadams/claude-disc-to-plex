@@ -64,9 +64,40 @@ titles from a frame before keeping or dropping (see `identification.md`, `scan-d
   entries.
 - **Subtitles**: English only across the board unless told otherwise.
 
+## Merging extras into a show already in the library (partial Season 00)
+
+A show is often delivered in rounds — earlier seasons (and their bonus features) land first, later
+seasons arrive on a subsequent batch of discs. **Bonus features accumulate the same way episodes do,
+and Season 00 is almost never empty when you return to a show.** Before adding extras from a new
+batch of discs, treat Season 00 as a *merge target*, not a fresh start:
+
+1. **Inspect the existing Season 00 on the target** and find the highest `S00Eyy` already present
+   (e.g. the West Wing already has `S00E01`…`S00E14` from the Seasons 1–3 delivery). Note the exact
+   filename convention in use (the West Wing specials are `The West Wing S00Eyy.mkv` — no year, no
+   title, matching its episodes).
+2. **Append, don't renumber.** Number the new batch's extras continuing from `max+1` (`S00E15`,
+   `S00E16`, …). Never reuse or shift an existing specials number — Plex identity and any watch state
+   are tied to it, and `stage-and-clean.ps1`'s no-overwrite copy will *skip* a colliding number
+   rather than replace it, so a reused number silently drops your new file. Order the new batch
+   sensibly among itself (documentary, featurettes, deleted scenes, galleries, trailers).
+3. **Match TMDB specials numbering only if the whole Season 00 already follows it**; otherwise a
+   local append is correct and safe. Extras have no canonical global numbering the way episodes do.
+4. **Stage with `stage-and-clean.ps1`** (no-overwrite + byte-verify). It adds only the new
+   `S00Eyy` files and leaves the existing specials untouched — the same mechanism that merges new
+   *seasons* into a partial show. Verify the target afterwards shows the union (old + new), not a
+   replacement.
+
+The same merge discipline applies to **movie extras**: if a film's folder already has a `Trailers/`
+or `Featurettes/` with items, add new files alongside them with distinct names — don't overwrite.
+And note the corollary: **run the extras sweep (`scan-disc.ps1`) on every new batch of discs**, not
+just the first — later-season discs carry their own featurettes, and skipping the sweep on "just the
+episodes" batch is exactly how bonus features get lost.
+
 ## Staging and the final copy
 
 Stage into a working copy of the layout, let the user review, then copy to the final
 target (NAS/library) **without overwriting anything already present** — this is how partial
 series get completed as discs accumulate over time. Never clobber existing files on the target;
-only add what's missing.
+only add what's missing. Pass Windows UNC targets (`\\NAS\share\…`) through **PowerShell, not a
+bash shell** — bash eats a backslash and the copy lands on a local drive (see gotchas.md, "Mangled
+UNC target"); `stage-and-clean.ps1` now aborts if it detects that corruption.
