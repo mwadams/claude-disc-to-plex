@@ -57,8 +57,13 @@ year for disambiguation (there may be remakes).
   titles whose audio-track count is one higher than their neighbours are those episodes — this
   alone often fixes a whole disc's mapping. (Count distinct numeric audio indices; see
   `gotchas.md` for the m2ts double-count.)
-- **DVD "episode selection" menu screens**: render the menu VOB frames and read them — the most
-  reliable per-disc "which episodes are here" source for TV sets.
+- **DVD "episode selection" menu screens**: the most reliable per-disc "which episodes are here"
+  source, and the tie-breaker when the title probe looks short. Render it from the **menu domain**
+  (flat `-ss` into `VIDEO_TS.VOB` only reaches some menu cells):
+  `ffmpeg -f dvdvideo -menu 1 -menu_vts 0 -pgc <N> -i <disc> -frames:v 1 out.png` — sweep `-pgc 1..6`;
+  one PGC is the index and lists every episode (`-menu 1` needs a non-zero `-pgc`). If the menu lists
+  MORE episodes than the title probe found, suspect the dvdvideo multi-cell-truncation bug — confirm
+  with MakeMKV and switch to the `kind:"MKV"` route (see gotchas.md, pipelines.md).
 - **Distinctive frames**: one recognizable scene per title (a Western episode, a courtroom, a
   specific guest actor) confirms identity fast.
 - **Runtime matching** against a known episode list for the tie-breakers.

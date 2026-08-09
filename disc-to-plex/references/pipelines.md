@@ -71,3 +71,20 @@ appear when reading already-decrypted folders — ignore them). Enumerate titles
 - DVDs do **not** hit the Blu-ray libbluray crash — HandBrake reads them natively — but this
   path gives one consistent, title/chapter-accurate automated route for the whole library, and
   needs only MakeMKV for Blu-ray (AACS), not DVD.
+
+### When the dvdvideo demuxer mis-reads a disc → MakeMKV intermediate (`kind:"MKV"`)
+
+The dvdvideo demuxer reads only a title's **first cell**, so it truncates **multi-cell titles**
+(e.g. an episode authored as a 20 s title-sequence cell + the 24 min body reads as 20 s). If
+`scan-disc.ps1` / the episode-index menu / MakeMKV disagree on the episode count or you see
+episode-length titles reported as tiny stubs (see gotchas.md), switch that disc to the MakeMKV route:
+
+1. Enumerate/rip losslessly, **one disc at a time, foreground** (background `makemkvcon` yields 0
+   files): `makemkvcon64.exe -r --minlength=1200 mkv "file:<VIDEO_TS parent>" all <outdir>`. Titles
+   land as `<label>_tNN.mkv` in disc (broadcast) order.
+2. Build a manifest with `kind:"MKV"`, `src` = each ripped `.mkv`. transcode.ps1 gives MKV the same
+   SD treatment as DVD (bwdif deinterlace, preserve DAR, no crop, no bt709) but reads it as a file.
+3. Map titles to Plex numbers in order (confirm against the episode-index menu). Delete the
+   intermediate MKVs after the encodes verify.
+
+This keeps the NVENC/audio pipeline identical; only the *source read* changes.

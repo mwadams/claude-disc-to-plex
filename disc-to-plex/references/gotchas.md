@@ -31,6 +31,31 @@ Some tiny DVD titles carry an AC3 stream with `sample_rate=0, channels=0`. The A
 dies with "sample rate not set", and even passthru fails. These are menu/navigation artifacts —
 **exclude them** (see `identification.md`), don't try to encode them.
 
+## dvdvideo demuxer truncates multi-cell titles (looks like missing episodes)
+
+`ffmpeg -f dvdvideo -title N` reads only the **first cell/PGC** of a title. When a DVD authors an
+episode as 2+ cells — e.g. a ~20 s TIMESLIP title-sequence cell followed by the ~24 min episode body
+— `ffprobe -f dvdvideo` reports the title as **20 seconds**, and an encode would ship a 20-second
+"episode". This is what made two complete Timeslip episodes look *missing / partial* (a mid-story
+"gap" and a "10-minute colour fragment") when the disc was in fact complete. `scan-disc.ps1`
+enumerates via the same demuxer, so it inherits the bug: multi-cell episodes surface as tiny
+stub/REVIEW titles and the episode count comes out short.
+
+**Never conclude episodes are missing from a low title count.** Cross-check two authoritative sources:
+- **The disc's own EPISODE INDEX menu** — render it from the menu domain:
+  `ffmpeg -f dvdvideo -menu 1 -menu_vts 0 -pgc <N> -i <disc> -frames:v 1 out.png` (sweep `-pgc 1..6`;
+  one PGC is the index and lists every episode). Flat `-ss` into `VIDEO_TS.VOB` only reaches some
+  menu cells, so use the menu domain. `-menu 1` requires a non-zero `-pgc`.
+- **MakeMKV**, which parses cells correctly: `makemkvcon64.exe -r --cache=1 info "file:<VIDEO_TS
+  parent>"` → `TCOUNT` + `Title #N was added (K cell(s), H:MM:SS)`. A **2-cell** title of full episode
+  length is exactly the case the dvdvideo demuxer truncates.
+
+**Fix / extraction:** for such a disc, don't use the `DVD` path. **Rip the episode titles with
+MakeMKV** (`makemkvcon64.exe -r --minlength=1200 mkv "file:<parent>" all <outdir>` — lossless), then
+transcode with `kind:"MKV"` (see transcode.ps1; same SD deinterlace + DAR treatment as DVD, file
+input). Run MakeMKV **one disc at a time in the foreground** — back-to-back/background invocations of
+`makemkvcon` silently produce 0 files. See `pipelines.md` and `identification.md`.
+
 ## Silent extras drop — the episode-length filter is not a classifier
 
 A build shortcut that auto-selected titles by an absolute duration window (e.g. "keep 2000–3600 s

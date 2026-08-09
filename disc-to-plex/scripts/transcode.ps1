@@ -7,10 +7,14 @@
 
   Manifest = JSON array. Each item:
     out    (string, required)  full output .mkv path (already Plex-named)
-    kind   ("BD"|"DVD", req)   BD = H.264 m2ts (1080p); DVD = MPEG-2 via dvdvideo demuxer (SD PAL)
+    kind   ("BD"|"DVD"|"MKV")  BD = H.264 m2ts (1080p); DVD = MPEG-2 via dvdvideo demuxer (SD PAL);
+                               MKV = a MakeMKV-ripped SD .mkv (same SD treatment as DVD — deinterlace
+                               + preserve DAR — but read as a plain file). Use MKV when the dvdvideo
+                               demuxer mis-reads a disc (e.g. multi-cell titles it truncates — see
+                               gotchas.md); rip the titles with MakeMKV first, then point src at them.
     src    (string, required)  BD: path to .m2ts.  DVD: the DVD ROOT (a decrypted VIDEO_TS
                                parent folder, an ISO, or an optical drive like "F:" — libdvdcss
-                               decrypts a live CSS disc automatically).
+                               decrypts a live CSS disc automatically).  MKV: path to the .mkv.
     crop   ("auto"|"none")     BD only. auto = cropdetect (pillarboxed 4:3 -> ~1440). Stills/
                                split-screen/full-frame -> "none". DVD ignores (no crop).
     title  (int)               DVD only, required. DVD title (PGC) number (see identification.md).
@@ -122,7 +126,7 @@ foreach($it in $items){
 
   # --- video filter + optional PGS subtitle repositioning (BD crop) ---
   $subInput = $null; $crop = $null
-  if($it.kind -eq 'DVD'){ $vf = 'bwdif=mode=send_frame' }   # deinterlace only; aspect set via -aspect below (preserve source DAR)
+  if($it.kind -in @('DVD','MKV')){ $vf = 'bwdif=mode=send_frame' }   # SD interlaced source (DVD demuxer OR a MakeMKV-ripped .mkv): deinterlace only; aspect set via -aspect below (preserve source DAR)
   else {
     if($it.crop -eq 'auto'){ $crop = Get-Crop $it.src; $vf = "crop=$crop"; Write-Output "   crop=$crop" }
     else { $vf = $null; Write-Output "   crop=none" }
@@ -149,7 +153,7 @@ foreach($it in $items){
   # --- video codec ---
   if($vf){ $a += @('-vf',$vf) }
   $a += @('-c:v','h264_nvenc','-preset','medium','-rc','vbr','-cq','20','-b:v','0','-pix_fmt','yuv420p')
-  if($it.kind -eq 'DVD'){ $a += @('-aspect',(Get-DAR $inspec)) } else { $a += @('-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-color_range','tv') }
+  if($it.kind -in @('DVD','MKV')){ $a += @('-aspect',(Get-DAR $inspec)) } else { $a += @('-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-color_range','tv') }
 
   # --- audio codecs ---
   if($nk -gt 0){
