@@ -63,6 +63,7 @@ function InSpec($it){   # ffmpeg/ffprobe input args (demuxer + -i) for this item
 }
 function Audio-Count($inspec){ ((& $fp -v error @inspec -select_streams a -show_entries stream=index -of csv=p=0 2>$null) | Where-Object { $_ -match '^\d+$' } | Sort-Object -Unique | Measure-Object).Count }
 function Audio-Ch0($inspec,$idx){ $c=(& $fp -v error @inspec -select_streams "a:$idx" -show_entries stream=channels -of csv=p=0 2>$null | Select-Object -First 1); if($c){[int]$c}else{0} }
+function Audio-Codec($inspec,$idx){ "$(& $fp -v error @inspec -select_streams "a:$idx" -show_entries stream=codec_name -of csv=p=0 2>$null | Select-Object -First 1)" }
 function Keep-AudioIdx($inspec,$na,$origLang){
   # Which audio ordinals to keep, and in what order (first = default track).
   #  - English-original content (origLang eng/unset): keep English (+ commentary/untagged) only; drop foreign DUBS.
@@ -166,7 +167,10 @@ foreach($it in $items){
     }
     for($j=0;$j -lt $nk;$j++){
       $oi = $aacIdx + $j
-      $a += @("-c:a:$oi",'copy',"-metadata:s:a:$oi",'language=eng')
+      # passthru the original track bit-for-bit — EXCEPT Blu-ray/DVD LPCM, which Matroska can't store via -c copy
+      # ("No wav codec tag for pcm_bluray"); re-encode those to FLAC (lossless, MKV-native) instead.
+      if((Audio-Codec $inspec $keep[$j]) -match '^pcm'){ $a += @("-c:a:$oi",'flac') } else { $a += @("-c:a:$oi",'copy') }
+      $a += @("-metadata:s:a:$oi",'language=eng')
       if((Has $it 'commentary') -and ([int]$it.commentary -eq $keep[$j])){ $a += @("-disposition:a:$oi",'comment',"-metadata:s:a:$oi",'title=Audio Commentary') }
     }
   }

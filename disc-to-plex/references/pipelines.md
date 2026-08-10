@@ -26,12 +26,26 @@ errors with "sample rate not set". Tag commentary with `-disposition comment` an
 - **English-original** (origLang eng/unset — e.g. West Wing): keep English audio (+ commentary/
   untagged) only; drop foreign-language *dubs* (e.g. the French dub). English subtitle track kept
   (not defaulted on).
-- **Foreign-original** (origLang deu/jpn/… — e.g. Run Lola Run, Downfall): keep the **original-
-  language audio as the default track**, add the **English dub as an alternative**, and **default
-  the English subtitles ON** — so it plays in the original language with English subs, dub
-  available. `Keep-AudioIdx` orders original-first; the AAC default + `-disposition:s:0 default`
-  follow. (Note: a foreign disc whose only audio is an English dub — like the Water Margin DVDs —
-  has no original track to keep; you just get the dub.)
+- **Foreign-original** (origLang deu/jpn/… — e.g. Run Lola Run, Downfall): the goal is that an
+  English viewer can watch it. Decide the DEFAULT track by what the disc actually has:
+  1. **English subtitles present** → keep the **original-language audio as default**, add the
+     **English dub as an alternative**, and **default the English subtitles ON**. (`Keep-AudioIdx`
+     orders original-first; AAC default + `-disposition:s:0 default` follow.)
+  2. **No English subtitles, but an English dub is present** → make the **English audio the DEFAULT**
+     (so it's watchable in English), keep the original audio as an alternative, subtitles as-is.
+     ("English audio if no English subs are available.")
+  3. **Only a foreign audio track and NO subtitle stream** → before concluding anything, **check for
+     BURNED-IN (hardcoded) subtitles**: grab a mid-film *dialogue* frame (`ffmpeg -ss <mid> …
+     -frames:v 1`) and look for subtitle text in the picture. Many foreign releases (e.g. these
+     Cinema Paradiso / Cyrano DVDs) carry permanent English subs burned into the video, so there's
+     no sub *stream* to find — MakeMKV/dvdvideo correctly show only video + foreign audio. If burned
+     in, just encode the feature as-is (foreign audio + the subs travel in the picture); it's fully
+     watchable. Only if there are genuinely no burned-in subs either → flag it (wrong disc / needs an
+     external SRT). (In practice this user owns no disc lacking BOTH English audio AND English subs —
+     so "foreign audio, no sub stream" almost always means burned-in subs.)
+  (Also: a foreign disc whose ONLY audio is an English dub — like the Water Margin DVDs — has no
+  original track to keep; you just get the dub.) Confirm audio/subtitle tracks with **MakeMKV**
+  (`SINFO`), since the dvdvideo demuxer sometimes under-reports VOBSUB subtitle streams.
 
 ## Blu-ray (BDMV / m2ts, H.264 1080p)
 

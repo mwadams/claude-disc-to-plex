@@ -31,6 +31,24 @@ Some tiny DVD titles carry an AC3 stream with `sample_rate=0, channels=0`. The A
 dies with "sample rate not set", and even passthru fails. These are menu/navigation artifacts —
 **exclude them** (see `identification.md`), don't try to encode them.
 
+## dvdvideo read errors truncate silently — ALWAYS verify output duration
+
+libdvdnav can hit a bad/unreadable block mid-title and stop: the log shows
+`dvdnav error (...): Error reading NAV packet` / `Unable to read next block of PGC`,
+ffmpeg ends the demux there, and `transcode.ps1` still prints `OK` because the
+(partial) output exists. Result: a film/episode silently **cut short** (e.g. a
+119-min feature encoded to 101 min when cell 12 wouldn't read). This is a disc/rip
+read snag on THAT disc — NOT a reason to abandon the dvdvideo path, which is correct
+for clean discs.
+
+**Defence: verify every output's duration against the expected length** —
+`mymovies.xml` `<RunningTime>` (minutes) or the per-title `Minutes/Seconds`, or the
+MakeMKV title length. If the output is materially shorter, the rip read-errored.
+**Fall back to MakeMKV for that disc** (`makemkvcon64.exe … mkv "file:<parent>" all
+<out>`) — its demuxer tolerates the bad block and recovers the full title; then
+transcode with `kind:"MKV"`. (`mymovies.xml`, present on these rips, is also the best
+per-disc source for the episode↔title map and extras names.)
+
 ## dvdvideo demuxer truncates multi-cell titles (looks like missing episodes)
 
 `ffmpeg -f dvdvideo -title N` reads only the **first cell/PGC** of a title. When a DVD authors an
