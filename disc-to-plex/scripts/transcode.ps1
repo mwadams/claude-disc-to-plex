@@ -167,7 +167,7 @@ foreach($it in $items){
     for($j=0;$j -lt $nk;$j++){
       $oi = $aacIdx + $j
       $a += @("-c:a:$oi",'copy',"-metadata:s:a:$oi",'language=eng')
-      if(Has $it 'commentary' -and $it.commentary -eq $keep[$j]){ $a += @("-disposition:a:$oi",'comment',"-metadata:s:a:$oi",'title=Audio Commentary') }
+      if((Has $it 'commentary') -and ([int]$it.commentary -eq $keep[$j])){ $a += @("-disposition:a:$oi",'comment',"-metadata:s:a:$oi",'title=Audio Commentary') }
     }
   }
   if($ns -gt 0){ $a += @('-c:s','copy','-metadata:s:s:0','language=eng'); if($origLang -and $origLang -notin @('eng','en')){ $a += @('-disposition:s:0','default') } }  # default English subs ON for foreign originals
