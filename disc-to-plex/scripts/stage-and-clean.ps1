@@ -26,7 +26,7 @@ if(-not (Test-Path $Src)){ throw "Source not found: $Src" }
 # drive and copy locally, and the verify below would happily pass against that wrong local folder.
 # (Pass Windows UNC paths via PowerShell, not the bash tool. See gotchas.md, "Mangled UNC target".)
 if($Target -match '^\\[^\\]'){
-  throw "Target '$Target' starts with a single backslash — a corrupted UNC path. A network target must begin with '\\' (e.g. \\NASTEAMV\multimedia\...). Aborting before copying to the wrong place."
+  throw "Target '$Target' starts with a single backslash — a corrupted UNC path. A network target must begin with '\\' (e.g. \\NAS\media\...). Aborting before copying to the wrong place."
 }
 $srcRoot = [System.IO.Path]::GetPathRoot((Resolve-Path $Src).Path)
 $tgtRoot = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetFullPath($Target))

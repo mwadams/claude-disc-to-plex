@@ -29,7 +29,7 @@
     harmless but pass -Posters only when you actually want to (re)set art.
 
 .EXAMPLE
-  pwsh -File fix-plex-extras.ps1 -Show "Deep Space" -MediaDir "\\NASTEAMV\multimedia\Television Shows\Star Trek Deep Space Nine (1993)\Season 00"
+  pwsh -File fix-plex-extras.ps1 -Show "Deep Space" -MediaDir "\\NAS\media\Television Shows\Star Trek Deep Space Nine (1993)\Season 00"
 #>
 param(
   [Parameter(Mandatory)] [string]$Show,          # substring match on series title

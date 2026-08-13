@@ -41,7 +41,7 @@ After the files are on the server and Plex has scanned them, run **one script**:
 ```powershell
 pwsh -File D:\video\.claude\skills\disc-to-plex\scripts\fix-plex-extras.ps1 `
   -Show "Deep Space" `
-  -MediaDir "\\NASTEAMV\multimedia\Television Shows\Star Trek Deep Space Nine (1993)\Season 00"
+  -MediaDir "\\NAS\media\Television Shows\Star Trek Deep Space Nine (1993)\Season 00"
 ```
 
 It matches each Plex Season-00 episode to a file in `-MediaDir` **by basename** and, per item:
