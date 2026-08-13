@@ -70,6 +70,30 @@ skill does not perform or assist DRM circumvention.
    byte-for-byte, and only deletes the local copy if that verification passes — the verify is a
    hard gate, so a bad/partial copy never costs you the local original.
 
+6. **Confirm Plex matched it correctly (TV)** — file counts landing on the NAS is *not* proof the
+   episodes are numbered right. Plex trusts the `SxxEyy` token against the library's **agent**, which
+   can number differently from your source (feature-length pilots/finales often split into two slots —
+   see `references/naming.md`, "Episode numbering follows the target library's Plex AGENT"). After the
+   scan, run `pwsh -File scripts/verify-plex-episodes.ps1 -Show "<name>" -Season <n>`: it diffs each
+   episode's agent title against the title in its matched filename and reports `MISMATCH` rows (exit 1).
+   It reads `$env:PLEX_TOKEN` / `$env:PLEX_BASEURL` (owner token, User-scope env var — not in the repo).
+   Fix a mismatch by renaming only the `SxxEyy` token (descending, no re-encode), re-scan, re-verify.
+
+7. **Fix the Extras (Season 00) in Plex** — the agent almost always mislabels bonus features (wrong
+   titles, summaries pasted from unrelated online items, wrong posters). Our filenames are authoritative.
+   After Season 00 files are scanned, run `pwsh -File scripts/fix-plex-extras.ps1 -Show "<name>"
+   -MediaDir "<folder with the S00 mkvs>"`: it sets+locks each title from the filename, clears+locks
+   the summary, and uploads a real frame from the extra as its poster. Full process (validate on disc →
+   apply+lock in Plex) is in `references/extras-fixup.md` — you will need it for almost every TV set.
+
+8. **Give unmatched titles a real poster** — obscure archive discs (museum collections, regional-TV
+   releases) often get no agent match at all: Plex creates a `local://` item with a placeholder image.
+   The rip folder usually holds the retail cover art, so run
+   `pwsh -File scripts/set-poster-from-disc.ps1 -Title "<name>" -Section <key> -DiscDir "<rip folder>"`.
+   It prefers the full-resolution `mymovies-front.jpg` over the downscaled `folder.jpg`, never uses the
+   rear cover, and uploads the art (uploaded posters auto-select and survive refreshes). `-WhatIf`
+   reports the chosen file and its dimensions without changing anything.
+
 ## Manifest format
 
 `transcode.ps1` reads a JSON array. Each object:
