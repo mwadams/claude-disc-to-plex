@@ -69,6 +69,11 @@ function Normalize-Title([string]$s) {
   $t = $sb.ToString()
   # strip everything that isn't a letter or digit (handles ? : ! , . - ... and spacing)
   $t = $t -replace '[^a-z0-9]',''
+  # A leading definite/indefinite article is notation, not identity: an episode's on-screen
+  # title card and the agent's listing routinely disagree about it (Big Deal S01E05 shows
+  # "LUCK OF THE IRISH", the agent says "The Luck of the Irish"). Folding it away cannot mask
+  # a swap, because everything after the article still has to match exactly.
+  $t = $t -replace '^(the|a|an)',''
   return $t
 }
 
