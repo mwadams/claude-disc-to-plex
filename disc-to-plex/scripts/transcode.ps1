@@ -23,8 +23,11 @@
     title  (int)               DVD only, required. DVD title (PGC) number (see identification.md).
     chapterStart / chapterEnd  DVD only, optional. Extract a chapter RANGE = one episode when a
                                title holds several episodes as chapter ranges.
-    subTrack (int, optional)   0-based source subtitle index to keep (English). BD defaults to the
-                               single PGS track; on multi-language DVDs set this to the English one.
+    subTrack (int|str, opt.)   Which source subtitle to keep. Either a 0-based ordinal, or a
+                               LANGUAGE TAG such as "eng" — prefer the tag. Disc subtitle order is
+                               arbitrary and often merely alphabetical (dan,eng,fin,nor,swe puts
+                               English at 1), so a fixed ordinal silently ships the wrong language
+                               on the next disc. Defaults to 0 (fine for a single-PGS Blu-ray).
     commentary (int, optional) 0-based SOURCE audio index to tag as "Audio Commentary".
     origLang (str, optional)   ISO-639 code of the title's ORIGINAL language. Omit or 'eng' for
                                English content -> keep English audio only (drop foreign dubs). For a
@@ -95,6 +98,15 @@ function Keep-AudioIdx($inspec,$na,$origLang){
   return $keep
 }
 function Sub-Count($inspec){ ((& $fp -v error @inspec -select_streams s -show_entries stream=index -of csv=p=0 2>$null) | Where-Object { $_ -match '^\d+$' } | Sort-Object -Unique | Measure-Object).Count }
+function Sub-IdxByLang($inspec,$lang){
+  # Resolve a subtitle ORDINAL from its language tag. Subtitle order on a disc means nothing —
+  # it is often just alphabetical (dan,eng,fin,nor,swe puts English at 1, not 0), so a
+  # hard-coded index silently ships the wrong language. Returns $null if the tag isn't present.
+  $langs = @(& $fp -v error @inspec -select_streams s -show_entries stream_tags=language -of csv=p=0 2>$null) |
+           ForEach-Object { "$_".Trim() }
+  for($i=0; $i -lt $langs.Count; $i++){ if($langs[$i] -eq $lang){ return $i } }
+  return $null
+}
 function Get-DAR($inspec){   # source display aspect ("16:9"/"4:3"); preserve it, never force
   $d="$(& $fp -v error @inspec -select_streams v:0 -show_entries stream=display_aspect_ratio -of csv=p=0 2>$null | Select-Object -First 1)"
   if($d -match '(\d+):(\d+)' -and "$($Matches[1]):$($Matches[2])" -ne '0:1'){ "$($Matches[1]):$($Matches[2])" } else { '4:3' }
@@ -140,7 +152,17 @@ foreach($it in $items){
   $nk = $keep.Count
   $ch0 = if($nk -gt 0){ Audio-Ch0 $inspec $keep[0] } else { 0 }
   $ns = Sub-Count $inspec
-  $subIdx = if(Has $it 'subTrack'){ [int]$it.subTrack } else { 0 }
+  # subTrack accepts an ordinal (0-based) OR a language tag ("eng"). The tag is safer: disc
+  # subtitle order is arbitrary, so an ordinal that was right on one disc is wrong on the next.
+  $subIdx = 0
+  if(Has $it 'subTrack'){
+    if("$($it.subTrack)" -match '^\d+$'){ $subIdx = [int]$it.subTrack }
+    else {
+      $byLang = Sub-IdxByLang $inspec "$($it.subTrack)"
+      if($null -ne $byLang){ $subIdx = $byLang; Write-Output "   subTrack '$($it.subTrack)' -> s:$subIdx" }
+      else { Write-Output "   WARNING: no '$($it.subTrack)' subtitle on this source - falling back to s:0"; }
+    }
+  }
 
   $a = @('-y','-hide_banner','-v','error','-stats') + $inspec
 
