@@ -70,6 +70,40 @@ year for disambiguation (there may be remakes).
 - **`mymovies.xml` / packaging**: lists the box-set extras by name — use it to name featurettes,
   documentaries, and alternate edits.
 
+## Validate content with the episode title card — do NOT assume disc order = broadcast order
+
+**The single most important identification step for TV box sets.** TMDB/Plex numbering is the
+*target* order, but the **physical disc is frequently authored in production order**, which differs
+from broadcast order (e.g. DS9 S1 has "A Man Alone" on disc *before* "Past Prologue" — production
+codes 403 vs 404 — so title 3 ≠ broadcast episode 3). If you number the disc's titles sequentially
+and assume disc order = broadcast order, every affected episode gets the wrong `SxxEyy`, and Plex
+then shows the wrong title/artwork for a correct-looking file. **This has bitten a real library.**
+Neither the title-duration probe, `mymovies.xml`, nor TMDB tells you what's *actually inside* a
+given disc title — they encode an *assumed* order. You must confirm against the video.
+
+**The reliable, automatable check: read the on-screen episode title card.** Most series print the
+episode title for a beat right after the main-title sequence (for Star Trek, just after the
+"Created By ..." credit — typically 2:40–6:15 in, depending on teaser length). Run:
+
+```
+pwsh -File scripts/extract-title-cards.ps1 -Dir "<season folder of encoded MKVs>"
+```
+
+It tiles the title-card window into one contact sheet per episode; open each and confirm the
+on-screen title (and the guest-star credits, a strong backup when the exact card lands between
+frame samples) matches the filename. Any mismatch is fixed by renaming the `SxxEyy` token only —
+**no re-encode** — swapping in descending order to avoid collisions. Do this **before** staging to
+the NAS and before deleting local copies.
+
+Why not the DVD menu? On some sets the "episode selection" menu render (above) works, but on
+**Paramount/Star Trek R2 discs the flat `-menu` PGC render only exposes the language/copyright
+reels** — the episode names live in subpicture *button* overlays that a menu-PGC frame grab won't
+composite. The title-card method works regardless of menu authoring, so prefer it for these.
+
+Note the API numbering check (`scripts/verify-plex-episodes.ps1`) is complementary but **cannot**
+catch this class of error: it compares the agent title to the filename title, both of which agree
+when the *number* is right but the *content* is swapped. Only the title card validates content.
+
 ## Extras → Season 00
 
 Everything that isn't an episode/feature goes to `Season 00` (Plex "Specials"). Number them

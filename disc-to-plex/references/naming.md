@@ -51,6 +51,77 @@ library.) **Exclude** Warner/studio DVD-advert promos (short modern clips advert
 releases) and copyright/anti-piracy reels — those are boilerplate, not extras. Identify borderline
 titles from a frame before keeping or dropping (see `identification.md`, `scan-disc.ps1`).
 
+## Multiple editions — each edition needs its OWN folder, or the local extras disappear
+
+When a disc yields more than one cut of the same film — e.g. the feature plus a **director's-commentary
+version**, a theatrical vs extended cut, etc. — Plex supports `{edition-<Name>}` tags. **Do NOT put two
+edition files loose in one movie folder.** There is a known Plex bug: as soon as a movie folder contains
+multiple editions, Plex stops detecting that movie's **local extras** (`Behind The Scenes/`, `Featurettes/`,
+`Trailers/`, …) and they silently vanish from the UI.
+
+**Fix: give each edition its own top-level movie folder** (siblings under `Movies/`), with the
+`{edition-<Name>}` tag in the **folder** name and the file named to match. The primary (untagged) folder
+holds the feature **and** the extras subfolders; every additional edition is a sibling folder that
+contains only its one `.mkv`. Plex still groups them as editions of the same film (matched on title +
+year), and the extras keep working:
+
+```
+Movies/
+  Who Dares Wins (1982)/                                           # primary edition + ALL local extras
+    Who Dares Wins (1982).mkv
+    Behind The Scenes/ …
+    Featurettes/ …
+    Trailers/ …
+  Who Dares Wins (1982) {edition-Director's Commentary}/           # each extra edition = its own sibling folder
+    Who Dares Wins (1982) {edition-Director's Commentary}.mkv
+```
+
+So: emit the extra edition to `Movies/<Title (Year)> {edition-<Name>}/<Title (Year)> {edition-<Name>}.mkv`,
+never as a second file inside the main folder. (The commentary itself is still tagged inside its file with
+`-disposition:a:N comment`; see transcode.ps1 `commentary`.)
+
+## Episode numbering follows the target library's Plex AGENT, not raw TMDB
+
+Plex matches TV by the `SxxEyy` token in the filename, then looks up **that number** in whatever
+metadata **agent the target library uses** to fetch the title, artwork, summary, etc. It does *not*
+verify that the file's actual content matches — it trusts the number. So if you number by one source
+(say TMDB broadcast order) but the library's agent numbers differently, every file shows the *wrong
+neighbour's* metadata even though the video is correct. Check the library's agent first:
+
+```
+GET http://<server>:32400/library/sections            # find the section, read its "agent"
+```
+
+The modern default **`tv.plex.agents.series`** mostly follows TMDB, **but it splits feature-length
+pilots/finales into two episode numbers** even though the disc ships them as a single title. The
+classic example: DS9 **"Emissary"** (feature-length pilot) is `E01+E02` under the Plex agent, but a
+*single* `E01` under TMDB. Number by TMDB and you get a clean **off-by-one shift** for the whole
+season from that point on (E02→shows as "Emissary (2)", … last episode falls off the end into a
+missing slot). A *uniform* one-slot shift across a whole season is the fingerprint of exactly this:
+a feature-length multi-parter counted as N episodes upstream.
+
+**Represent one physical file that spans two episode numbers with the combined-episode filename**
+`<Show (Year)> - S01E01-E02 - <Title>.mkv`. Plex maps the single file to both slots — no gap, no
+"missing episode", plays for either. Apply the same to feature-length season premieres/finales
+(e.g. DS9 S4 "The Way of the Warrior", S7 "What You Leave Behind" — **verify each season**, don't
+assume which ones split).
+
+**Verify against the live library, don't trust your own numbering.** After staging a season (or when
+a mismatch is reported), query the agent's actual mapping and diff title-vs-filename:
+
+```
+GET /library/sections            → section key + agent
+GET /library/sections/<k>/all?type=2         → find show ratingKey
+GET /library/metadata/<show>/children        → season ratingKey (index == season no.)
+GET /library/metadata/<season>/children      → episodes: .index, .title, .Media.Part.file
+```
+
+Compare each episode's `.title` to the title embedded in its matched filename; any row where they
+differ (other than the deliberate combined-file slot) is a numbering error. Fix by **renaming only
+the `SxxEyy` token** (no re-encode), shifting in *descending* order to avoid collisions, then trigger
+a scan (`GET /library/sections/<k>/refresh`) and re-query to confirm. The owner `X-Plex-Token` is
+required for all of the above and is **not stored** — ask the user (see the `plex-defaults` skill).
+
 ## Conventions (confirm the user's preference; these are common defaults)
 
 - **New TV show**: include year + episode title —

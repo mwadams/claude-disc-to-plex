@@ -15,8 +15,11 @@
     src    (string, required)  BD: path to .m2ts.  DVD: the DVD ROOT (a decrypted VIDEO_TS
                                parent folder, an ISO, or an optical drive like "F:" — libdvdcss
                                decrypts a live CSS disc automatically).  MKV: path to the .mkv.
-    crop   ("auto"|"none")     BD only. auto = cropdetect (pillarboxed 4:3 -> ~1440). Stills/
-                               split-screen/full-frame -> "none". DVD ignores (no crop).
+    crop   ("auto"|"none"|"W:H:X:Y")
+                               BD only. auto = cropdetect voted across 6 sample points (handles
+                               pillarboxed 4:3 -> 1440:1080:240:0 AND letterboxed widescreen ->
+                               e.g. 1920:816:0:132). Stills/split-screen/full-frame -> "none".
+                               Pass an explicit "W:H:X:Y" to override auto. DVD ignores (no crop).
     title  (int)               DVD only, required. DVD title (PGC) number (see identification.md).
     chapterStart / chapterEnd  DVD only, optional. Extract a chapter RANGE = one episode when a
                                title holds several episodes as chapter ranges.
@@ -64,6 +67,13 @@ function InSpec($it){   # ffmpeg/ffprobe input args (demuxer + -i) for this item
 function Audio-Count($inspec){ ((& $fp -v error @inspec -select_streams a -show_entries stream=index -of csv=p=0 2>$null) | Where-Object { $_ -match '^\d+$' } | Sort-Object -Unique | Measure-Object).Count }
 function Audio-Ch0($inspec,$idx){ $c=(& $fp -v error @inspec -select_streams "a:$idx" -show_entries stream=channels -of csv=p=0 2>$null | Select-Object -First 1); if($c){[int]$c}else{0} }
 function Audio-Codec($inspec,$idx){ "$(& $fp -v error @inspec -select_streams "a:$idx" -show_entries stream=codec_name -of csv=p=0 2>$null | Select-Object -First 1)" }
+function Audio-Lang($inspec,$idx){
+  # Source language tag of one audio ordinal. Untagged/unknown -> 'eng' (English-original discs often
+  # leave the tag empty). NEVER hard-code eng here: on a foreign original (dan/deu/jpn) that would
+  # mislabel the original-language track as English in Plex.
+  $l = "$(& $fp -v error @inspec -select_streams "a:$idx" -show_entries stream_tags=language -of csv=p=0 2>$null | Select-Object -First 1)".Trim()
+  if(-not $l -or $l -in @('und','')){ 'eng' } else { $l }
+}
 function Keep-AudioIdx($inspec,$na,$origLang){
   # Which audio ordinals to keep, and in what order (first = default track).
   #  - English-original content (origLang eng/unset): keep English (+ commentary/untagged) only; drop foreign DUBS.
@@ -92,18 +102,26 @@ function Get-DAR($inspec){   # source display aspect ("16:9"/"4:3"); preserve it
 function Get-Crop($src){
   $dur=[double](& $fp -v error -show_entries format=duration -of csv=p=0 $src 2>$null)
   if(-not $dur -or $dur -lt 1){ return '1440:1080:240:0' }
+  # Vote across several sample points and take the MODE, not the largest area.
+  # A single dark/close-up scene yields a bogus tight crop; only the true frame
+  # recurs across the whole film, so frequency is far more robust than area.
   $crops=@{}
-  foreach($fr in 0.2,0.4,0.6,0.8){
+  foreach($fr in 0.15,0.3,0.45,0.6,0.75,0.9){
     $o=& $ff -hide_banner -ss ([int]($dur*$fr)) -i $src -vf "cropdetect=limit=24:round=2" -frames:v 150 -an -f null NUL 2>&1 |
        Select-String -Pattern 'crop=(\d+):(\d+):(\d+):(\d+)' -AllMatches
-    foreach($m in $o.Matches){ $crops[$m.Value]=1 }
+    foreach($m in $o.Matches){ $crops[$m.Value] = 1 + $(if($crops.ContainsKey($m.Value)){$crops[$m.Value]}else{0}) }
   }
-  $best=$null;$ba=0
-  foreach($k in $crops.Keys){ if($k -match 'crop=(\d+):(\d+):(\d+):(\d+)'){ $a=[int]$Matches[1]*[int]$Matches[2]; if($a -gt $ba){$ba=$a;$best=$k} } }
+  $best=$null;$bn=0
+  foreach($k in $crops.Keys){ if($crops[$k] -gt $bn){ $bn=$crops[$k]; $best=$k } }
   if(-not $best){ return '1440:1080:240:0' }
   $best -match 'crop=(\d+):(\d+):(\d+):(\d+)'|Out-Null
   $w=[int]$Matches[1];$h=[int]$Matches[2];$x=[int]$Matches[3];$y=[int]$Matches[4]
-  if($w -lt 1400 -or $w -gt 1920 -or $h -lt 1060){ return '1440:1080:240:0' }
+  # Accept EITHER a pillarboxed 4:3 (full height, bars at the sides) OR a
+  # letterboxed widescreen frame (full width, bars top/bottom). Anything that is
+  # inset on both axes is a scene artefact, not the frame — fall back to 4:3.
+  $fullW = ($w -ge 1900); $fullH = ($h -ge 1060)
+  if(-not ($fullW -or $fullH)){ return '1440:1080:240:0' }
+  if($w -lt 1280 -or $w -gt 1920 -or $h -lt 600 -or $h -gt 1080){ return '1440:1080:240:0' }
   if($x%2){$x--}; if($y%2){$y--}
   "$w`:$h`:$x`:$y"
 }
@@ -130,7 +148,8 @@ foreach($it in $items){
   $subInput = $null; $crop = $null
   if($it.kind -in @('DVD','MKV')){ $vf = 'bwdif=mode=send_frame' }   # SD interlaced source (DVD demuxer OR a MakeMKV-ripped .mkv): deinterlace only; aspect set via -aspect below (preserve source DAR)
   else {
-    if($it.crop -eq 'auto'){ $crop = Get-Crop $it.src; $vf = "crop=$crop"; Write-Output "   crop=$crop" }
+    if($it.crop -eq 'auto'){ $crop = Get-Crop $it.src; $vf = "crop=$crop"; Write-Output "   crop=$crop (auto)" }
+    elseif("$($it.crop)" -match '^\d+:\d+:\d+:\d+$'){ $crop = "$($it.crop)"; $vf = "crop=$crop"; Write-Output "   crop=$crop (explicit)" }
     else { $vf = $null; Write-Output "   crop=none" }
     if($ns -gt 0 -and $crop){
       $crop -match '(\d+):(\d+):(\d+):(\d+)'|Out-Null
@@ -158,19 +177,20 @@ foreach($it in $items){
   if($it.kind -in @('DVD','MKV')){ $a += @('-aspect',(Get-DAR $inspec)) } else { $a += @('-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-color_range','tv') }
 
   # --- audio codecs ---
+  $lang0 = Audio-Lang $inspec $keep[0]      # language of the FIRST kept track = what the AAC downmix is made from
   if($nk -gt 0){
     if($ch0 -ge 6){
-      $a += @("-c:a:$aacIdx",'aac',"-b:a:$aacIdx",'160k',"-ac:a:$aacIdx",'6',"-ar:a:$aacIdx",'48000',"-metadata:s:a:$aacIdx",'title=Surround 5.1 (AAC)',"-metadata:s:a:$aacIdx",'language=eng',"-disposition:a:$aacIdx",'default'); $aacIdx++
-      $a += @("-c:a:$aacIdx",'aac',"-b:a:$aacIdx",'160k',"-ac:a:$aacIdx",'2',"-ar:a:$aacIdx",'48000',"-metadata:s:a:$aacIdx",'title=Stereo (AAC)',"-metadata:s:a:$aacIdx",'language=eng'); $aacIdx++
+      $a += @("-c:a:$aacIdx",'aac',"-b:a:$aacIdx",'160k',"-ac:a:$aacIdx",'6',"-ar:a:$aacIdx",'48000',"-metadata:s:a:$aacIdx",'title=Surround 5.1 (AAC)',"-metadata:s:a:$aacIdx","language=$lang0","-disposition:a:$aacIdx",'default'); $aacIdx++
+      $a += @("-c:a:$aacIdx",'aac',"-b:a:$aacIdx",'160k',"-ac:a:$aacIdx",'2',"-ar:a:$aacIdx",'48000',"-metadata:s:a:$aacIdx",'title=Stereo (AAC)',"-metadata:s:a:$aacIdx","language=$lang0"); $aacIdx++
     } else {
-      $a += @("-c:a:$aacIdx",'aac',"-b:a:$aacIdx",'160k',"-ac:a:$aacIdx",'2',"-ar:a:$aacIdx",'48000',"-metadata:s:a:$aacIdx",'title=Stereo (AAC)',"-metadata:s:a:$aacIdx",'language=eng',"-disposition:a:$aacIdx",'default'); $aacIdx++
+      $a += @("-c:a:$aacIdx",'aac',"-b:a:$aacIdx",'160k',"-ac:a:$aacIdx",'2',"-ar:a:$aacIdx",'48000',"-metadata:s:a:$aacIdx",'title=Stereo (AAC)',"-metadata:s:a:$aacIdx","language=$lang0","-disposition:a:$aacIdx",'default'); $aacIdx++
     }
     for($j=0;$j -lt $nk;$j++){
       $oi = $aacIdx + $j
       # passthru the original track bit-for-bit — EXCEPT Blu-ray/DVD LPCM, which Matroska can't store via -c copy
       # ("No wav codec tag for pcm_bluray"); re-encode those to FLAC (lossless, MKV-native) instead.
       if((Audio-Codec $inspec $keep[$j]) -match '^pcm'){ $a += @("-c:a:$oi",'flac') } else { $a += @("-c:a:$oi",'copy') }
-      $a += @("-metadata:s:a:$oi",'language=eng')
+      $a += @("-metadata:s:a:$oi","language=$(Audio-Lang $inspec $keep[$j])")
       if((Has $it 'commentary') -and ([int]$it.commentary -eq $keep[$j])){ $a += @("-disposition:a:$oi",'comment',"-metadata:s:a:$oi",'title=Audio Commentary') }
     }
   }

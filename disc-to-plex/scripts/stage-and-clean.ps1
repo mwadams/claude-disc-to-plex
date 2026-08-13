@@ -26,7 +26,7 @@ if(-not (Test-Path $Src)){ throw "Source not found: $Src" }
 # drive and copy locally, and the verify below would happily pass against that wrong local folder.
 # (Pass Windows UNC paths via PowerShell, not the bash tool. See gotchas.md, "Mangled UNC target".)
 if($Target -match '^\\[^\\]'){
-  throw "Target '$Target' starts with a single backslash — a corrupted UNC path. A network target must begin with '\\' (e.g. \\NASTEAMV\multimedia\...). Aborting before copying to the wrong place."
+  throw "Target '$Target' starts with a single backslash — a corrupted UNC path. A network target must begin with '\\' (e.g. \\NAS\media\...). Aborting before copying to the wrong place."
 }
 $srcRoot = [System.IO.Path]::GetPathRoot((Resolve-Path $Src).Path)
 $tgtRoot = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetFullPath($Target))
@@ -35,14 +35,15 @@ if($tgtRoot -eq $srcRoot -and $Target -notmatch '^\\\\'){
 }
 
 # 1. Copy — /XC /XN /XO means NEVER overwrite an existing target file (only add what's missing).
+#    /XD _titlecards excludes the validation contact-sheet scratch folder — it must never reach the library.
 Write-Host "=== copying (no-overwrite) $Src -> $Target ===" -ForegroundColor Cyan
-robocopy "$Src" "$Target" /E /XC /XN /XO /MT:8 /R:2 /W:5 /NP /NDL | Out-Null
+robocopy "$Src" "$Target" /E /XC /XN /XO /MT:8 /R:2 /W:5 /NP /NDL /XD "_titlecards" | Out-Null
 $rc = $LASTEXITCODE   # robocopy: <8 = success (1=copied, 0=nothing to do, 2/3=extras)
 if($rc -ge 8){ throw "robocopy reported a failure (exit $rc)." }
 
-# 2. Verify — every source file must exist on the target with an identical byte size.
+# 2. Verify — every source file must exist on the target with an identical byte size (scratch excluded).
 Write-Host "=== verifying ===" -ForegroundColor Cyan
-$s = Get-ChildItem $Src -Recurse -File
+$s = Get-ChildItem $Src -Recurse -File | Where-Object { $_.FullName -notmatch '\\_titlecards\\' }
 $missing = @()
 foreach($f in $s){
   $rel = $f.FullName.Substring($Src.Length)
