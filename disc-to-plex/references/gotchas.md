@@ -34,6 +34,25 @@ done
 The dominant value across timestamps is the true frame. Batch-1 output was audited and is
 unaffected — those BDs were all 4:3 or full-frame, so the bug never bit until batch 2.
 
+## Subtitle order is arbitrary — select English by TAG, never by position
+
+A DVD's subtitle order means nothing. It is often simply **alphabetical**: a Boston Legal set
+exposes `dan, eng, fin, nor, swe`, putting English at ordinal **1**. The habitual `subTrack: 0`
+would have burned a whole season with Danish subtitles, and nothing in the encode log or the
+output file would have looked wrong — you would find out from Plex, or not at all.
+
+Do not try to infer the ordering from the release's apparent market; just read the tags:
+
+```
+ffprobe -v error -f dvdvideo -title 1 -i <stage> -select_streams s \
+        -show_entries stream=index:stream_tags=language -of csv=p=0
+```
+
+`transcode.ps1` accepts a language tag directly — `"subTrack": "eng"` — and resolves it per item,
+printing the ordinal it picked (`subTrack 'eng' -> s:1`). Prefer that to an ordinal: an index that
+is right on one disc of a set is not guaranteed right on the next. If the tag is missing the script
+warns and falls back to `s:0` rather than silently continuing.
+
 ## A section scan does NOT index local movie extras — force-refresh the ITEM
 
 After staging a movie folder containing `Behind The Scenes/`, `Deleted Scenes/` etc., a plain
