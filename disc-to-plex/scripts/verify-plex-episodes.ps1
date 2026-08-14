@@ -110,9 +110,19 @@ foreach ($se in $seasons) {
     $file = $e.Media.Part.file | Select-Object -First 1
     if (-not $file) { $totalNoFile++; if (-not $Quiet) { "{0,2} | {1,-30} | NOFILE" -f $e.index, $e.title }; continue }
     $fn = Split-Path $file -Leaf
-    # parse the SxxE.. token: supports single (S01E05) and range (S01E01-E02)
-    $inRange = $false; $ftitle = ''
-    if ($fn -match 'S(\d+)E(\d+)(?:-E(\d+))?\s*-\s*(.+)\.[^.]+$') {
+    # Parse the SxxE.. token: supports single (S01E05) and range (S01E01-E02), with or without a
+    # trailing " - Title".
+    #
+    # Try the UNTITLED form first. On "Show S05E12-E13.mkv" the titled pattern backtracks: the
+    # optional "-E(\d+)" gives up its match so that "\s*-\s*" can consume the hyphen, leaving
+    # "E13" captured as the *title*. That produced a false MISMATCH on a file Plex had mapped
+    # correctly across both slots. Anchoring the untitled form to the extension removes the
+    # ambiguity, and it cannot swallow a titled name (SxxEyy must be followed directly by ".ext").
+    $inRange = $false; $ftitle = ''; $a = 0; $b = 0
+    if ($fn -match 'S(\d+)E(\d+)(?:-E(\d+))?\.[^.]+$') {
+      $a = [int]$matches[2]; $b = if ($matches[3]) { [int]$matches[3] } else { $a }
+      if ($e.index -ge $a -and $e.index -le $b) { $inRange = $true }
+    } elseif ($fn -match 'S(\d+)E(\d+)(?:-E(\d+))?\s*-\s*(.+)\.[^.]+$') {
       $a = [int]$matches[2]; $b = if ($matches[3]) { [int]$matches[3] } else { $a }
       $ftitle = $matches[4]
       if ($e.index -ge $a -and $e.index -le $b) { $inRange = $true }
