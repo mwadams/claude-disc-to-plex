@@ -453,6 +453,52 @@ PowerShell.)
   `Wavell's 30,000` (1942) matched an entry dated 2002 with a typo'd title. Lock `title`, `year`
   and `originallyAvailableAt` rather than leaving the film filed under the wrong decade.
 - **A DVD can list every episode twice.** The Edwardian Country House exposes t3==t4, t5==t6,
-  t7==t8 with identical durations; a frame at the same offset proves the pairs are the same
-  content. Take the odd titles only. Duplicate *durations* are the tell — check before assuming
-  a disc holds twice as many episodes as it does.
+  t7==t8 with identical durations, and each pair is genuinely the same content — take the odd
+  titles only, or you stage six duplicates.
+  **But matching durations are only a PROMPT TO CHECK, never proof** (user, 2026-08-14: "sometimes
+  there *are* two episodes with identical duration — I have been caught by that in the past").
+  Episodes of a series are cut to the same slot length, so identical runtimes are entirely normal
+  between *different* episodes. **Frame-match EVERY suspected pair** — one frame from each at the
+  same offset, hstacked — and never extrapolate from one confirmed pair to the rest of the disc.
+  Getting this wrong silently DROPS episodes, which no later step catches: the agent only ever
+  shows the slots you gave it files for, so a half-length season looks perfectly consistent.
+
+## Blu-ray m2ts carry no language tags — use the PLAYLIST, and `audioTracks`
+
+Catalogue Blu-rays routinely ship `.m2ts` with **no `language` tag on any stream**. `Keep-AudioIdx`
+maps untagged to English on purpose (English-original discs often leave the tag empty), so on a
+multi-language BD it keeps **every** track — the French and Spanish dubs ride along, and a 4.6 Mb/s
+5.1 LPCM dub gets FLAC-encoded into the output. Enemy of the State (1998) exposes six audio
+streams this way: LPCM, AC3, DTS, AC3, DTS, AC3, all untagged.
+
+**The languages live in the `.mpls` playlist, not the stream.** Read them straight out of the
+binary — the ISO-639 codes are plain ASCII:
+
+```powershell
+$b=[System.IO.File]::ReadAllBytes("$stage\BDMV\PLAYLIST\00045.mpls")
+$s=[System.Text.Encoding]::ASCII.GetString($b)
+([regex]::Matches($s,'(eng|fre|fra|spa|ger|deu|ita|jpn|nld|swe|nor|dan|fin)')|%{$_.Value}) -join ' '
+```
+
+Enemy of the State returned `eng eng fra fra spa spa …` for its six audio streams — English gets
+LPCM + AC3, French and Spanish each get DTS + AC3. Then pin the choice explicitly in the manifest:
+
+```json
+{ "kind": "BD", "src": "…\00000.m2ts", "audioTracks": [0], "crop": "1920:812:0:134" }
+```
+
+`audioTracks` is an explicit list of audio ordinals to keep, in order (first = default), and
+overrides the automatic pick entirely. The script prints `audioTracks explicit -> a:0` so you can
+see it took effect. Use it on any BD whose streams are untagged; the automatic path is still right
+for DVDs and for tagged sources.
+
+**The same `.mpls` also gives the feature's clip ORDER.** A feature is often split across several
+m2ts (Enemy of the State = `00000` + `00008` + `00009`, 56.23 + 57.30 + 18.65 = 132.18 min = the
+film's runtime). Don't guess the order from file numbering — pull it from the playlist:
+
+```powershell
+([regex]::Matches($s,'\d{5}(?=M2TS)')|%{$_.Value}) -join ' -> '
+```
+
+Encode each part, then stream-copy concat, exactly as for a compilation disc. Ignore the 2-second
+clips that trail the playlist — those are logo/ident stubs, not content.

@@ -148,7 +148,17 @@ foreach($it in $items){
   $inspec = InSpec $it
   $na = Audio-Count $inspec
   $origLang = if(Has $it 'origLang'){ "$($it.origLang)" } else { 'eng' }   # ISO-639 of the ORIGINAL language; eng/unset = English content
-  $keep = @(Keep-AudioIdx $inspec $na $origLang)   # audio ordinals to keep (foreign original first, then English)
+  # audioTracks overrides the automatic pick: an explicit list of audio ordinals to keep, in order
+  # (first = default). Needed on Blu-ray m2ts, which frequently carry NO language tags at all — the
+  # automatic pick treats untagged as English, so every French/Spanish dub would be kept, and a
+  # 5.1 LPCM dub gets FLAC-encoded into the output. Read the real languages from the PLAYLIST
+  # .mpls (the m2ts has none) and list only the ones you want.
+  if(Has $it 'audioTracks'){
+    $keep = @($it.audioTracks | ForEach-Object { [int]$_ } | Where-Object { $_ -ge 0 -and $_ -lt $na })
+    Write-Output "   audioTracks explicit -> a:$($keep -join ' a:')"
+  } else {
+    $keep = @(Keep-AudioIdx $inspec $na $origLang)   # audio ordinals to keep (foreign original first, then English)
+  }
   $nk = $keep.Count
   $ch0 = if($nk -gt 0){ Audio-Ch0 $inspec $keep[0] } else { 0 }
   $ns = Sub-Count $inspec
