@@ -433,3 +433,26 @@ PowerShell.)
   (<5 MB) first so they aren't mistaken for complete.
 - **Laptop thermals**: sustained NVENC shares a power/thermal budget with the CPU; per-title
   encode times vary widely. Normal, not a fault.
+
+## Concat lists, PowerShell URLs and manual matches
+
+- **An apostrophe in a path breaks an ffmpeg `concat` list.** Entries are single-quoted
+  (`file 'D:\...\x.mkv'`), so a title like `Wavell's 30,000` terminates the quote early and ffmpeg
+  reports `Impossible to open 'D:\video\Movies\Wavells'`. Escape it the shell way when writing the
+  list: `"file '" + ($path -replace "'","'\''") + "'"`.
+- **PowerShell 7 parses `$var?` inside a string as the null-conditional operator**, so
+  `"$b/library/metadata/$rk?X-Plex-Token=$t"` silently drops the `?…` and the request 404s — while
+  the same URL with a *literal* rating key works fine. Always brace it: `${rk}?X-Plex-Token=…`.
+  Symptom is a 404 on `/library/metadata/<rk>` when sibling endpoints like `/extras` succeed.
+- **A US release title can beat the UK one in the agent's match.** `Close Quarters` (1943, Crown
+  Film Unit) matched as `Undersea Raider (1943)` — the same film's US title, confirmed by the
+  summary. The match is correct; just PUT `title.value` + `title.locked=1` back to the UK title
+  rather than unmatching. Pass **`language=en-GB`** to `/matches?manual=1` to surface UK-specific
+  candidates where the two clash (user tip, 2026-08-14).
+- **An archive film's only TMDB entry may carry the DVD release year, not the production year.**
+  `Wavell's 30,000` (1942) matched an entry dated 2002 with a typo'd title. Lock `title`, `year`
+  and `originallyAvailableAt` rather than leaving the film filed under the wrong decade.
+- **A DVD can list every episode twice.** The Edwardian Country House exposes t3==t4, t5==t6,
+  t7==t8 with identical durations; a frame at the same offset proves the pairs are the same
+  content. Take the odd titles only. Duplicate *durations* are the tell — check before assuming
+  a disc holds twice as many episodes as it does.
