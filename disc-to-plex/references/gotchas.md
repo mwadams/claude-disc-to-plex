@@ -34,6 +34,26 @@ done
 The dominant value across timestamps is the true frame. Batch-1 output was audited and is
 unaffected — those BDs were all 4:3 or full-frame, so the bug never bit until batch 2.
 
+## Title layout changes between SEASONS of the same show — re-probe every set
+
+Boston Legal Seasons 2 and 4 put episode 1 at DVD **title 1** (4 episodes at titles 1–4). Season 5,
+same show, same publisher, puts a **2h45m "play all" reel at title 1** and the episodes at titles
+2–5. Carrying the earlier layout over would have encoded that reel as "S05E01" — a 2¾-hour file
+sitting in an episode slot, on three separate discs.
+
+Never reuse a title layout across sets, or even across discs within a set. Two cheap checks, both
+worth doing:
+
+- `mymovies.xml` marks it: the play-all entry is `ContainsEpisode="False"` while real episodes carry
+  `TVEpisode="N"`. This is the fastest read of a disc's true structure.
+- A duration probe makes it obvious — anything 2–3× episode length is a play-all or a
+  feature-length special, never a normal episode.
+
+The same applies to a **feature-length premiere or finale**, which is a real episode but may map to
+one Plex slot or two. Compare the agent's own runtime for that slot before naming: Boston Legal
+S04E01 is 62 min in both the file and the agent (one slot), whereas DS9's "Emissary" is one disc
+title covering two agent slots and needs the `SxxE01-E02` filename form.
+
 ## Subtitle order is arbitrary — select English by TAG, never by position
 
 A DVD's subtitle order means nothing. It is often simply **alphabetical**: a Boston Legal set
