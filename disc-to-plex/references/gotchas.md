@@ -560,3 +560,55 @@ makemkvcon64.exe -r --cache=1 info "file:<stage>"
 
 It prints `Title #N was added (C cell(s), H:MM:SS)` per title. Agreement means the disc is simply
 what it is.
+
+## Never stage a whole show folder while ANOTHER disc of that show is still encoding into it
+
+Staging is normally "copy the finished folder", but a multi-disc set breaks that: disc N's episodes
+and disc N+1's encodes share one show folder. A whole-folder `robocopy` therefore sweeps up
+half-written `.mkv` files from the lane that is still running, and they land on the NAS as valid but
+truncated episodes. Lovejoy S2E02 went across at 460 MB against a finished size of ~1.2 GB.
+
+Worse, the usual staging flags make it permanent: `/XC /XN /XO` mean "skip changed, newer and older
+files", so a later re-run **skips the very files that need replacing** and the truncated copies
+survive every subsequent stage. The byte gate catches the mismatch, but only if you compare — and a
+DIFF here looks like a transient network problem rather than a partial file.
+
+Two ways to avoid it, both cheap:
+
+- Stage with an explicit per-season or per-file filter, so in-flight files are never candidates:
+  `robocopy "<src>\Season 01" "<dst>\Season 01" "*S01E*.mkv" /R:2 /W:5`
+- Or simply wait for every lane targeting that show to print `MANIFEST DONE` before staging.
+
+To repair partials already on the NAS, re-copy **without** the exclusion flags so the complete file
+overwrites the truncated one (a copy, not a delete — it does not need the NAS protection lifted):
+`robocopy "<src>" "<dst>" "<file>.mkv" /R:2 /W:5`. Then re-verify sizes.
+
+## Structural checks are NOT identity checks — ALWAYS verify identity from the content
+
+The most expensive mistake in this pipeline so far was not a crash, it was **not looking at the
+picture**. On Lovejoy every structural check passed and the result was still wrong:
+
+- duplicate title groups frame-verified (each episode listed 3× on the disc) — correct
+- durations matched the disc metadata exactly — correct
+- episode counts matched the agent per season — correct
+- two-parters landed on the disc that held exactly two titles — correct
+- `verify-plex-episodes.ps1` reported `MISMATCH=0` — because it only checks the **slot**, and the
+  files carried no title token, so every episode came back `NOTITLE`
+
+…and yet every Series 4 file was one slot out, because the 93-minute opener was **The Prague Sun**,
+which the agent numbers as **S03E14** — not a Series 4 episode at all. Disc order and agent order
+simply are not the same sequence, and nothing structural can reveal that.
+
+**Verifying identity means reading the episode's own title off the screen** (or a VTR clock, or a
+plot detail that pins it) and matching it to the agent's title for that slot. Do it for EVERY
+episode, not a sample — a one-slot shift looks perfectly consistent from any sample.
+
+Finding the caption takes one sweep, and its position varies **within the same show**:
+
+- Lovejoy Series 2–6: over the opening titles, ~40–50 s in, on screen ~2 s
+- Lovejoy Series 1: **after a cold open**, ~3:43 — nothing in the titles at all
+
+So "no caption in the first minute" does not mean "this show has no captions". Sweep wider (and
+full-frame, not a cropped band) before concluding one doesn't exist. If a show genuinely has none
+(sitcoms often don't), say so explicitly and record that ordering is the only evidence — do not
+let silence pass as verification.

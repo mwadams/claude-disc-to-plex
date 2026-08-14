@@ -86,8 +86,18 @@ skill does not perform or assist DRM circumvention.
    the summary, and uploads a real frame from the extra as its poster. Full process (validate on disc →
    apply+lock in Plex) is in `references/extras-fixup.md` — you will need it for almost every TV set.
 
-8. **Give unmatched titles a real poster** — obscure archive discs (museum collections, regional-TV
-   releases) often get no agent match at all: Plex creates a `local://` item with a placeholder image.
+8. **Give unmatched titles a real poster — this is a REQUIRED closing step, not an optional polish.**
+   After staging any item, check its `guid`: a `guid` of `local://<rk>` means the agent found no
+   match, and Plex will show a placeholder or a random video frame. That looks like a broken library
+   entry to anyone browsing it, and it is easy to skip because the item otherwise appears complete.
+
+   ```powershell
+   (Invoke-RestMethod "$b/library/metadata/${rk}?X-Plex-Token=$t").MediaContainer.Video.guid
+   ```
+
+   Obscure archive discs (museum collections, BFI/IWM sets, regional-TV releases) get no match far
+   more often than not. Re-check after any rebuild, too: deleting a movie's main file makes Plex drop
+   and re-create the item with a NEW ratingKey, losing the uploaded poster and every locked field.
    The rip folder usually holds the retail cover art, so run
    `pwsh -File scripts/set-poster-from-disc.ps1 -Title "<name>" -Section <key> -DiscDir "<rip folder>"`.
    It prefers the full-resolution `mymovies-front.jpg` over the downscaled `folder.jpg`, never uses the
