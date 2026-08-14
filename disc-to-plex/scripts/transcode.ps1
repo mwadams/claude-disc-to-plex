@@ -223,7 +223,19 @@ foreach($it in $items){
       # ("No wav codec tag for pcm_bluray"); re-encode those to FLAC (lossless, MKV-native) instead.
       if((Audio-Codec $inspec $keep[$j]) -match '^pcm'){ $a += @("-c:a:$oi",'flac') } else { $a += @("-c:a:$oi",'copy') }
       $a += @("-metadata:s:a:$oi","language=$(Audio-Lang $inspec $keep[$j])")
-      if((Has $it 'commentary') -and ([int]$it.commentary -eq $keep[$j])){ $a += @("-disposition:a:$oi",'comment',"-metadata:s:a:$oi",'title=Audio Commentary') }
+      # commentary accepts a single ordinal OR a list - discs often carry two or three separate
+      # commentaries (Life of Brian has two), and tagging only the first leaves the rest looking
+      # like alternate language mixes in Plex. A list may also be [idx,"Title"] pairs to name them.
+      if(Has $it 'commentary'){
+        $cm = @($it.commentary)
+        for($ci=0; $ci -lt $cm.Count; $ci++){
+          $entry = $cm[$ci]
+          $cidx = $null; $ctitle = 'Audio Commentary'
+          if($entry -is [array]){ $cidx = [int]$entry[0]; if($entry.Count -gt 1){ $ctitle = "$($entry[1])" } }
+          else { $cidx = [int]$entry; if($cm.Count -gt 1){ $ctitle = "Audio Commentary $($ci+1)" } }
+          if($cidx -eq $keep[$j]){ $a += @("-disposition:a:$oi",'comment',"-metadata:s:a:$oi","title=$ctitle") }
+        }
+      }
     }
   }
   if($ns -gt 0){ $a += @('-c:s','copy','-metadata:s:s:0','language=eng'); if($origLang -and $origLang -notin @('eng','en')){ $a += @('-disposition:s:0','default') } }  # default English subs ON for foreign originals
