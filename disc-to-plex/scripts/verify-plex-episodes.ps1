@@ -51,7 +51,7 @@ $seasons = (Get-MC "/library/metadata/$($showObj.ratingKey)/children").Metadata 
            Where-Object { $_.index -ge 1 } | Sort-Object index
 if ($PSBoundParameters.ContainsKey('Season')) { $seasons = $seasons | Where-Object index -eq $Season }
 
-$totalBad = 0; $totalNoFile = 0; $totalOk = 0; $totalNorm = 0
+$totalBad = 0; $totalNoFile = 0; $totalOk = 0; $totalNorm = 0; $totalNoTitle = 0
 # Fold away differences the filesystem or the agent's notation force on us, so that a
 # reported MISMATCH always means "this slot holds the wrong episode" rather than "Windows
 # cannot store a '?'". Deliberately conservative: it normalises punctuation and part-number
@@ -127,15 +127,26 @@ foreach ($se in $seasons) {
       # Reported separately so a real numbering error can't hide among these.
       $totalNorm++
       if (-not $Quiet) { "{0,2} | {1,-30} | OK(normalised) | file='{2}'" -f $e.index, $e.title, $ftitle }
+    } elseif ('' -eq $ftitle) {
+      # The filename carries no title token at all (e.g. "Show S01E01.mkv") — a legitimate
+      # convention, and common in a pre-existing library. There is nothing to compare, so this
+      # is NOT a mismatch: reporting it as one buries real numbering errors in noise (Blake's 7
+      # raised 39 of these). The SxxEyy slot is still checked; only the title check is skipped.
+      $totalNoTitle++
+      if (-not $Quiet) { "{0,2} | {1,-30} | NOTITLE (filename has no title to check) | {2}" -f $e.index, $e.title, $fn }
     } else {
       $totalBad++; "{0,2} | {1,-30} | MISMATCH (file says '{2}') | {3}" -f $e.index, $e.title, $ftitle, $fn
     }
   }
 }
 
-"`n---- OK=$totalOk  OK(normalised)=$totalNorm  MISMATCH=$totalBad  NOFILE=$totalNoFile ----"
+"`n---- OK=$totalOk  OK(normalised)=$totalNorm  NOTITLE=$totalNoTitle  MISMATCH=$totalBad  NOFILE=$totalNoFile ----"
 if ($totalNorm -gt 0) {
   "     ($totalNorm title(s) differ only by punctuation/accents/part-notation - e.g. Windows"
   "      cannot store '?' or ':' and strips trailing dots. Same episode, correct slot.)"
+}
+if ($totalNoTitle -gt 0) {
+  "     ($totalNoTitle file(s) carry no title token, so the title could not be checked. The"
+  "      SxxEyy slot was still verified. Content-validate those separately if it matters.)"
 }
 if ($totalBad -gt 0 -or $totalNoFile -gt 0) { exit 1 } else { exit 0 }
