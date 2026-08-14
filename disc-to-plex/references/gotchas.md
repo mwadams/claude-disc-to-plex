@@ -502,3 +502,61 @@ film's runtime). Don't guess the order from file numbering — pull it from the 
 
 Encode each part, then stream-copy concat, exactly as for a compilation disc. Ignore the 2-second
 clips that trail the playlist — those are logo/ident stubs, not content.
+
+## `ffmpeg -f concat -c copy` silently keeps only ONE stream per type — always `-map 0`
+
+The concat demuxer applies ffmpeg's **default stream selection**: one video, one audio, one
+subtitle — the "best" of each. With `-c copy` and no `-map`, everything else is dropped without a
+warning, and the output plays perfectly, so nothing looks wrong. On a compilation main file built
+from parts that each carried AAC 5.1 + AAC stereo + a lossless passthrough + PGS subtitles, the
+result was **AAC stereo only** — the passthrough track and the subtitles were gone.
+
+Always map every stream explicitly:
+
+```
+ffmpeg -v error -f concat -safe 0 -i list.txt -map 0 -c copy "out.mkv" -y
+```
+
+Then **probe the result, not just its duration**. Duration arithmetic is the check everyone
+remembers and it passes cleanly here — the join is fine, the length is exact, only the stream
+count is wrong. Compare `ffprobe … | grep 'Stream #'` on the concat against one of its parts;
+they should match stream for stream.
+
+## `mymovies.xml` title `Number`s are NOT ffmpeg `dvdvideo` title numbers — map by DURATION
+
+`mymovies.xml` numbers every title on the disc including menu/stub entries, and its count of those
+stubs does not have to match what the `dvdvideo` demuxer exposes. On Hi-de-Hi! Series 1 & 2 the
+`mymovies` disc-1 list has **six** sub-two-second stubs before the content, while ffmpeg exposes
+only **three** — so `mymovies` t7–t10 are ffmpeg t4–t7, a silent off-by-three. Discs 2 and 3 of the
+*same set* list three stubs and line up exactly, which is precisely why this is easy to miss: the
+mapping can be right on every disc you check and wrong on the one you don't.
+
+The failure is loud only if you are lucky. Titles past the end simply don't exist, so ffmpeg
+reports `libdvdread: Device <path> inaccessible, CSS authentication not available` — a misleading
+message about *access*, on a byte-verified local copy, for what is really "no such title". If the
+offset had been smaller, every episode would have encoded successfully under the wrong name.
+
+**Always resolve titles by duration.** Enumerate what ffmpeg actually exposes and match each
+against the `mymovies` runtimes:
+
+```powershell
+foreach($t in 1..14){
+  $d = & $fp -v error -f dvdvideo -title $t -i $stage -show_entries format=duration -of csv=p=0 2>$null
+  if($d){ "t$t = $([math]::Round([double]$d/60,2))m" }
+}
+```
+
+Use `mymovies` for the *episode mapping* (`TVSeason`/`TVEpisode`) and for runtimes, but take the
+title *numbers* from this enumeration.
+
+**A short duration is not automatically the multi-cell truncation bug.** Here ffmpeg read 27:08
+where `mymovies` claimed 29:50, which looks exactly like truncation — but MakeMKV independently
+reported 27:08 (7 cells), so the disc is right and the metadata is wrong. Confirm with MakeMKV
+before re-ripping:
+
+```
+makemkvcon64.exe -r --cache=1 info "file:<stage>"
+```
+
+It prints `Title #N was added (C cell(s), H:MM:SS)` per title. Agreement means the disc is simply
+what it is.
