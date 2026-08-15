@@ -612,3 +612,82 @@ So "no caption in the first minute" does not mean "this show has no captions". S
 full-frame, not a cropped band) before concluding one doesn't exist. If a show genuinely has none
 (sitcoms often don't), say so explicitly and record that ordering is the only evidence — do not
 let silence pass as verification.
+
+## A confident agent match can be the WRONG FILM — titles collide across markets
+
+`Now It Can Be Told` (1944, RAF Film Production Unit — a documentary about SOE agents, using the
+real agents as its cast) matched cleanly to **`The House on 92nd Street` (1945)**, an American
+studio thriller. Not a fuzzy match: that film was released in Britain *as* `Now It Can Be Told`, so
+the agent had a genuine alias to match on. Nothing in the match looked broken — right title, right
+era, plausible poster — and only the user noticing the wrong name in Plex surfaced it.
+
+The tell is a **mismatch of kind**: an IWM/BFI archive documentary landing on a Hollywood feature,
+or a 25-minute short landing on a 90-minute film. Whenever an obscure archive disc matches a
+well-known title, read the agent's summary and compare it against the disc's own description before
+accepting it.
+
+Fixing it, in order:
+
+1. Find the film under its *other* title — `/matches?manual=1&title=<alt>&language=en-GB`. Here the
+   cinema release was `School for Danger` (1947); the disc's own notes said so, describing
+   `Now It Can Be Told` as "a longer version, prepared for special release".
+2. Apply it: `PUT /library/metadata/<rk>/match?guid=<guid>&name=<name>`.
+3. Lock the title to what the film's **own title card** says, not the agent's preferred title:
+   `PUT /library/metadata/<rk>?type=1&title.value=…&title.locked=1`.
+4. Give it the disc's cover art with `set-poster-from-disc.ps1` — the agent's poster belongs to the
+   other cut and misrepresents what is actually in the file.
+
+The disc's `mymovies.xml` `<Description>` is the best evidence here: it routinely explains alternate
+titles, which version this print is, and why the runtime differs.
+
+## NEVER enumerate titles before the byte gate says COMPLETE — a partial copy invents partial sets
+
+Enumerating a disc whose prefetch is still running silently **under-reports titles**: the demuxer
+only sees the VOBs that have arrived. It does not error, it just lists fewer titles, and every
+downstream conclusion inherits the mistake.
+
+On Public Eye's 1972/3 disc 2 this produced a completely wrong finding: ffmpeg listed two episodes
+where the disc holds three, the season came to 12 against the agent's 13, and it was reported as a
+partial set missing `S06E06 Horse and Carriage`. The episode was on the disc the whole time. The
+user knew the set was complete and said so, which is the only reason it was caught.
+
+Two cheap defences:
+
+- **Order matters.** Wait for the prefetch's count+bytes gate to print COMPLETE, *then* enumerate.
+  Never chain "prefetch … ; ffprobe titles" in one command, and never enumerate off the back of a
+  task notification without re-checking the gate — a robocopy that exits non-zero (it often does,
+  exit 1 just means "files copied") can still be mid-flight from an earlier invocation.
+- **Cross-check the count.** `mymovies.xml` lists the disc's own titles with runtimes. If the
+  demuxer shows fewer titles than `mymovies` does, the copy is incomplete or the demuxer is
+  under-reporting — confirm with `makemkvcon64.exe -r --cache=1 info "file:<stage>"` before
+  concluding anything is missing.
+
+A genuine partial set is normal in this collection (discs live on other drives), which is exactly
+why a false one is dangerous: it looks entirely plausible.
+
+## A Blu-ray encode dies in ~1 second: "Error opening input file ..._fixed.sup"
+
+Symptom: the item prints its `crop=` line, then `!! FAILED (1 s)` (or `0 s`), and the stderr file
+holds:
+
+```
+Error opening input file D:ideo\.transcode-tools\work\...\s2_fixed.sup.
+Error opening input files: No such file or directory
+```
+
+Cause: the PGS repositioning step ran `SupMover` and then passed `s<i>_fixed.sup` to ffmpeg
+**without checking SupMover had written it**. When cropdetect returns a full-frame crop
+(`1920:1080:0:0`) every offset is zero, there is nothing to reposition, SupMover produces no
+output — and ffmpeg is handed a path that does not exist.
+
+Why it is easy to misread: on the same disc the *extras* encode fine, because they are 4:3
+featurettes with a real pillarbox crop (`1440:1080:240:0`), so SupMover does write a file. Only
+the full-frame items die, which looks like the episodes being special rather than the crop being
+a no-op. Two BD lanes running together is a coincidence, not the cause — do not chase it.
+
+The run still prints `MANIFEST DONE`, so nothing in the log summary flags the loss. **Always size-
+check outputs after a manifest**; five episodes went missing here behind a clean-looking log.
+
+Fix (in `scripts/transcode.ps1`): skip repositioning entirely when the crop is full-frame, and
+never assign `$subInput` unless the fixed `.sup` actually exists and is non-trivial. `$work` is
+also per-process (`work\pid<PID>`) so two lanes cannot share `.sup` scratch names.

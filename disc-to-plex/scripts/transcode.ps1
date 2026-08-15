@@ -54,7 +54,11 @@ $ErrorActionPreference = 'Continue'
 $tp = Get-Content (Join-Path $ToolsDir "tool-paths.json") | ConvertFrom-Json
 $ff = $tp.ffmpeg; $sm = $tp.supmover
 $fp = Join-Path (Split-Path $ff) 'ffprobe.exe'    # our ffprobe (has dvdvideo demuxer + libdvdcss)
-$work = Join-Path $ToolsDir "work"; New-Item -ItemType Directory -Force $work | Out-Null
+# Per-process work dir. Two lanes encoding Blu-rays concurrently both extract PGS subs as
+# s<index>.sup / s<index>_fixed.sup; with a SHARED work dir the second lane's extraction deletes
+# the first lane's .sup mid-run and ffmpeg dies with "Error opening input file ... _fixed.sup"
+# about a second in. Keyed by PID so lanes cannot collide.
+$work = Join-Path $ToolsDir ("work\pid$PID"); New-Item -ItemType Directory -Force $work | Out-Null
 $items = Get-Content $Manifest -Raw | ConvertFrom-Json
 
 function Has($o,$n){ $o.PSObject.Properties.Name -contains $n -and $null -ne $o.$n -and "$($o.$n)" -ne '' }
@@ -186,9 +190,22 @@ foreach($it in $items){
     if($ns -gt 0 -and $crop){
       $crop -match '(\d+):(\d+):(\d+):(\d+)'|Out-Null
       $L=[int]$Matches[3]; $T=[int]$Matches[4]; $R=(1920-[int]$Matches[1]-[int]$Matches[3]); $B=(1080-[int]$Matches[2]-[int]$Matches[4])
-      $sup="$work\s$i.sup"; $supf="$work\s${i}_fixed.sup"
-      & $ff -y -hide_banner -v error @inspec -map "0:s:$subIdx" -c copy $sup 2>&1 | Out-Null
-      if((Test-Path $sup) -and ((Get-Item $sup).Length -gt 1KB)){ & $sm $sup $supf --crop $L $T $R $B 2>&1 | Out-Null; $subInput = $supf }
+      # A full-frame crop (1920:1080:0:0 — cropdetect found nothing to remove) moves no subtitle:
+      # SupMover writes NO output file for an all-zero crop, and passing the missing path to ffmpeg
+      # kills the encode instantly with "Error opening input file ..._fixed.sup". Skip the whole
+      # repositioning step in that case and let the PGS stream copy through untouched.
+      if($L -eq 0 -and $T -eq 0 -and $R -eq 0 -and $B -eq 0){
+        Write-Output "   crop is full-frame; PGS repositioning not needed"
+      } else {
+        $sup="$work\s$i.sup"; $supf="$work\s${i}_fixed.sup"
+        & $ff -y -hide_banner -v error @inspec -map "0:s:$subIdx" -c copy $sup 2>&1 | Out-Null
+        if((Test-Path $sup) -and ((Get-Item $sup).Length -gt 1KB)){
+          & $sm $sup $supf --crop $L $T $R $B 2>&1 | Out-Null
+          # Never hand ffmpeg a path SupMover did not actually write.
+          if((Test-Path $supf) -and ((Get-Item $supf).Length -gt 1KB)){ $subInput = $supf }
+          else { Write-Output "   !! SupMover produced no output; keeping original PGS" }
+        }
+      }
     }
   }
   if($subInput){ $a += @('-i',$subInput) }
