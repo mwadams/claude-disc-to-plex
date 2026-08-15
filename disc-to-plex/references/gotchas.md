@@ -793,3 +793,41 @@ preserve DAR) with no `crop`, rather than `kind: "BD"`.
 Same root cause as the concat-list case: whenever `Get-Crop` cannot sample properly it falls back to
 a hard-coded 4:3 crop. Treat any `1440:1080:240:0` on a widescreen or non-HD source as a bug signal,
 not a measurement.
+
+## An 8x slowdown from `-color_*` output options on untagged sources
+
+Symptom: a Blu-ray encode runs at ~0.5x realtime while other discs on the same machine run 2-3x.
+NVENC is not the limit and neither, mostly, is decode.
+
+Cause: `-color_primaries/-color_trc/-colorspace/-color_range` are **output** options. If the source
+declares different — or `unknown` — colour properties, ffmpeg inserts a full software colour
+conversion and every 1080p frame goes through swscale on one CPU core. Nothing in the log says so.
+
+VC-1 Blu-rays are routinely untagged (`color_space=unknown` on every field), which is why
+`Sherlock Holmes` and `Superman Returns` crawled while properly-tagged H.264 discs did not.
+
+Measured on one 3-minute VC-1 clip:
+
+| variant | time |
+|---|---|
+| base encode, no colour flags | 49s |
+| base + the four `-color_*` flags | 397s |
+| full pipeline before the fix | 456s |
+| full pipeline after `setparams` | **59s** |
+
+Fix: when the source's `color_space` is empty/`unknown`, prepend
+`setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv` to the filter chain.
+That TAGS the frames rather than converting them, the output options then match, and no scaler is
+inserted. HD Blu-ray is bt709 by definition so tagging is correct, not a guess — verify the output
+still reports `tv, bt709`.
+
+Two lessons beyond the fix:
+
+- **Benchmark the real command, not a simplified one.** The first measurement here omitted the
+  colour flags and pointed confidently at decode; it took an argument-level bisect against the
+  actual pipeline command to find the true cost. `TRANSCODE_DEBUG=1` prints that command.
+- **Always check the output duration when timing an encode.** A "fast" run can simply be one that
+  stopped early, and a wall-clock number alone cannot tell the difference.
+
+Decode is worth fixing too, but it is the smaller effect: `-hwaccel cuda` is ~2.3x on VC-1, whose
+ffmpeg decoder has no frame-level threading and pegs a single core.
