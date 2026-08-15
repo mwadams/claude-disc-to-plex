@@ -691,3 +691,24 @@ check outputs after a manifest**; five episodes went missing here behind a clean
 Fix (in `scripts/transcode.ps1`): skip repositioning entirely when the crop is full-frame, and
 never assign `$subInput` unless the fixed `.sup` actually exists and is non-trivial. `$work` is
 also per-process (`work\pid<PID>`) so two lanes cannot share `.sup` scratch names.
+
+## Plex renames Season 00 extras to its own specials list
+
+After adding local `S00Exx` files, the TV agent matches them **by number** against whatever
+specials list it holds for the show and overwrites your titles. It does not look at the content.
+Reaper's S00E01 (a gag reel) came back as "Unaired Pilot"; The Prisoner's S00E01 (the Comic-Con
+panel) came back as "Inside the Prisoner - Arrival", and 22 of its 23 extras were wrong.
+
+Numbers past the end of the agent's list are left as bare "Episode 18", "Episode 19", … so a
+partially-correct season is the normal outcome — which makes it easy to glance at the first few
+rows, see plausible names, and miss that they belong to different pieces entirely.
+
+Fix: after the section refresh, PUT an explicit locked title on **every** special, never just the
+ones that look wrong:
+
+```
+PUT /library/metadata/<rk>?type=4&title.value=<urlencoded>&title.locked=1
+```
+
+Then read the season back and eyeball all of it against your own mapping. Do not skip this because
+some titles already look right — matching titles are coincidence, not confirmation.
