@@ -29,6 +29,24 @@ applicable law. If a source still shows protection (e.g. an `AACS/` directory wi
 ffmpeg can't read the streams), it hasn't been decrypted yet — that's upstream of here. This
 skill does not perform or assist DRM circumvention.
 
+## Per-unit gate — re-read this at EVERY disc, not once per batch
+
+Long runs are where units get skipped. After a stretch of TV box sets it is easy to carry
+"the disc is just its episodes" onto a film disc and never sweep it for extras — that happened to
+`Sherlock Holmes` (2009), whose ~20 featurette streams were missed because the job felt finished
+once the feature playlist was found. Re-reading these steps costs seconds; re-staging a Blu-ray
+costs half an hour.
+
+Before calling any unit done, confirm all five:
+
+1. **Every title accounted for** — mapped to an episode/feature, kept as an extra, or excluded as
+   *identified* boilerplate. On BDMV that means listing the streams NOT in the feature playlist.
+2. **Identity verified from content**, not from the folder name, the disc label, or duration alone.
+3. **Outputs size-checked** — a manifest can print `MANIFEST DONE` with failed or truncated items.
+   For stream-copies, compare source and output duration.
+4. **Local vs NAS byte-verified** (file count AND total bytes) before any reclaim.
+5. **Plex read back** — episode/extra titles, and a poster for any `local://` item.
+
 ## The five steps
 
 1. **Install the toolchain** — `pwsh -File scripts/install-tools.ps1`. Downloads a
