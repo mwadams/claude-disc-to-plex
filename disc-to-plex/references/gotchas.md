@@ -748,3 +748,27 @@ Net effect: you "restarted" the job three times and never re-encoded anything.
 
 Check `Get-Process ffmpeg` for what is actually still alive, kill that, confirm the count is zero,
 then delete the partial and verify it is gone before relaunching.
+
+## Remuxing AVI to MKV silently produces a 0.4-second stub
+
+Old DivX/XviD `.avi` rips (VHS captures, TV rips) often carry **no presentation timestamps**.
+Matroska requires them, so `ffmpeg -i x.avi -map 0 -c copy x.mkv` writes a fraction of a second and
+stops:
+
+```
+[matroska] Can't write packet with unknown timestamp
+[out#0/matroska] Error muxing a packet
+```
+
+The output file exists and looks plausible in a directory listing, so any "did the file get
+created?" check passes. 51 files were "remuxed" this way in one pass before a duration comparison
+caught it.
+
+Fix: add `-fflags +genpts` before `-i` so ffmpeg generates the timestamps.
+
+More generally: **verify a stream-copy by comparing source and output duration**, not by existence
+or exit code. The same discipline catches the `-map 0` stream-dropping trap (see the concat entry) —
+both failures produce a file that only a duration or stream-count check exposes.
+
+These pre-compressed files should be remuxed, never re-encoded: the source is already lossy SD, so
+a second generation only loses quality and burns GPU time for a larger file.
