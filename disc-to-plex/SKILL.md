@@ -37,6 +37,10 @@ Long runs are where units get skipped. After a stretch of TV box sets it is easy
 once the feature playlist was found. Re-reading these steps costs seconds; re-staging a Blu-ray
 costs half an hour.
 
+If you abandon or supersede a launched run, **stop its waiter too**. A waiter polling a log that
+will never print `MANIFEST DONE` loops forever and can fire a stale lane-free signal later, which
+over-fills the encode lanes.
+
 Before calling any unit done, confirm all five:
 
 1. **Every title accounted for** — mapped to an episode/feature, kept as an extra, or excluded as
