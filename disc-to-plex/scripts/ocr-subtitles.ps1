@@ -158,8 +158,16 @@ foreach ($f in $targets) {
     $junk  = @($lines | Where-Object { $_.Trim().Length -le 2 }).Count
     $junkPct = if ($lines.Count) { [math]::Round(100 * $junk / $lines.Count) } else { 100 }
 
-    if ($cues -lt 5)      { throw "only $cues cues - recognition failed" }
-    if ($junkPct -gt 30)  { throw "$junkPct% of cues are 1-2 chars - recognition failed (this is the nOCR signature)" }
+    # The cue floor has to scale with runtime. A flat "at least 5" is right for a feature but
+    # wrong for the short items this pipeline also handles: a 22-second deleted scene genuinely
+    # holds one or two lines of dialogue, and failing it means the extra ships with only the
+    # blocky bitmap for no reason. Allow roughly one cue per 15 s of runtime, capped at 5, so a
+    # feature still has to clear the real bar.
+    $durSec = [double]("$(& $ffprobe -v error -show_entries format=duration -of csv=p=0 $f.FullName 2>$null)".Trim() -replace '^$','0')
+    $minCues = [math]::Max(1, [math]::Min(5, [int][math]::Floor($durSec / 15)))
+
+    if ($cues -lt $minCues) { throw "only $cues cues (need $minCues for $([int]$durSec)s) - recognition failed" }
+    if ($junkPct -gt 30)    { throw "$junkPct% of cues are 1-2 chars - recognition failed (this is the nOCR signature)" }
 
     if ($Mode -eq 'Sidecar') {
       $dest = Join-Path $f.DirectoryName ($f.BaseName + ".$Lang.srt")
