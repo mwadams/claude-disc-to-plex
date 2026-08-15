@@ -86,11 +86,22 @@ Before calling any unit done, confirm all five:
 
 5. **Verify & stage** — `ffprobe` a sample of outputs (resolution, **display aspect ratio**,
    audio track order, subtitle canvas) and confirm counts. Place files in the Plex layout in
-   `references/naming.md`. After the user is happy, publish to the final target (NAS) and free
-   the local staging space with `scripts/stage-and-clean.ps1 -Src <staged> -Target <nas>
-   [-DeleteAfter]`: it copies WITHOUT overwriting anything already there, verifies every file
-   byte-for-byte, and only deletes the local copy if that verification passes — the verify is a
-   hard gate, so a bad/partial copy never costs you the local original.
+   `references/naming.md`.
+
+   **Copy to the NAS as soon as a unit's encode is verified — do NOT wait for the user.** The
+   user cannot confirm a unit is in Plex until it is *on* the NAS for Plex to scan, so holding
+   the copy back stalls the whole pipeline and quietly piles up local staging. The two steps are
+   separate and only the second one is gated:
+
+   - **Publish (ungated)** — copy up the moment the encode verifies, then trigger a library
+     refresh and tell the user the unit is ready to check.
+   - **Reclaim (gated)** — delete the local copy ONLY after the user confirms that unit is in
+     Plex.
+
+   `scripts/stage-and-clean.ps1 -Src <staged> -Target <nas> [-DeleteAfter]` does both: it copies
+   WITHOUT overwriting anything already there and verifies every file byte-for-byte. Run it
+   without `-DeleteAfter` to publish; re-run with `-DeleteAfter` once the user confirms. The
+   verify is a hard gate, so a bad/partial copy never costs you the local original.
 
 6. **Confirm Plex matched it correctly (TV)** — file counts landing on the NAS is *not* proof the
    episodes are numbered right. Plex trusts the `SxxEyy` token against the library's **agent**, which
