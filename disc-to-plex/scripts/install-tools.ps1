@@ -61,6 +61,69 @@ if (-not $sm) {
 }
 Write-Host ("supmover: " + $sm.FullName)
 
+# 3b. Subtitle OCR toolchain — turns the disc's BITMAP subtitles (PGS on Blu-ray, VOBSUB on DVD)
+#     into text SRT. This matters for readability, not tidiness: bitmap subs are pictures of text
+#     baked at a fixed size, so Plex's subtitle size/font/colour settings do NOTHING for them. DVD
+#     VOBSUB is 720x576 with a 4-colour palette and looks blocky upscaled to 1080p/4K. A text SRT
+#     renders crisply at any size the viewer chooses.
+#
+#     Two pieces, because neither does the whole job:
+#       mkvextract — ffmpeg has NO vobsub muxer, so it cannot write .idx/.sub; mkvextract can.
+#       seconv     — Subtitle Edit's CLI; does the bitmap->SRT conversion.
+#                    It cannot read VOBSUB out of an .mkv itself ("No subtitle tracks in Matroska
+#                    file"), hence the mkvextract step first.
+
+$mkvDir = Join-Path $ToolsDir "mkvtoolnix"
+$mkvx = Get-ChildItem $mkvDir -Recurse -Filter mkvextract.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $mkvx) {
+  $7z = Join-Path $ToolsDir "mkvtoolnix.7z"
+  New-Item -ItemType Directory -Force $mkvDir | Out-Null
+  curl.exe -L --fail -o $7z "https://mkvtoolnix.download/windows/releases/95.0/mkvtoolnix-64-bit-95.0.7z"
+  $sevenZip = @("C:\Program Files\7-Zip\7z.exe","C:\Program Files (x86)\7-Zip\7z.exe") |
+              Where-Object { Test-Path $_ } | Select-Object -First 1
+  if ($sevenZip) { & $sevenZip x $7z "-o$mkvDir" -y | Out-Null; Remove-Item $7z -ErrorAction SilentlyContinue }
+  else { Write-Warning "7-Zip not found - cannot unpack mkvtoolnix.7z. Install 7-Zip, or unpack it manually into $mkvDir" }
+  $mkvx = Get-ChildItem $mkvDir -Recurse -Filter mkvextract.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+}
+if ($mkvx) { Write-Host ("mkvextract: " + $mkvx.FullName) } else { Write-Warning "mkvextract missing - subtitle OCR unavailable" }
+
+$seDir = Join-Path $ToolsDir "seconv"
+$se = Get-ChildItem $seDir -Recurse -Filter seconv.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $se) {
+  $zip = Join-Path $ToolsDir "seconv.zip"
+  New-Item -ItemType Directory -Force $seDir | Out-Null
+  curl.exe -L --fail -o $zip "https://github.com/SubtitleEdit/subtitleedit/releases/download/v5.1.0/SeConv-Windows-x64.zip"
+  & tar.exe -xf $zip -C $seDir
+  Remove-Item $zip -ErrorAction SilentlyContinue
+  $se = Get-ChildItem $seDir -Recurse -Filter seconv.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+}
+if ($se) { Write-Host ("seconv: " + $se.FullName) }
+
+# Tesseract is the recognition engine and CANNOT be installed unattended: its installer needs UAC
+# elevation, so a non-interactive shell gets 0x800704c7 ("cancelled by user"). It has to be a
+# manual step.
+#
+# Do NOT reach for Subtitle Edit's built-in nOCR engine to dodge this. It was tried on a real DVD
+# and returned "*" for every single cue - the disc fonts are not in its pattern database. It fails
+# SILENTLY in the sense that seconv reports success, so only an output check catches it.
+$tess = (Get-Command tesseract -ErrorAction SilentlyContinue).Source
+if (-not $tess) {
+  $tess = @("$env:ProgramFiles\Tesseract-OCR\tesseract.exe","${env:ProgramFiles(x86)}\Tesseract-OCR\tesseract.exe",
+            "$env:LOCALAPPDATA\Programs\Tesseract-OCR\tesseract.exe") |
+          Where-Object { Test-Path $_ } | Select-Object -First 1
+}
+if ($tess) { Write-Host ("tesseract: " + $tess) }
+else {
+  Write-Warning @"
+Tesseract NOT installed - subtitle OCR will not work. Run this yourself in an ELEVATED terminal
+and accept the UAC prompt:
+
+  winget install --id UB-Mannheim.TesseractOCR --accept-package-agreements --accept-source-agreements
+
+Everything else still works; only the bitmap->SRT step is unavailable.
+"@
+}
+
 # 4. Verify NVENC actually works on this driver (synthetic 2s encode)
 Write-Host "=== NVENC self-test ===" -ForegroundColor Cyan
 $test = Join-Path $ToolsDir "nvenc-selftest.mkv"
@@ -69,6 +132,9 @@ $test = Join-Path $ToolsDir "nvenc-selftest.mkv"
 if (Test-Path $test) { Write-Host "NVENC OK" -ForegroundColor Green; Remove-Item $test } else { throw "NVENC self-test FAILED — check driver vs ffmpeg build" }
 
 # 5. Persist paths for the other scripts
-@{ ffmpeg = $ff; supmover = $sm.FullName; toolsDir = $ToolsDir } | ConvertTo-Json |
+@{ ffmpeg = $ff; supmover = $sm.FullName; toolsDir = $ToolsDir
+   mkvextract = $(if($mkvx){ $mkvx.FullName } else { $null })
+   seconv     = $(if($se){ $se.FullName } else { $null })
+   tesseract  = $tess } | ConvertTo-Json |
   Set-Content (Join-Path $ToolsDir "tool-paths.json")
 Write-Host ("`nWrote " + (Join-Path $ToolsDir "tool-paths.json")) -ForegroundColor Green

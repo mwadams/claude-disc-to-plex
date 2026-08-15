@@ -1,0 +1,156 @@
+<#
+.SYNOPSIS
+  Convert an MKV's BITMAP subtitle tracks (PGS / VOBSUB) to text SRT.
+
+.DESCRIPTION
+  Bitmap subtitles are pictures of text baked at a fixed size by the disc author. Plex's
+  subtitle size / font / colour / position settings apply ONLY to text subtitles, so for
+  bitmaps the player can do nothing but scale the image - which is why DVD subs in particular
+  look oversized and blocky (720x576, 4 colours, upscaled 3-5x on a 1080p/4K screen).
+
+  This converts them to SRT so the viewer controls the rendering. The original bitmap track is
+  always KEPT: OCR is never perfect, and the bitmap costs little.
+
+  Two output modes:
+    -Mode Mux      (default) remux the SRT into the MKV as a default-flagged track. Use for new
+                   transfers, while the file is still local and before publishing.
+    -Mode Sidecar  write <basename>.<lang>.srt next to the media file. Plex picks these up
+                   automatically. Use for retro-fitting an existing library: it CREATES a file
+                   and never rewrites the media, so it does not run into the NAS delete/move
+                   guard.
+
+.PARAMETER Path
+  An .mkv file, or a folder to process recursively.
+
+.PARAMETER Lang
+  ISO-639-2 language to OCR. Default 'eng'. Only tracks tagged with this (or untagged) are done.
+
+.PARAMETER Mode
+  Mux (default) or Sidecar.
+
+.PARAMETER WhatIf
+  Report what would happen without writing anything.
+
+.NOTES
+  Requires mkvextract + seconv + Tesseract - see install-tools.ps1. ffmpeg has NO vobsub muxer,
+  so mkvextract is not optional; and seconv cannot read VOBSUB out of a Matroska container
+  itself, hence extract-then-convert.
+#>
+[CmdletBinding(SupportsShouldProcess)]
+param(
+  [Parameter(Mandatory)][string]$Path,
+  [string]$Lang = 'eng',
+  [ValidateSet('Mux','Sidecar')][string]$Mode = 'Mux',
+  [string]$ToolsDir = 'D:\video\.transcode-tools'
+)
+
+$ErrorActionPreference = 'Stop'
+$paths = Get-Content (Join-Path $ToolsDir 'tool-paths.json') -Raw | ConvertFrom-Json
+$ffprobe = (Join-Path (Split-Path $paths.ffmpeg) 'ffprobe.exe')
+$ffmpeg  = $paths.ffmpeg
+$mkvx    = $paths.mkvextract
+$seconv  = $paths.seconv
+
+if (-not $mkvx -or -not (Test-Path $mkvx)) { throw "mkvextract missing - re-run install-tools.ps1" }
+if (-not $seconv -or -not (Test-Path $seconv)) { throw "seconv missing - re-run install-tools.ps1" }
+if (-not (Get-Command tesseract -ErrorAction SilentlyContinue) -and -not $paths.tesseract) {
+  throw @"
+Tesseract is not installed. Install it (elevated) and re-run:
+  winget install --id UB-Mannheim.TesseractOCR --accept-package-agreements --accept-source-agreements
+
+Do NOT substitute seconv's built-in nOCR engine: on real DVD material it returns "*" for every
+cue while still reporting success.
+"@
+}
+
+# Codecs that are bitmaps and therefore need OCR. Anything else is already text.
+$bitmapCodecs = @('hdmv_pgs_subtitle','dvd_subtitle','dvb_subtitle','xsub')
+
+$targets = if ((Get-Item $Path).PSIsContainer) {
+  Get-ChildItem -LiteralPath $Path -Recurse -File -Filter *.mkv
+} else { @(Get-Item -LiteralPath $Path) }
+
+Write-Host "files to consider: $($targets.Count)"
+$work = Join-Path $ToolsDir ("work\ocr$PID")
+New-Item -ItemType Directory -Force $work | Out-Null
+
+$done = 0; $skipped = 0; $failed = 0
+
+foreach ($f in $targets) {
+  # ---- pick the track: bitmap, in the wanted language (untagged counts - discs often omit it)
+  $info = & $ffprobe -v error -select_streams s `
+            -show_entries stream=index,codec_name:stream_tags=language -of csv=p=0 $f.FullName 2>$null
+  if (-not $info) { $skipped++; continue }
+
+  $cand = @()
+  foreach ($line in $info) {
+    $p = $line -split ','
+    if ($p.Count -lt 2) { continue }
+    $idx = [int]$p[0]; $codec = $p[1]; $lang = if ($p.Count -ge 3) { $p[2] } else { '' }
+    if ($bitmapCodecs -notcontains $codec) { continue }
+    if ($lang -and $lang -ne $Lang -and $lang -ne 'und') { continue }
+    $cand += [pscustomobject]@{ Index = $idx; Codec = $codec }
+  }
+  if (-not $cand) { $skipped++; continue }
+
+  # already has a text track in this language? then there is nothing to gain
+  $hasText = $info | Where-Object { $bitmapCodecs -notcontains ($_ -split ',')[1] }
+  if ($hasText) { Write-Host "  skip (already has text subs): $($f.Name)"; $skipped++; continue }
+
+  $track = $cand[0]
+  $ext   = if ($track.Codec -eq 'hdmv_pgs_subtitle') { 'sup' } else { 'idx' }
+  $stem  = Join-Path $work ([IO.Path]::GetRandomFileName())
+  $bmp   = "$stem.$ext"
+
+  if (-not $PSCmdlet.ShouldProcess($f.Name, "OCR subtitle track $($track.Index) ($($track.Codec))")) { continue }
+
+  try {
+    & $mkvx tracks $f.FullName "$($track.Index):$bmp" 2>&1 | Out-Null
+    if (-not (Test-Path $bmp)) { throw "mkvextract produced nothing" }
+
+    & $seconv $bmp subrip --ocr-engine:tesseract --ocr-language:$Lang `
+        --output-folder:$work --overwrite 2>&1 | Out-Null
+    $srt = [IO.Path]::ChangeExtension($bmp, '.srt')
+    if (-not (Test-Path $srt)) { throw "seconv produced no SRT" }
+
+    # ---- QUALITY GATES. A bad OCR is worse than blocky subtitles, and seconv reports success
+    #      even when recognition has completely failed, so the output must be inspected.
+    $text  = Get-Content $srt -Raw
+    $cues  = [regex]::Matches($text, '(?m)^\d+\s*$').Count
+    $lines = @($text -split "`r?`n" | Where-Object { $_ -and $_ -notmatch '^\d+$' -and $_ -notmatch '-->' })
+    $junk  = @($lines | Where-Object { $_.Trim().Length -le 2 }).Count
+    $junkPct = if ($lines.Count) { [math]::Round(100 * $junk / $lines.Count) } else { 100 }
+
+    if ($cues -lt 5)      { throw "only $cues cues - recognition failed" }
+    if ($junkPct -gt 30)  { throw "$junkPct% of cues are 1-2 chars - recognition failed (this is the nOCR signature)" }
+
+    if ($Mode -eq 'Sidecar') {
+      $dest = Join-Path $f.DirectoryName ($f.BaseName + ".$Lang.srt")
+      Copy-Item $srt $dest -Force
+      Write-Host ("  OK {0}  {1} cues, {2}% junk -> sidecar" -f $f.Name, $cues, $junkPct) -ForegroundColor Green
+    } else {
+      # remux: SRT first and default-flagged, bitmap kept as the fallback
+      $tmp = Join-Path $work ("mux_" + $f.Name)
+      & $ffmpeg -v error -i $f.FullName -i $srt -map 0 -map 1 -c copy `
+          -metadata:s:s:0 "language=$Lang" -disposition:s:0 default `
+          -y $tmp 2>&1 | Out-Null
+      if (-not (Test-Path $tmp) -or (Get-Item $tmp).Length -lt (0.9 * $f.Length)) { throw "remux output too small" }
+      Move-Item $tmp $f.FullName -Force
+      Write-Host ("  OK {0}  {1} cues, {2}% junk -> muxed" -f $f.Name, $cues, $junkPct) -ForegroundColor Green
+    }
+    $done++
+  }
+  catch {
+    Write-Warning ("  FAILED {0}: {1}" -f $f.Name, $_.Exception.Message)
+    $failed++
+  }
+  finally {
+    Get-ChildItem $work -File -Filter ([IO.Path]::GetFileNameWithoutExtension($stem) + '*') -EA SilentlyContinue |
+      Remove-Item -Force -EA SilentlyContinue
+  }
+}
+
+Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
+Write-Host ""
+Write-Host "ocr: $done converted, $skipped skipped, $failed failed"
+if ($failed) { exit 1 }

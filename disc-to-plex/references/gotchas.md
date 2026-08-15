@@ -831,3 +831,35 @@ Two lessons beyond the fix:
 
 Decode is worth fixing too, but it is the smaller effect: `-hwaccel cuda` is ~2.3x on VC-1, whose
 ffmpeg decoder has no frame-level threading and pegs a single core.
+
+## Bitmap subtitles look oversized and blocky, and no Plex setting fixes it
+
+Disc subtitles are **bitmaps** — PGS on Blu-ray, VOBSUB on DVD — i.e. pictures of text rendered at
+a fixed size by the disc author. Plex's subtitle size, font, colour and position settings apply
+**only to text subtitles** (SRT/ASS). For a bitmap the player can do nothing except scale the
+image, so users see big, soft, blocky captions and there is no client-side remedy.
+
+DVD is the bad case: VOBSUB is 720x576 with a 4-colour palette, so on a 1080p or 4K screen it is
+being upscaled 3–5x.
+
+Fix: OCR to SRT (`scripts/ocr-subtitles.ps1`), ship the SRT default-flagged, and **keep** the
+bitmap track as a fallback.
+
+### Toolchain traps found the hard way
+
+- **ffmpeg cannot write VOBSUB.** There is no `vobsub` muxer in the BtbN build (`-f vobsub` →
+  "Requested output format 'vobsub' is not known"; a bare `.idx` output → "Unable to choose an
+  output format"). Use `mkvextract tracks <file> <id>:<out>.idx`, which writes the `.idx`/`.sub`
+  pair correctly. PGS is different — ffmpeg *does* have a `sup` muxer.
+- **`seconv` cannot read VOBSUB out of an MKV.** It reports "No subtitle tracks in Matroska file"
+  even when ffprobe clearly lists a `dvd_subtitle` stream. Extract first, then convert.
+- **Tesseract cannot be installed unattended.** Its installer requires UAC elevation, so winget
+  from a non-interactive shell fails with `0x800704c7` ("The operation was canceled by the user").
+  It has to be a manual, elevated step by the user.
+- **Do NOT substitute Subtitle Edit's built-in `nOCR` engine to avoid installing Tesseract.**
+  Tried on a real DVD: it returned `*` for all 315 cues — the disc fonts are not in its pattern
+  database — while `seconv` still printed "Conversion completed successfully". The only thing that
+  catches this is inspecting the output, which is why `ocr-subtitles.ps1` gates on cue count and
+  the proportion of one-to-two-character cues.
+- Check you have the right file before concluding a track is missing: two different films can both
+  contain `Featurette 03.mkv`. A "stream map matches no streams" error was just the wrong path.

@@ -103,6 +103,25 @@ Before calling any unit done, confirm all five:
    without `-DeleteAfter` to publish; re-run with `-DeleteAfter` once the user confirms. The
    verify is a hard gate, so a bad/partial copy never costs you the local original.
 
+5b. **OCR the subtitles to text — do this before publishing.** Disc subtitles are BITMAPS (PGS on
+   Blu-ray, VOBSUB on DVD): pictures of text baked at a fixed size by the disc author. Plex's
+   subtitle size/font/colour settings apply only to TEXT subtitles, so for bitmaps the player can
+   only scale the image — which is why DVD subs read as oversized and blocky (720x576, 4 colours,
+   upscaled 3–5x on a modern screen). Users notice this.
+
+   ```powershell
+   pwsh -File scripts/ocr-subtitles.ps1 -Path "<staged file or folder>" -Mode Mux
+   ```
+
+   It extracts the bitmap track, OCRs it to SRT, muxes the SRT in default-flagged, and **keeps the
+   original bitmap** as a fallback. Use `-Mode Sidecar` to retro-fit files already on the NAS: that
+   writes `<name>.eng.srt` alongside, which Plex reads automatically and which never rewrites the
+   media (so it doesn't collide with the NAS delete/move guard).
+
+   The script gates its own output — a run with under 5 cues, or with >30% one-to-two-character
+   cues, is treated as a failed recognition and refused. Do not remove those gates: `seconv`
+   reports SUCCESS even when recognition has completely failed. See `references/gotchas.md`.
+
 6. **Confirm Plex matched it correctly (TV)** — file counts landing on the NAS is *not* proof the
    episodes are numbered right. Plex trusts the `SxxEyy` token against the library's **agent**, which
    can number differently from your source (feature-length pilots/finales often split into two slots —
