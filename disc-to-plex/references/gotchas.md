@@ -863,3 +863,12 @@ bitmap track as a fallback.
   the proportion of one-to-two-character cues.
 - Check you have the right file before concluding a track is missing: two different films can both
   contain `Featurette 03.mkv`. A "stream map matches no streams" error was just the wrong path.
+- **`seconv` can report "Tesseract not found on PATH" when tesseract demonstrably works.** The
+  installer updates the *machine* PATH, but an already-running shell keeps the copy it inherited at
+  launch, and seconv resolves tesseract from its child process's PATH. So `tesseract --version`
+  succeeds in your shell while seconv still fails. Prepend the tesseract directory to `$env:PATH`
+  before invoking seconv (`ocr-subtitles.ps1` does this), or start a fresh shell.
+- **OCR is slow — budget for it.** Measured: 315 VOBSUB images took **4m 46s** with Tesseract on an
+  RTX 4060 laptop (it is CPU-bound; the GPU is irrelevant). A feature-length film runs 800–1500
+  cues, so 10–25 minutes *per file*. A whole-library retro-fit is days of wall-clock, not hours —
+  size the batches accordingly and run them when the encode lanes are otherwise idle.

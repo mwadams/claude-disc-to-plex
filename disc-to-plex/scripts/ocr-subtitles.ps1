@@ -53,7 +53,19 @@ $seconv  = $paths.seconv
 
 if (-not $mkvx -or -not (Test-Path $mkvx)) { throw "mkvextract missing - re-run install-tools.ps1" }
 if (-not $seconv -or -not (Test-Path $seconv)) { throw "seconv missing - re-run install-tools.ps1" }
-if (-not (Get-Command tesseract -ErrorAction SilentlyContinue) -and -not $paths.tesseract) {
+# seconv shells out to tesseract and resolves it from PATH *as its child process sees it*. A
+# tesseract that this script can find via Get-Command is NOT necessarily visible to seconv - the
+# installer updates the machine PATH, but an already-running shell keeps its inherited copy, so
+# seconv reports "Tesseract not found on PATH" while `tesseract --version` works right here.
+# Prepend the real directory so the child inherits it.
+$tessExe = (Get-Command tesseract -ErrorAction SilentlyContinue).Source
+if (-not $tessExe) { $tessExe = $paths.tesseract }
+if ($tessExe -and (Test-Path $tessExe)) {
+  $tessDir = Split-Path $tessExe
+  if ($env:PATH -notlike "*$tessDir*") { $env:PATH = "$tessDir;$env:PATH" }
+}
+
+if (-not $tessExe) {
   throw @"
 Tesseract is not installed. Install it (elevated) and re-run:
   winget install --id UB-Mannheim.TesseractOCR --accept-package-agreements --accept-source-agreements
