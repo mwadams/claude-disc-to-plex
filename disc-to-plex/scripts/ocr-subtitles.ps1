@@ -41,6 +41,18 @@ param(
   [Parameter(Mandatory)][string]$Path,
   [string]$Lang = 'eng',
   [ValidateSet('Mux','Sidecar')][string]$Mode = 'Mux',
+  # Shift every cue by this many milliseconds. NEGATIVE = show earlier, POSITIVE = show later.
+  #
+  # LEAVE THIS AT 0 unless you have a specific reason. The OCR introduces no drift - verified by
+  # comparing an output SRT against the source PGS packet timestamps, which matched to the
+  # millisecond - so any desync you see is the DISC's own authoring, and the bitmap track is out by
+  # exactly the same amount. Reproducing source timing faithfully is therefore the correct default:
+  # it is never worse than what the library already plays.
+  #
+  # It is also rarely needed, because Plex offers a per-playback subtitle offset control - and that
+  # control works ONLY on text subtitles. Converting the bitmap to SRT is precisely what lets the
+  # viewer fix timing themselves, non-destructively. Baking an offset in takes that choice away.
+  [int]$OffsetMs = 0,
   [string]$ToolsDir = 'D:\video\.transcode-tools'
 )
 
@@ -125,6 +137,19 @@ foreach ($f in $targets) {
     $srt = [IO.Path]::ChangeExtension($bmp, '.srt')
     if (-not (Test-Path $srt)) { throw "seconv produced no SRT" }
 
+    # Shift cues if asked. Done here rather than via seconv's --offset because that takes an
+    # hh:mm:ss:ms string and cannot express a NEGATIVE shift, which is the direction usually needed.
+    if ($OffsetMs -ne 0) {
+      $shifted = [regex]::Replace((Get-Content $srt -Raw), '(\d{2}):(\d{2}):(\d{2}),(\d{3})', {
+        param($m)
+        $ms = ([int]$m.Groups[1].Value * 3600000) + ([int]$m.Groups[2].Value * 60000) +
+              ([int]$m.Groups[3].Value * 1000) + [int]$m.Groups[4].Value + $OffsetMs
+        if ($ms -lt 0) { $ms = 0 }   # cues cannot start before the file does
+        '{0:D2}:{1:D2}:{2:D2},{3:D3}' -f [int]($ms/3600000), [int](($ms%3600000)/60000), [int](($ms%60000)/1000), [int]($ms%1000)
+      })
+      Set-Content -LiteralPath $srt -Value $shifted -Encoding UTF8 -NoNewline
+    }
+
     # ---- QUALITY GATES. A bad OCR is worse than blocky subtitles, and seconv reports success
     #      even when recognition has completely failed, so the output must be inspected.
     $text  = Get-Content $srt -Raw
@@ -141,12 +166,32 @@ foreach ($f in $targets) {
       Copy-Item $srt $dest -Force
       Write-Host ("  OK {0}  {1} cues, {2}% junk -> sidecar" -f $f.Name, $cues, $junkPct) -ForegroundColor Green
     } else {
-      # remux: SRT first and default-flagged, bitmap kept as the fallback
+      # remux: the SRT default-flagged, bitmap kept as the fallback.
+      #
+      # `-map 0 -map 1` APPENDS the SRT after every original stream, so in the OUTPUT the new
+      # subtitle is the LAST subtitle, not s:0. Addressing it as `-disposition:s:0` therefore
+      # tags the original BITMAP track instead - the file mixes fine, ffprobe reports no error,
+      # and the only symptom is that Plex still defaults to the blocky bitmap, i.e. exactly the
+      # problem this script exists to fix. Count the source's subtitle streams and index off that.
+      $nSubs = @($info).Count
+      $disp  = @()
+      for ($i = 0; $i -lt $nSubs; $i++) { $disp += @("-disposition:s:$i", '0') }   # clear the originals
+      $disp += @("-disposition:s:$nSubs", 'default')                                # flag the SRT
+
       $tmp = Join-Path $work ("mux_" + $f.Name)
       & $ffmpeg -v error -i $f.FullName -i $srt -map 0 -map 1 -c copy `
-          -metadata:s:s:0 "language=$Lang" -disposition:s:0 default `
+          -metadata:s:s:$nSubs "language=$Lang" @disp `
           -y $tmp 2>&1 | Out-Null
       if (-not (Test-Path $tmp) -or (Get-Item $tmp).Length -lt (0.9 * $f.Length)) { throw "remux output too small" }
+
+      # Prove the flag landed on the TEXT track. A size check cannot see this, and a mis-flagged
+      # file looks completely healthy - it just plays the bitmap.
+      $chk = & $ffprobe -v error -select_streams s `
+               -show_entries stream=codec_name:stream_disposition=default -of csv=p=0 $tmp 2>$null
+      $defText = @($chk | Where-Object { $_ -match '^subrip,1' }).Count
+      $defBmp  = @($chk | Where-Object { $p = $_ -split ','; $bitmapCodecs -contains $p[0] -and $p[1] -eq '1' }).Count
+      if ($defText -ne 1 -or $defBmp -ne 0) { throw "remux left the wrong subtitle default-flagged ($($chk -join '; '))" }
+
       Move-Item $tmp $f.FullName -Force
       Write-Host ("  OK {0}  {1} cues, {2}% junk -> muxed" -f $f.Name, $cues, $junkPct) -ForegroundColor Green
     }
