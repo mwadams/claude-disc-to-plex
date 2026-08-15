@@ -868,6 +868,14 @@ bitmap track as a fallback.
   launch, and seconv resolves tesseract from its child process's PATH. So `tesseract --version`
   succeeds in your shell while seconv still fails. Prepend the tesseract directory to `$env:PATH`
   before invoking seconv (`ocr-subtitles.ps1` does this), or start a fresh shell.
+- **`-map 0 -map 1` puts the new SRT LAST, so `-disposition:s:0` flags the BITMAP.** The remux
+  succeeds, ffprobe reports no error, and a size check passes — the only symptom is that Plex
+  still defaults to the blocky bitmap, i.e. the exact problem the OCR pass exists to solve. Caught
+  on the first `-Mode Mux` run (Stardust): output was `dvd_subtitle default=1` / `subrip
+  default=0`. Index the disposition and language off the **source's subtitle-stream count**, clear
+  `default` on the originals, and assert afterwards that exactly one `subrip` track is default and
+  no bitmap is. Sidecar mode never had the bug, so a library retro-fit done that way is unaffected.
+  Repairing a mis-flagged file needs only a disposition remux, not a re-OCR.
 - **OCR is slow — budget for it.** Measured: 315 VOBSUB images took **4m 46s** with Tesseract on an
   RTX 4060 laptop (it is CPU-bound; the GPU is irrelevant). A feature-length film runs 800–1500
   cues, so 10–25 minutes *per file*. A whole-library retro-fit is days of wall-clock, not hours —
