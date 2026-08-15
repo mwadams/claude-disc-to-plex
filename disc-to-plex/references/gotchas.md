@@ -712,3 +712,39 @@ PUT /library/metadata/<rk>?type=4&title.value=<urlencoded>&title.locked=1
 
 Then read the season back and eyeball all of it against your own mapping. Do not skip this because
 some titles already look right — matching titles are coincidence, not confirmation.
+
+## Seamless-branching Blu-rays, and why `crop: "auto"` lies on them
+
+Some Blu-rays (Warner discs especially) hold **no single feature stream**. `Sherlock Holmes` (2009)
+splits its 128-minute film across 23 clips in `BDMV/STREAM`, the largest only 17 minutes, assembled
+by a `.mpls` playlist. Picking "the biggest m2ts" gets you a fragment.
+
+Find the feature by parsing the playlist: `.mpls` files list their clips as plain ASCII, so
+
+```powershell
+$s = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($mpls))
+[regex]::Matches($s,'(\d{5})M2TS') | ForEach-Object { $_.Groups[1].Value }
+```
+
+gives the clip order. Sum the clip durations and check the total against the known runtime before
+trusting it. Feed the ordered clips to the encoder as a **concat-demuxer list** (`src` pointing at a
+`.txt` of `file '...'` lines); `InSpec` detects the `.txt` and reads it as one input, so no 25 GB+
+intermediate copy is needed.
+
+**`crop: "auto"` must NOT be used on a concat list.** cropdetect samples by seeking to timestamps,
+and those seeks do not work reliably through the concat demuxer, so `Get-Crop` falls through to its
+`1440:1080:240:0` pillarbox default — which would slice 240 px off each side of a widescreen film.
+The tell is a 4:3 crop on a film you know is scope or 1.85:1. Run cropdetect against a couple of
+individual mid-film clips instead, then pass the answer explicitly (or `"none"`, which is right
+whenever the clips are full-frame 1920x1080).
+
+## Killing a bad encode: kill the right PID, and delete the partial
+
+Two ffmpeg processes exist during a BD item — the cropdetect pass and the encode. Killing the
+first-listed one leaves the encode running, still holding its output file open, so the follow-up
+`Remove-Item` fails with "being used by another process" and the relaunch then reports
+`skip (exists)` and does nothing (the skip test only asks whether the file is larger than 5 MB).
+Net effect: you "restarted" the job three times and never re-encoded anything.
+
+Check `Get-Process ffmpeg` for what is actually still alive, kill that, confirm the count is zero,
+then delete the partial and verify it is gone before relaunching.

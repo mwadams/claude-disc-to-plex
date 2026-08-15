@@ -69,6 +69,11 @@ function InSpec($it){   # ffmpeg/ffprobe input args (demuxer + -i) for this item
     if(Has $it 'chapterEnd'){   $s += @('-chapter_end',  [string]$it.chapterEnd) }
     return ($s + @('-i',$it.src))
   }
+  # Seamless-branching Blu-rays hold no single feature stream: the film is 20+ short m2ts clips
+  # assembled by a .mpls playlist (the biggest STREAM file may be only ~15 min of a 2 hr film).
+  # Point src at a concat-demuxer list (a .txt of "file '...'" lines, in playlist order) and the
+  # whole feature is read as one input WITHOUT building a 25 GB+ intermediate copy on disk.
+  if($it.src -match '\.txt$'){ return @('-f','concat','-safe','0','-i',$it.src) }
   return @('-i',$it.src)
 }
 function Audio-Count($inspec){ ((& $fp -v error @inspec -select_streams a -show_entries stream=index -of csv=p=0 2>$null) | Where-Object { $_ -match '^\d+$' } | Sort-Object -Unique | Measure-Object).Count }
