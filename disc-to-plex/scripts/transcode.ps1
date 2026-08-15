@@ -62,7 +62,12 @@ $work = Join-Path $ToolsDir ("work\pid$PID"); New-Item -ItemType Directory -Forc
 $items = Get-Content $Manifest -Raw | ConvertFrom-Json
 
 function Has($o,$n){ $o.PSObject.Properties.Name -contains $n -and $null -ne $o.$n -and "$($o.$n)" -ne '' }
-function InSpec($it){   # ffmpeg/ffprobe input args (demuxer + -i) for this item
+function InSpec($it,[switch]$Hwaccel){   # ffmpeg/ffprobe input args (demuxer + -i) for this item
+  # -hwaccel cuda decodes on the GPU and hands frames back in system memory, so the crop/bwdif
+  # filters and PGS handling are unaffected. NOT applied to ffprobe calls (probing is cheap) and
+  # NOT to DVD (SD MPEG-2 decodes fast; the win is on HD sources, above all VC-1, whose ffmpeg
+  # decoder has no frame-level threading and pegs a single core).
+  $hw = if($Hwaccel -and $it.kind -ne 'DVD'){ @('-hwaccel','cuda') } else { @() }
   if($it.kind -eq 'DVD'){
     $s = @('-f','dvdvideo','-title',[string]$it.title)
     if(Has $it 'chapterStart'){ $s += @('-chapter_start',[string]$it.chapterStart) }
@@ -73,8 +78,8 @@ function InSpec($it){   # ffmpeg/ffprobe input args (demuxer + -i) for this item
   # assembled by a .mpls playlist (the biggest STREAM file may be only ~15 min of a 2 hr film).
   # Point src at a concat-demuxer list (a .txt of "file '...'" lines, in playlist order) and the
   # whole feature is read as one input WITHOUT building a 25 GB+ intermediate copy on disk.
-  if($it.src -match '\.txt$'){ return @('-f','concat','-safe','0','-i',$it.src) }
-  return @('-i',$it.src)
+  if($it.src -match '\.txt$'){ return ($hw + @('-f','concat','-safe','0','-i',$it.src)) }
+  return ($hw + @('-i',$it.src))
 }
 function Audio-Count($inspec){ ((& $fp -v error @inspec -select_streams a -show_entries stream=index -of csv=p=0 2>$null) | Where-Object { $_ -match '^\d+$' } | Sort-Object -Unique | Measure-Object).Count }
 function Audio-Ch0($inspec,$idx){ $c=(& $fp -v error @inspec -select_streams "a:$idx" -show_entries stream=channels -of csv=p=0 2>$null | Select-Object -First 1); if($c){[int]$c}else{0} }
@@ -154,7 +159,9 @@ foreach($it in $items){
   New-Item -ItemType Directory -Force (Split-Path $it.out) | Out-Null
   if((Test-Path $it.out) -and ((Get-Item $it.out).Length -gt 5MB)){ Write-Output "   skip (exists)"; continue }
 
-  $inspec = InSpec $it
+  $inspec = InSpec $it                       # probes: software decode, they only read headers
+  $encspec = InSpec $it -Hwaccel             # the encode: GPU decode where the source allows it
+  $usedHwaccel = ($encspec -contains '-hwaccel')
   $na = Audio-Count $inspec
   $origLang = if(Has $it 'origLang'){ "$($it.origLang)" } else { 'eng' }   # ISO-639 of the ORIGINAL language; eng/unset = English content
   # audioTracks overrides the automatic pick: an explicit list of audio ordinals to keep, in order
@@ -183,7 +190,7 @@ foreach($it in $items){
     }
   }
 
-  $a = @('-y','-hide_banner','-v','error','-stats') + $inspec
+  $a = @('-y','-hide_banner','-v','error','-stats') + $encspec
 
   # --- video filter + optional PGS subtitle repositioning (BD crop) ---
   $subInput = $null; $crop = $null
@@ -192,6 +199,20 @@ foreach($it in $items){
     if($it.crop -eq 'auto'){ $crop = Get-Crop $it.src; $vf = "crop=$crop"; Write-Output "   crop=$crop (auto)" }
     elseif("$($it.crop)" -match '^\d+:\d+:\d+:\d+$'){ $crop = "$($it.crop)"; $vf = "crop=$crop"; Write-Output "   crop=$crop (explicit)" }
     else { $vf = $null; Write-Output "   crop=none" }
+    # The -color_* options further down are OUTPUT options: when the source declares different (or
+    # UNKNOWN) colour properties, ffmpeg silently inserts a full software colour conversion and every
+    # 1080p frame goes through swscale on the CPU. Measured on a VC-1 Blu-ray whose tags are all
+    # "unknown": 49s -> 397s for the same 3-minute clip, an 8x penalty that dwarfs anything decode
+    # or the encoder cost. VC-1 discs (Sherlock Holmes, Superman Returns) are routinely untagged,
+    # which is why they crawled while properly-tagged H.264 discs did not.
+    # setparams TAGS the frames instead of converting them, so the output options then match and no
+    # scaler is inserted. HD Blu-ray is bt709 by definition, so tagging is correct, not a guess.
+    $srcCol = "$(& $fp -v error @inspec -select_streams v:0 -show_entries stream=color_space -of csv=p=0 2>$null | Select-Object -First 1)".Trim()
+    if($srcCol -in @('','unknown','reserved')){
+      $sp = 'setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv'
+      $vf = if($vf){ "$sp,$vf" } else { $sp }
+      Write-Output "   source colour tags missing -> setparams (avoids an 8x swscale conversion)"
+    }
     if($ns -gt 0 -and $crop){
       $crop -match '(\d+):(\d+):(\d+):(\d+)'|Out-Null
       $L=[int]$Matches[3]; $T=[int]$Matches[4]; $R=(1920-[int]$Matches[1]-[int]$Matches[3]); $B=(1080-[int]$Matches[2]-[int]$Matches[4])
@@ -263,7 +284,20 @@ foreach($it in $items){
   if($ns -gt 0){ $a += @('-c:s','copy','-metadata:s:s:0','language=eng'); if($origLang -and $origLang -notin @('eng','en')){ $a += @('-disposition:s:0','default') } }  # default English subs ON for foreign originals
   $a += @('-max_muxing_queue_size','1024',$it.out)
 
+  if($env:TRANSCODE_DEBUG){ Write-Output ("   CMD: " + ($a -join ' ')) }
   $t0=Get-Date; & $ff @a; $secs=[int]((Get-Date)-$t0).TotalSeconds
+  # NVENC does the encoding, so a slow item is almost always DECODE-bound (measured on a VC-1
+  # Blu-ray: software decode 1.62x realtime, adding the encode cost only 8% more -- the encoder
+  # idles waiting for frames). $hwaccel puts the decode on the GPU too. It can fail on odd
+  # profiles/codecs, so on failure retry once with software decode before reporting a problem.
+  if((-not (Test-Path $it.out)) -or ((Get-Item $it.out).Length -le 1MB)){
+    if($usedHwaccel){
+      Write-Output "   hwaccel decode failed; retrying with software decode"
+      Remove-Item $it.out -Force -ErrorAction SilentlyContinue
+      $a = @($a | Where-Object { $_ -ne '-hwaccel' -and $_ -ne 'cuda' })
+      $t0=Get-Date; & $ff @a; $secs=[int]((Get-Date)-$t0).TotalSeconds
+    }
+  }
   if((Test-Path $it.out) -and ((Get-Item $it.out).Length -gt 1MB)){ Write-Output ("   OK {0:N2}GB in {1}s" -f ((Get-Item $it.out).Length/1GB),$secs) }
   else { Write-Output "   !! FAILED ($secs s)" }
   Remove-Item "$work\s$i.sup","$work\s${i}_fixed.sup" -ErrorAction SilentlyContinue
