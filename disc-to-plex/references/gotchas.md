@@ -772,3 +772,24 @@ both failures produce a file that only a duration or stream-count check exposes.
 
 These pre-compressed files should be remuxed, never re-encoded: the source is already lossy SD, so
 a second generation only loses quality and burns GPU time for a larger file.
+
+## `crop: "auto"` on a non-1080p Blu-ray stream produces an impossible crop
+
+`Get-Crop`'s fallback returns the 4:3 pillarbox `1440:1080:240:0`. On a Blu-ray whose stream is NOT
+1920x1080 that crop is larger than the source, and ffmpeg refuses it outright:
+
+```
+[Parsed_crop_0] Invalid too big or non positive size for width '1440' or height '1080'
+[vf#0:0] Error reinitializing filters!
+```
+
+Blu-ray extras are frequently **720x480 / 720x576 SD** even though they sit in `BDMV/STREAM` as
+`.m2ts` — all eight Superman Returns featurettes were SD while the feature was 1080p. Probe
+`stream=width,height` before assuming a stream is HD just because of where it lives.
+
+Those SD extras also want the SD treatment, not the BD one: use `kind: "MKV"` (deinterlace +
+preserve DAR) with no `crop`, rather than `kind: "BD"`.
+
+Same root cause as the concat-list case: whenever `Get-Crop` cannot sample properly it falls back to
+a hard-coded 4:3 crop. Treat any `1440:1080:240:0` on a widescreen or non-HD source as a bug signal,
+not a measurement.
