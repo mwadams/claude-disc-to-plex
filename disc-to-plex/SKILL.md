@@ -142,9 +142,17 @@ Before calling any unit done, confirm all five:
 
 - `out` — final Plex-named path (created if missing). Skipped if it already exists >5 MB
   (makes batches **resumable** — a re-run after a fix only redoes failed/missing items).
-- `kind` — `"BD"` (H.264 m2ts, 1080p) or `"DVD"` (MPEG-2 VOB, SD PAL).
-- `src` — BD: the `.m2ts`. DVD: a concat of the title's parts,
-  `"concat:VTS_02_1.VOB|VTS_02_2.VOB|..."` (list every part in order).
+- `kind` — `"BD"` (H.264 m2ts, 1080p), `"DVD"` (MPEG-2 VOB, SD PAL), or `"MKV"` (any
+  already-demuxed file — also the right choice for SD extras sitting on a Blu-ray).
+- `src` — BD: the `.m2ts`, or a `.txt` concat list for a seamless-branching disc.
+  DVD: **the disc FOLDER** (the one containing `VIDEO_TS`), not a VOB path — `kind:"DVD"`
+  drives ffmpeg's `dvdvideo` demuxer, which navigates the disc itself.
+- `title` — DVD only, **required**: the 1-based dvdvideo title number from `scan-disc.ps1`.
+  Omitting it emits an empty `-title` and ffmpeg fails instantly with
+  `Error setting option title to value .` — a whole-manifest failure that still prints
+  `MANIFEST DONE`. Handing `kind:"DVD"` a `concat:…VOB` path fails the same way.
+  Always check the output duration against the scan: the dvdvideo demuxer reads only a
+  title's first cell, so a multi-cell title comes back short (see `references/gotchas.md`).
 - `crop` — BD only. `"auto"` = cropdetect (use for pillarboxed 4:3 footage → ~1440×1080).
   `"none"` = keep full frame (use for image galleries/stills, split-screen comparisons,
   native-16:9). DVD ignores this (no crop; SD is already framed).
