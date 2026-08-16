@@ -407,6 +407,26 @@ guard, so the PowerShell-only rule is the real protection. (If a raw `robocopy` 
 from bash, every switch and UNC path must be quoted/escaped to survive MSYS — not worth it; just use
 PowerShell.)
 
+## A foreground encode killed by a tool timeout leaves an UNFINALISED mkv that passes the resume check
+
+Running `transcode.ps1` in the foreground risks the agent harness's 2-minute command timeout killing
+it mid-write. Matroska is finalised at the end, so the result is a plausible-looking file with **no
+duration in its header**:
+
+```
+format duration: 'N/A'
+[matroska,webm @ ...] File ended prematurely
+```
+
+The trap is `transcode.ps1`'s resume rule — it skips any output that already exists **>5 MB**. An
+80 MB partial therefore looks "done" forever: re-running the manifest silently does nothing, and a
+size check sees a perfectly reasonable number. (Real incident: a 4.28-min Being Human extra came out
+at 80 MB with `nb_read_packets=5368` and no duration.)
+
+**Always launch encodes with `run_in_background`**, never in the foreground. And when a file's
+`format=duration` reads `N/A`, treat it as a partial and delete it before re-running — do not trust
+its size.
+
 ## Operational
 
 - **`-stats` spam**: ffmpeg writes ~1 progress line/second; a long encode log is thousands of
