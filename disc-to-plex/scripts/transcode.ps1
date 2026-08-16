@@ -192,6 +192,20 @@ foreach($it in $items){
 
   $a = @('-y','-hide_banner','-v','error','-stats') + $encspec
 
+  # --- timestamp origin ---------------------------------------------------------------------
+  # A Blu-ray .m2ts does not have to start at PTS 0. The Ipcress File begins at 11.650667, and
+  # its first subtitle packet sits at 41.03 absolute - i.e. 29.4 s into the picture.
+  #
+  # Left alone, ffmpeg rebases the VIDEO by the container start time (-11.65) but the SUBTITLE
+  # stream by its own first packet (-41.03). The two shifts differ, so the subtitles land ~29 s
+  # EARLY. Nothing in the log hints at it, durations are exact, and the OCR pass then inherits
+  # the same error - both the PGS and the SRT are wrong by an identical amount, which makes it
+  # look like a disc-authoring quirk rather than something we did.
+  #
+  # -copyts keeps input timestamps; -start_at_zero then rebases EVERY stream by the same origin.
+  # Harmless when the source already starts at 0 (the DVD path always does).
+  $a += @('-copyts','-start_at_zero')
+
   # --- video filter + optional PGS subtitle repositioning (BD crop) ---
   $subInput = $null; $crop = $null
   if($it.kind -in @('DVD','MKV')){ $vf = 'bwdif=mode=send_frame' }   # SD interlaced source (DVD demuxer OR a MakeMKV-ripped .mkv): deinterlace only; aspect set via -aspect below (preserve source DAR)
