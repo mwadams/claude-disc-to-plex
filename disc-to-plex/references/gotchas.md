@@ -427,6 +427,44 @@ at 80 MB with `nb_read_packets=5368` and no duration.)
 `format=duration` reads `N/A`, treat it as a partial and delete it before re-running — do not trust
 its size.
 
+## Raising the encode bitrate does NOT improve these transfers — measured, don't re-litigate
+
+The settings (`h264_nvenc -preset medium -rc vbr -cq 20`) look conservative, and the obvious
+instinct when a transfer seems soft is to spend more bits. Measured against a **lossless reference
+of the same segment**, scored with VMAF, that instinct is wrong:
+
+Clean live-action (The Italian Job, 60 s):
+
+| config | size | VMAF |
+|---|---|---|
+| current, cq 20 | 75.7 MB | **99.41** |
+| p6 + AQ + lookahead + B-refs, cq 19 | 88.4 MB (+17%) | 99.14 |
+| p7 + multipass + all tools, cq 17 | 111.2 MB (+47%) | 99.35 |
+
+Grain-heavy (Zulu, 45 s) — the hard case, where more bits should pay:
+
+| config | size | time | VMAF |
+|---|---|---|---|
+| **current, cq 20** | 54.3 MB | **38 s** | **77.75** |
+| NVENC h264 p7 cq 17 + all tools | 83.7 MB (+54%) | 36 s | 77.81 |
+| NVENC hevc cq 20 + all tools | 49.6 MB (−9%) | 38 s | 77.26 |
+| x264 CRF 18 slow (CPU) | 50.8 MB | 134 s (3.5x) | 77.40 |
+| x264 CRF 18 tune film + aq-mode 3 | 59.3 MB (+9%) | 138 s (3.6x) | 77.49 |
+
+**Every configuration lands within 0.5 VMAF.** +54% storage buys +0.06. CPU x264 costs 3.5x the
+wall-clock and scores *lower*. The current settings are the fastest, among the smallest, and tied
+for the best score.
+
+The 99 → 77 drop between clean and grainy material is the CONTENT, not the encoder: fine grain is
+imperfectly reproduced by every encoder at sane bitrates, and VMAF penalises it heavily. A soft-
+looking grainy transfer is at the ceiling, not under-provisioned.
+
+**Method note if this is ever retested:** compare against a LOSSLESS extract of the segment, and
+encode from that same file. Seeking two inputs to "the same" timestamp does not give the same
+frames — a first attempt that way scored a CQ-20 Blu-ray at VMAF 50, which is a misalignment
+artefact, not a quality reading. Also, `libvmaf`'s `log_path` breaks on Windows paths because the
+filter parser treats the drive-letter colon as an option separator; read the score from stderr.
+
 ## Operational
 
 - **`-stats` spam**: ffmpeg writes ~1 progress line/second; a long encode log is thousands of
