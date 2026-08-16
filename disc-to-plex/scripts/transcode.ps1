@@ -491,7 +491,12 @@ foreach($it in $items){
     # A track shorter than the sample window, or one volumedetect can't read, yields no match -
     # index into a null Matches and the whole postflight dies AFTER a successful encode, which
     # reads as a failed manifest. Never let a report break the run that produced it.
-    $vol  = & $ff -v error -ss 600 -t 30 -i $it.out -map "0:a:$k" -af volumedetect -f null - 2>&1
+    #
+    # `-v info` is REQUIRED, not incidental: volumedetect prints its summary at info level, so the
+    # habitual `-v error` silently yields NOTHING and every track reads as unmeasurable. The first
+    # version of this guard had exactly that bug - it ran clean, reported no duplicates, and could
+    # never have reported any. `-nostats` keeps the per-second progress spam out of the capture.
+    $vol  = & $ff -hide_banner -nostats -v info -ss 600 -t 30 -i $it.out -map "0:a:$k" -af volumedetect -f null - 2>&1
     $mm   = $vol | Select-String 'mean_volume: (-?[\d.]+)' | Select-Object -First 1
     $pm   = $vol | Select-String 'max_volume: (-?[\d.]+)'  | Select-Object -First 1
     if(-not $mm -or -not $pm){ $sigs += "unknown-$k"; continue }   # unique: never counts as a dupe
