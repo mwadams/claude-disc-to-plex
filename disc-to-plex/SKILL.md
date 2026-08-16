@@ -110,13 +110,21 @@ Before calling any unit done, confirm all five:
    upscaled 3–5x on a modern screen). Users notice this.
 
    ```powershell
-   pwsh -File scripts/ocr-subtitles.ps1 -Path "<staged file or folder>" -Mode Mux
+   pwsh -File scripts/ocr-subtitles.ps1 -Path "<staged file or folder>"
    ```
 
-   It extracts the bitmap track, OCRs it to SRT, muxes the SRT in default-flagged, and **keeps the
-   original bitmap** as a fallback. Use `-Mode Sidecar` to retro-fit files already on the NAS: that
-   writes `<name>.eng.srt` alongside, which Plex reads automatically and which never rewrites the
-   media (so it doesn't collide with the NAS delete/move guard).
+   It extracts the bitmap track, OCRs it to SRT, and writes `<name>.eng.srt` **alongside** the
+   media, leaving the original bitmap track untouched as a fallback. Plex reads sidecars
+   automatically.
+
+   **Always sidecar; do not mux.** OCR errors only surface when somebody watches the film, so what
+   matters is how cheaply they can be undone. A sidecar is a text file — correct it or delete it in
+   seconds. A muxed track means rewriting the whole mkv: stripping three bad Shakespeare tracks cost
+   a full remux of 10 GB, and ~4,900 pipe-for-`I` artefacts muxed into earlier transfers are simply
+   not worth repairing at ~200 GB of rewriting. `-Mode Mux` still exists, but prefer the default.
+
+   **A sidecar is a separate file — publish it too.** Copy the `.srt` to the NAS with the `.mkv`, or
+   the subtitles will not be there. Per-file `robocopy` filters that name only `*.mkv` will miss them.
 
    The script gates its own output — a run with under 5 cues, or with >30% one-to-two-character
    cues, is treated as a failed recognition and refused. Do not remove those gates: `seconv`

@@ -12,12 +12,17 @@
   always KEPT: OCR is never perfect, and the bitmap costs little.
 
   Two output modes:
-    -Mode Mux      (default) remux the SRT into the MKV as a default-flagged track. Use for new
-                   transfers, while the file is still local and before publishing.
-    -Mode Sidecar  write <basename>.<lang>.srt next to the media file. Plex picks these up
-                   automatically. Use for retro-fitting an existing library: it CREATES a file
-                   and never rewrites the media, so it does not run into the NAS delete/move
-                   guard.
+    -Mode Sidecar  (DEFAULT) write <basename>.<lang>.srt next to the media file. Plex picks these
+                   up automatically. Use this for everything: new transfers AND retro-fits. It
+                   CREATES a file and never rewrites the media, so it does not run into the NAS
+                   delete/move guard - and, more importantly, a bad OCR can be corrected or
+                   deleted later without touching the video at all.
+    -Mode Mux      remux the SRT into the MKV as a default-flagged track. Available, but prefer
+                   Sidecar: OCR errors surface only when someone watches the film, and by then
+                   repairing a muxed track means rewriting the whole file.
+
+  REMEMBER when publishing: a sidecar is a SEPARATE FILE. Copy the .srt to the NAS alongside the
+  .mkv, or the subtitles simply will not be there.
 
 .PARAMETER Path
   An .mkv file, or a folder to process recursively.
@@ -40,7 +45,13 @@
 param(
   [Parameter(Mandatory)][string]$Path,
   [string]$Lang = 'eng',
-  [ValidateSet('Mux','Sidecar')][string]$Mode = 'Mux',
+  # Sidecar is the DEFAULT and should stay that way. OCR is imperfect and its failures are only
+  # visible once someone watches the film, so the recovery cost matters more than the tidiness of
+  # a single file. Fixing a sidecar is a text edit; fixing a muxed track means rewriting a
+  # multi-gigabyte mkv - which is what stripping three bad Shakespeare tracks actually cost, and
+  # why ~4,900 pipe-for-I artefacts already muxed into earlier transfers are not worth repairing.
+  # Plex reads sidecars automatically, so nothing is lost by keeping the text outside the media.
+  [ValidateSet('Mux','Sidecar')][string]$Mode = 'Sidecar',
   # Shift every cue by this many milliseconds. NEGATIVE = show earlier, POSITIVE = show later.
   #
   # LEAVE THIS AT 0 unless you have a specific reason. The OCR introduces no drift - verified by
@@ -178,6 +189,26 @@ foreach ($f in $targets) {
         '{0:D2}:{1:D2}:{2:D2},{3:D3}' -f [int]($ms/3600000), [int](($ms%3600000)/60000), [int](($ms%60000)/1000), [int]($ms%1000)
       })
       Set-Content -LiteralPath $srt -Value $shifted -Encoding UTF8 -NoNewline
+    }
+
+    # ---- SYSTEMATIC OCR REPAIR (before the gates, so they judge the shipped text)
+    #
+    # The single commonest error on these discs is a capital I read as a pipe: "Ol! | was here
+    # before you!". The substitution is safe in one direction only - a pipe is essentially never
+    # legitimate in dialogue, whereas I is one of the commonest characters in English - so this is
+    # a rare case where a blanket replacement is right.
+    #
+    # Deliberately NOT doing the same for l/I or ./, : those are genuinely ambiguous and a wrong
+    # "fix" would corrupt correct text, which is worse than leaving a visible artefact.
+    $text = Get-Content $srt -Raw
+    $pipes = ([regex]::Matches($text, '\|')).Count
+    if ($pipes -gt 0) {
+      # only inside cue text - never touch the index or the --> timing lines
+      $fixed = ($text -split "`r?`n" | ForEach-Object {
+        if ($_ -match '^\d+$' -or $_ -match '-->') { $_ } else { $_ -replace '\|', 'I' }
+      }) -join "`r`n"
+      Set-Content -LiteralPath $srt -Value $fixed -Encoding UTF8
+      Write-Host ("  repaired {0} pipe->I substitution(s)" -f $pipes)
     }
 
     # ---- QUALITY GATES. A bad OCR is worse than blocky subtitles, and seconv reports success
