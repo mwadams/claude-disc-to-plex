@@ -28,6 +28,47 @@ image galleries (long single-image slideshows, often with music), textless/archi
 featurettes, and genuine trailers (~1 min of episode footage). When in doubt, extract a frame
 (`ffmpeg -ss <mid> -i <src> -frames:v 1 out.jpg`) and look.
 
+## Read the extra's OWN TITLE CARD before naming it from a packaging list
+
+The fastest reliable way to name a featurette is to let it name itself. These discs put the title
+on screen in the first ~10–45 seconds, and one sweep settles what a packaging list or a memory of
+the release cannot:
+
+```powershell
+foreach($t in 3,8,14,20,22,24,26,28,30,45){
+  ffmpeg -y -v error -ss $t -i $src -frames:v 1 "card-$t.png"
+}
+```
+
+Stack them and look. On In the Line of Fire this turned two ~20-minute documentaries that both
+*sounded* like "the Secret Service one" into a definitive answer: at 22–26 s the second one titles
+itself **"In the Line of Fire: The Ultimate Sacrifice"**, over a lower-third reading *Jeff Maguire,
+Screenwriter*. The first opens "SHOWTIME PRESENTS", which identifies it as the broadcast
+documentary instead.
+
+Two habits that follow:
+
+- **A declared extras list is a hypothesis, not evidence.** Titles from packaging or memory
+  routinely fail to match what is actually on the disc — Zulu's disc has two featurettes that match
+  neither remaining declared name, and Run Lola Run's declared commentary is simply not present
+  (MakeMKV lists seven audio tracks on the feature playlist, none of them a commentary).
+- **When content cannot settle a name, use a descriptive one and say so.** A wrong confident title
+  is worse than an accurate plain one, and the user can rename in seconds if they know the release.
+
+## A "play-all" of deleted scenes hides duplicates — prove containment, then keep ONE
+
+Discs commonly expose deleted scenes twice: individually, and as a single play-all reel. Shipping
+both puts near-duplicate entries in Plex; shipping only the individuals can silently drop a scene
+the play-all includes and the individual list does not.
+
+Check by sampling the play-all near the END, not the start — the head always matches the first
+scene, which proves nothing. In the Line of Fire's 5:01 reel opens on the same piano-bar dialogue
+as the 2:32 individual scene, but at 4:30 it is playing the news-report scene from a *different*
+individual title, which established that the reel is the superset. Keep the reel, drop the parts.
+
+Beware the arithmetic shortcut: the individual scenes summed to 3:24 against a 5:01 reel, so the
+reel held something not exposed separately at all.
+
 ## Episodes vs one-title-per-disc vs concatenated
 
 - **One title per episode** (many Blu-rays, some DVDs): each episode is its own `.m2ts` or DVD

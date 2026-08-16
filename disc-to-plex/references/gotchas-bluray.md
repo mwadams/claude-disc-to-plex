@@ -15,6 +15,58 @@ Part of the `disc-to-plex` gotchas set — see [gotchas.md](gotchas.md) for the 
 - [Seamless-branching Blu-rays, and why `crop: "auto"` lies on them](#seamless-branching-blu-rays-and-why-crop-auto-lies-on-them)
 - [`crop: "auto"` on a non-1080p Blu-ray stream produces an impossible crop](#crop-auto-on-a-non-1080p-blu-ray-stream-produces-an-impossible-crop)
 - [A `.mpls` need NOT contain the stream that shares its number](#a-mpls-need-not-contain-the-stream-that-shares-its-number)
+- [MakeMKV title indices shift with `--minlength` — enumerate and rip with the SAME value](#makemkv-title-indices-shift-with-minlength-enumerate-and-rip-with-the-same-value)
+- [Ripping extras: never `all`, never in the foreground](#ripping-extras-never-all-never-in-the-foreground)
+- [On a catalogue Blu-ray, HD vs SD separates the trailers from the legacy featurettes](#on-a-catalogue-blu-ray-hd-vs-sd-separates-the-trailers-from-the-legacy-featurettes)
+
+## MakeMKV title indices shift with `--minlength` — enumerate and rip with the SAME value
+
+The title numbers MakeMKV prints are positions in the **filtered** list, not stable disc identifiers.
+Enumerating In the Line of Fire with `--minlength=60` and then ripping with `--minlength=50`
+produced eleven files whose durations did not match the eleven titles enumerated: two ~1-minute
+items appeared that the enumeration had never listed, and the 1:34 title was gone.
+
+Nothing errors. The rip succeeds, the count matches, and every downstream name is wrong — which is
+the same shape as every other expensive failure here.
+
+Either pass the identical `--minlength` to both calls, or (better) **identify the ripped files from
+their own content and durations** and ignore the index entirely. The second is what this pipeline
+does anyway for naming, so the index only ever needs to be right enough to fetch the file.
+
+## Ripping extras: never `all`, never in the foreground
+
+Two failure modes, both hit on the same disc:
+
+- **`all` includes the feature.** Ripping a disc's extras with `mkv "file:<disc>" all` copies the
+  90-minute feature first — tens of GB you already have — and on Goats that blew the agent
+  harness's 10-minute foreground timeout, leaving a 12 GB partial `title_t00.mkv`.
+- **Foreground invocation gets killed by the tool timeout**, exactly as with `transcode.ps1`.
+
+Rip only the titles you need, **sequentially inside one background command**:
+
+```powershell
+foreach($i in 1..8){
+  & $mk -r --cache=1 --minlength=60 --noscan mkv "file:$disc" $i $out 2>&1 |
+    Select-String 'titles saved'
+}
+```
+
+Sequential-in-one-shell is what the "one disc at a time" rule means — it is *concurrent*
+`makemkvcon` processes that silently save 0 files, not successive ones. Delete any partial from a
+killed run before re-running: a 12 GB partial looks entirely plausible on disk.
+
+## On a catalogue Blu-ray, HD vs SD separates the trailers from the legacy featurettes
+
+A useful shortcut when classifying a pile of ripped extras: probe `width,height` on each. On
+catalogue re-releases the **trailers are re-mastered HD (1920×1080, 16:9)** while the **featurettes
+and deleted scenes are the original SD (720×480 or 720×576, 4:3)** carried over from the DVD.
+
+In the Line of Fire split exactly that way — 4 SD featurettes plus SD deleted scenes, and 2 HD
+trailers — and the split resolved two items whose content alone was ambiguous (a silent 56-second
+close-up turned out to be the teaser, not a deleted scene).
+
+It also drives the manifest: SD items need `kind: "MKV"` (deinterlace + source DAR), HD items
+`kind: "BD"`. Getting that backwards squishes a 4:3 featurette or leaves an SD one interlaced.
 
 ## `crop: "auto"` cropped the SIDES off a letterboxed widescreen film
 
