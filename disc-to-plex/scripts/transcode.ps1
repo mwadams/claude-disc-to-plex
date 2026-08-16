@@ -202,9 +202,26 @@ foreach($it in $items){
   # the same error - both the PGS and the SRT are wrong by an identical amount, which makes it
   # look like a disc-authoring quirk rather than something we did.
   #
-  # -copyts keeps input timestamps; -start_at_zero then rebases EVERY stream by the same origin.
-  # Harmless when the source already starts at 0 (the DVD path always does).
-  $a += @('-copyts','-start_at_zero')
+  # There are two routes a subtitle can take out of here and they need DIFFERENT fixes:
+  #
+  #   direct   (no crop)  the PGS is mapped straight from input 0  -> -copyts -start_at_zero
+  #   via .sup (cropped)  it is extracted, repositioned, remuxed   -> -itsoffset on input 1
+  #
+  # -start_at_zero cannot serve both: applied globally it also rebases the .sup input back to
+  # zero, silently undoing itself. That is what made a first attempt at this fix appear to work
+  # on an uncropped test and fail on every real (cropped) Blu-ray.
+  #
+  # $subRel is where the first cue genuinely belongs, measured once from the source: the first
+  # subtitle packet's PTS minus the container start. For Run Lola Run that is
+  # 31.754078 - 11.650667 = 20.103 s.
+  $subRel = 0.0
+  if($it.kind -eq 'BD' -and $ns -gt 0){
+    $st0 = [double]("$(& $fp -v error @inspec -show_entries format=start_time -of csv=p=0 2>$null)".Trim() -replace '^$','0')
+    $fp0 = "$(& $fp -v error @inspec -select_streams "s:$subIdx" -show_entries packet=pts_time -of csv=p=0 -read_intervals '%+180' 2>$null | Select-Object -First 1)".Trim().TrimEnd(',')
+    if($fp0 -and $fp0 -ne 'N/A'){ $subRel = [math]::Round([double]$fp0 - $st0, 3) }
+    if($subRel -lt 0){ $subRel = 0.0 }
+    if($st0 -gt 0.5){ Write-Output ("   source starts at {0}s; first subtitle belongs at {1}s" -f [math]::Round($st0,3), $subRel) }
+  }
 
   # --- video filter + optional PGS subtitle repositioning (BD crop) ---
   $subInput = $null; $crop = $null
@@ -238,6 +255,9 @@ foreach($it in $items){
         Write-Output "   crop is full-frame; PGS repositioning not needed"
       } else {
         $sup="$work\s$i.sup"; $supf="$work\s${i}_fixed.sup"
+        # Extract zero-based deliberately: a .sup carries no absolute origin, so whatever base it
+        # has is discarded when ffmpeg reads it back. $subRel below is the single source of truth
+        # for where these cues belong.
         & $ff -y -hide_banner -v error @inspec -map "0:s:$subIdx" -c copy $sup 2>&1 | Out-Null
         if((Test-Path $sup) -and ((Get-Item $sup).Length -gt 1KB)){
           & $sm $sup $supf --crop $L $T $R $B 2>&1 | Out-Null
@@ -248,7 +268,14 @@ foreach($it in $items){
       }
     }
   }
-  if($subInput){ $a += @('-i',$subInput) }
+  if($subInput){
+    # ffmpeg discards the .sup's own base on read, so put the cues back where they belong.
+    if($subRel -gt 0){ $a += @('-itsoffset',[string]$subRel) }
+    $a += @('-i',$subInput)
+  } elseif($ns -gt 0 -and $subRel -gt 0) {
+    # direct-map path: rebase every stream from the container origin instead of per-stream
+    $a += @('-copyts','-start_at_zero')
+  }
 
   # --- stream maps ---
   $a += @('-map','0:v:0')
