@@ -206,6 +206,44 @@ Before calling any unit done, confirm all five:
   the source's first track is 5.1 — **plus a passthru copy of every original track**. English
   only. Commentary tracks tagged. See `references/pipelines.md` for the full rationale.
 
+## Scripts
+
+Core pipeline, in the order you use them:
+
+| Script | Purpose |
+|---|---|
+| `install-tools.ps1` | fetch a driver-compatible ffmpeg, SupMover, mkvextract, seconv; write `tool-paths.json` |
+| `scan-disc.ps1` | enumerate and classify DVD titles across a set of discs |
+| `make-manifest.ps1` | build a transcode manifest from a pipe-delimited episode table |
+| `transcode.ps1` | the encoder — BD/DVD/MKV, crop, audio matrix, subtitle selection |
+| `ocr-subtitles.ps1` | bitmap subtitles → SRT sidecar (step 5b; **sidecar is the default**) |
+| `publish-work.ps1` | copy a finished work to the NAS and verify every file |
+| `prune-empty-folders.ps1` | tidy folders left behind by reclaims |
+
+Plex fix-ups, after the scan:
+
+| Script | Purpose |
+|---|---|
+| `verify-plex-episodes.ps1` | diff each episode's agent title against its filename (catches numbering shifts) |
+| `fix-plex-extras.ps1` | set+lock Season 00 titles from filenames, clear wrong summaries, upload real posters |
+| `lock-plex-titles.ps1` | set+lock titles generally |
+| `set-poster-from-disc.ps1` | upload the disc's own cover art for `local://` items |
+| `extract-title-cards.ps1` | pull frames for identifying unlabelled titles |
+
+Library-wide maintenance (not part of a single disc's flow):
+
+| Script | Purpose |
+|---|---|
+| `survey-subtitles.ps1` | audit which library items still carry bitmap-only subtitles |
+| `ocr-library-batch.ps1` | resumable OCR campaign over that audit; skips non-mkv by default |
+| `fix-srt-pipes.ps1` | repair the `\|`→`I` artefact in already-published sidecars |
+| `inventory-mp4s.ps1` | inventory every mp4 with copy date, and flag broken stubs by role-aware duration |
+
+`publish-work.ps1` deserves a note: it copies the **whole work folder**, not a named file. A
+`robocopy … "<title>.mkv"` filter silently drops sidecar subtitles, artwork and extras. It also
+refuses to publish any `.mkv` whose header has no duration — the unfinalised-file signature — and
+requires `-Overwrite` to replace an existing NAS copy.
+
 ## References
 
 - `references/pipelines.md` — BD vs DVD pipeline details, crop policy, audio matrix, subtitles.

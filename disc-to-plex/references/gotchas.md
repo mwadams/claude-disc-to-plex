@@ -427,6 +427,32 @@ at 80 MB with `nb_read_packets=5368` and no duration.)
 `format=duration` reads `N/A`, treat it as a partial and delete it before re-running — do not trust
 its size.
 
+## The CLPI clip-info file is the authoritative stream list on a Blu-ray — better than the MPLS
+
+For picking audio and subtitle tracks on an untagged BD, `BDMV/CLIPINF/<clip>.clpi` beats both the
+m2ts (no tags at all) and a regex sweep of the `.mpls`. Its stream entries sit at a **24-byte
+stride** with the ISO-639 code in plain ASCII, so they read cleanly and IN ORDER:
+
+```powershell
+$b=[IO.File]::ReadAllBytes("$stage\BDMV\CLIPINF\00001.clpi")
+for($i=3;$i -lt $b.Length-3;$i++){
+  $t=[Text.Encoding]::ASCII.GetString($b,$i,3)
+  if($t -in @('eng','deu','fra','spa','ita','nld','dan','swe','nor','fin','por')){ "$i $t" } }
+```
+
+The Italian Job returned `eng eng deu spa fra ita eng eng` for audio, then the subtitle list
+beginning `dan deu eng…`. That immediately shows two things worth knowing:
+
+- **The two trailing `eng` entries are the two commentaries** the disc declares. A first pass had
+  assumed the five AC3 2.0 tracks were deu/spa/fra/ita/eng and kept only one — silently dropping a
+  commentary. The CLPI makes the real layout obvious.
+- **Subtitles start with Danish.** A habitual `subTrack: 0` would ship Danish subtitles.
+
+Loudness profiling (`volumedetect` at two quiet points) is a useful CROSS-CHECK but not proof: the
+2.0 tracks all sit above the 5.1 mix simply because they are stereo downmixes. What confirmed the
+commentaries here was that each stood out at a *different* timestamp — two tracks with independent
+talking patterns — while the dubs tracked the film mix together.
+
 ## Raising the encode bitrate does NOT improve these transfers — measured, don't re-litigate
 
 The settings (`h264_nvenc -preset medium -rc vbr -cq 20`) look conservative, and the obvious
