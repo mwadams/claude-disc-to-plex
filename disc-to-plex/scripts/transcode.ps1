@@ -66,6 +66,97 @@ $fp = Join-Path (Split-Path $ff) 'ffprobe.exe'    # our ffprobe (has dvdvideo de
 $work = Join-Path $ToolsDir ("work\pid$PID"); New-Item -ItemType Directory -Force $work | Out-Null
 $items = Get-Content $Manifest -Raw | ConvertFrom-Json
 
+# ---------------------------------------------------------------------------------------------
+# PREFLIGHT: a BD item reading a RAW .m2ts is only safe if no playlist extends that stream.
+#
+# WHY THIS IS ENFORCED IN CODE RATHER THAN WRITTEN DOWN. "Enumerate Blu-rays with MakeMKV, not by
+# picking a .m2ts" is in gotchas.md in capitals, and it was still violated hours after being
+# written: the Zulu extras were enumerated correctly WITH MakeMKV and then encoded from raw
+# streams anyway. Trailer 2 shipped at 1:23 against a true 3:38 because title 1 is a PLAYLIST
+# spanning several streams and only the first was read. The same class of error shipped the
+# 95-minute cut of The Italian Job when the disc holds 99.5.
+#
+# A truncated extra looks completely normal - it plays, it has audio, it just stops early - so
+# nothing downstream catches it. This check costs one MakeMKV info call per disc and makes the
+# rule mechanical instead of remembered.
+#
+# It ABORTS rather than warns: shipping the wrong length is the expensive outcome, and the fix
+# (rip the title with MakeMKV, point src at the .mkv) takes a minute.
+# ---------------------------------------------------------------------------------------------
+function Preflight-BDStreams($items){
+  $makemkv = 'C:\Program Files (x86)\MakeMKV\makemkvcon64.exe'
+  if(-not (Test-Path -LiteralPath $makemkv)){ Write-Warning 'MakeMKV not found - skipping raw-m2ts playlist check'; return }
+
+  $raw = @($items | Where-Object { $_.kind -eq 'BD' -and "$($_.src)" -match '\.m2ts$' })
+  if(-not $raw){ return }
+
+  # group by disc root (…\<disc>\BDMV\STREAM\x.m2ts -> …\<disc>) so we call MakeMKV once per disc
+  $byDisc = $raw | Group-Object { (Split-Path (Split-Path (Split-Path $_.src -Parent) -Parent) -Parent) }
+  $problems = @()
+
+  foreach($g in $byDisc){
+    $disc = $g.Name
+    if(-not (Test-Path -LiteralPath $disc)){ continue }
+    $info = & $makemkv -r --cache=1 info "file:$disc" 2>&1
+
+    # TINFO:<id>,9,0,"H:MM:SS" = runtime, TINFO:<id>,16,0,"<source>" = playlist or stream it came from
+    $len = @{}; $srcOf = @{}
+    foreach($line in $info){
+      if($line -match '^TINFO:(\d+),9,0,"(\d+):(\d\d):(\d\d)"'){
+        $len[[int]$Matches[1]] = [int]$Matches[2]*3600 + [int]$Matches[3]*60 + [int]$Matches[4]
+      } elseif($line -match '^TINFO:(\d+),16,0,"([^"]+)"'){
+        $srcOf[[int]$Matches[1]] = $Matches[2]
+      }
+    }
+    if(-not $len.Count){ Write-Warning "preflight: MakeMKV reported no titles for $disc"; continue }
+
+    foreach($it in $g.Group){
+      $stream = Split-Path $it.src -Leaf                     # e.g. 00020.m2ts
+      $stem   = [IO.Path]::GetFileNameWithoutExtension($stream)
+      $actual = [double](& $fp -v error -show_entries format=duration -of csv=p=0 $it.src 2>$null)
+      if(-not $actual){ continue }
+
+      # Titles whose source IS this stream are fine. The danger is a PLAYLIST title that is
+      # materially longer than the stream AND actually contains it - that playlist spans clips
+      # this item will never read.
+      #
+      # Containment matters, or the check is useless noise: every extra on a disc is shorter than
+      # the FEATURE playlist, so a length-only test flags all of them and gets ignored. A .mpls
+      # lists its clips as plain ASCII 5-digit names before "M2TS", so membership reads directly.
+      $cands = $len.Keys | Where-Object {
+        $s = $srcOf[$_]
+        if(-not $s -or $len[$_] -le $actual + 20){ return $false }
+        if($s -eq $stream){ return $false }
+        if($s -notmatch '\.mpls$'){ return $false }
+        $mpls = Join-Path $disc "BDMV\PLAYLIST\$s"
+        if(-not (Test-Path -LiteralPath $mpls)){ return $true }   # can't prove it - report it
+        $txt = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($mpls))
+        $clips = [regex]::Matches($txt,'(\d{5})(?=M2TS)') | ForEach-Object { $_.Groups[1].Value }
+        return ($clips -contains $stem)
+      }
+      foreach($c in $cands){
+        $problems += [pscustomobject]@{
+          Out = Split-Path $it.out -Leaf; Stream = $stream
+          StreamMin = [math]::Round($actual/60,2); TitleId = $c
+          TitleMin = [math]::Round($len[$c]/60,2); TitleSrc = $srcOf[$c]
+        }
+      }
+    }
+  }
+
+  if($problems){
+    Write-Output ''
+    Write-Output '*** PREFLIGHT ABORT: raw .m2ts shorter than a playlist title on the same disc ***'
+    $problems | Format-Table -AutoSize | Out-String | Write-Output
+    Write-Output 'A playlist spans multiple streams; encoding the raw .m2ts ships a TRUNCATED file.'
+    Write-Output 'Fix: rip the title with MakeMKV, then point src at the resulting .mkv (kind stays "BD"):'
+    Write-Output '  makemkvcon64.exe -r --cache=1 --noscan mkv "file:<disc>" <titleId> <outdir>'
+    Write-Output 'If the longer playlist is genuinely unrelated, set "allowRawStream": true on that item.'
+    exit 2
+  }
+}
+if(-not ($items | Where-Object { $_.allowRawStream -eq $true })){ Preflight-BDStreams $items }
+
 function Has($o,$n){ $o.PSObject.Properties.Name -contains $n -and $null -ne $o.$n -and "$($o.$n)" -ne '' }
 function InSpec($it,[switch]$Hwaccel){   # ffmpeg/ffprobe input args (demuxer + -i) for this item
   # -hwaccel cuda decodes on the GPU and hands frames back in system memory, so the crop/bwdif
@@ -362,4 +453,66 @@ foreach($it in $items){
   else { Write-Output "   !! FAILED ($secs s)" }
   Remove-Item "$work\s$i.sup","$work\s${i}_fixed.sup" -ErrorAction SilentlyContinue
 }
+
+# ---------------------------------------------------------------------------------------------
+# POSTFLIGHT: report untitled and DUPLICATE audio tracks.
+#
+# WHY. Zulu shipped three audio tracks where the disc has two: a:0 and a:1 were the same dialogue
+# mix twice over, and a:2 - the commentary - carried no title at all. Nothing in the container
+# revealed it; it surfaced only by transcribing the audio. A sweep then found untitled tracks on
+# NINE of eleven films in the batch (King Lear had four tracks all carrying the same dialogue).
+#
+# The cause is structural, not careless: discs ship one mix in several formats (5.1 / stereo /
+# TrueHD), we transcode them all to AAC - which makes them genuinely redundant - and the one
+# track that IS different, the commentary, ends up unlabelled among them. In Plex that means a
+# viewer picking "English" at random may land on a commentary.
+#
+# This only REPORTS. Which duplicate to keep, and what a commentary should be called, needs a
+# human or a transcript (scripts/identify-audio.py); silently dropping tracks is how content gets
+# lost. Fixing is a lossless remux - no re-encode - so acting on this is cheap.
+# ---------------------------------------------------------------------------------------------
+$audioFlags = @()
+foreach($it in $items){
+  if(-not (Test-Path -LiteralPath $it.out)){ continue }
+  $rows = @(& $fp -v error -select_streams a -show_entries 'stream=index:stream_tags=title' -of csv=p=0 $it.out 2>$null)
+  if($rows.Count -lt 2){ continue }
+
+  $untitled = @()
+  for($k=0; $k -lt $rows.Count; $k++){
+    $title = ($rows[$k] -split ',',2)[1]
+    if(-not $title){ $untitled += "a:$k" }
+  }
+
+  # Cheap duplicate detection: mean volume + peak over the same 30 s window. Two encodes of the
+  # SAME mix agree to ~0.1 dB; a commentary or a dub does not. This is a prompt to check, never
+  # proof - identical figures on genuinely different tracks are possible, so verify before acting.
+  $sigs = @()
+  for($k=0; $k -lt $rows.Count; $k++){
+    # A track shorter than the sample window, or one volumedetect can't read, yields no match -
+    # index into a null Matches and the whole postflight dies AFTER a successful encode, which
+    # reads as a failed manifest. Never let a report break the run that produced it.
+    $vol  = & $ff -v error -ss 600 -t 30 -i $it.out -map "0:a:$k" -af volumedetect -f null - 2>&1
+    $mm   = $vol | Select-String 'mean_volume: (-?[\d.]+)' | Select-Object -First 1
+    $pm   = $vol | Select-String 'max_volume: (-?[\d.]+)'  | Select-Object -First 1
+    if(-not $mm -or -not $pm){ $sigs += "unknown-$k"; continue }   # unique: never counts as a dupe
+    $sigs += "$($mm.Matches[0].Groups[1].Value)/$($pm.Matches[0].Groups[1].Value)"
+  }
+  $dupes = @($sigs | Group-Object | Where-Object { $_.Count -gt 1 } | ForEach-Object { $_.Group[0] })
+
+  if($untitled -or $dupes){
+    $audioFlags += [pscustomobject]@{
+      File = Split-Path $it.out -Leaf; Tracks = $rows.Count
+      Untitled = ($untitled -join ' '); DuplicateSig = ($dupes -join ' ')
+    }
+  }
+}
+if($audioFlags){
+  Write-Output ''
+  Write-Output '*** AUDIO REVIEW NEEDED (untitled and/or duplicate tracks) ***'
+  $audioFlags | Format-Table -AutoSize | Out-String | Write-Output
+  Write-Output 'Identify each track from its CONTENT before labelling or dropping anything:'
+  Write-Output '  python scripts/identify-audio.py "<file>" --tracks 0 1 2 --start 3000'
+  Write-Output 'Then fix by REMUX (stream copy, no re-encode) - see gotchas.md "duplicate audio".'
+}
+
 Write-Output "MANIFEST DONE"

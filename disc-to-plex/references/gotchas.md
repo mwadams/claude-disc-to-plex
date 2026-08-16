@@ -1051,3 +1051,78 @@ bitmap track as a fallback.
   RTX 4060 laptop (it is CPU-bound; the GPU is irrelevant). A feature-length film runs 800–1500
   cues, so 10–25 minutes *per file*. A whole-library retro-fit is days of wall-clock, not hours —
   size the batches accordingly and run them when the encode lanes are otherwise idle.
+
+## A `.mpls` need NOT contain the stream that shares its number
+
+Zulu's `00020.mpls` contains clips **00019 and 00021** — not `00020.m2ts` at all. `00020.m2ts` is a
+separate 73 s teaser that no playlist references under its own name.
+
+This produced a two-stage mistake worth remembering as one story:
+
+1. MakeMKV reported title 1 (`00020.mpls`) as **3:38** while `00020.m2ts` probed at **1:23**. That
+   looks exactly like the playlist-truncation failure, so the "fix" was to rip title 1 and encode
+   that instead.
+2. Title 1 is the *theatrical trailer plus a 1-second ident* — i.e. the same content as title 6
+   (`00019.m2ts`, 3:37). The result was **two identical trailers shipped**, and the genuine teaser
+   deleted. A frame from each at t=30 s, hstacked, showed the same title card in both halves.
+
+**A length mismatch between a stream and a same-numbered playlist is NOT evidence of truncation.**
+Prove containment before acting — the clip list is plain ASCII in the `.mpls`:
+
+```powershell
+$txt = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($mpls))
+[regex]::Matches($txt,'(\d{5})(?=M2TS)') | ForEach-Object { $_.Groups[1].Value }
+```
+
+If the stream's own number is absent from that list, the playlist is a *different item* and the raw
+stream was right all along. `transcode.ps1`'s preflight now does exactly this check and aborts with
+the offending playlist named; set `"allowRawStream": true` on an item to override it deliberately.
+
+**And always frame-compare two outputs you believe are different items.** Duplicate content is
+invisible in every structural check — both files had plausible, different durations.
+
+## Duplicate audio tracks hide an UNLABELLED commentary — sweep the whole batch
+
+Zulu shipped **three** audio tracks where MakeMKV reports two on the disc: `a:0` and `a:1` were the
+same dialogue mix twice, and `a:2` — the commentary — carried no title. In Plex that means picking
+"English" can land a viewer in the commentary.
+
+It is not a one-off. A sweep of batch 4 found untitled audio on **nine of eleven films**:
+
+| film | tracks | finding |
+|---|---|---|
+| King Lear | 4 | all four are the SAME dialogue — two pure duplicates |
+| The Men Who Stare At Goats | 5 | `a:3`/`a:4` are the two commentaries, both untitled |
+| The Ipcress File | 4 | all four the same dialogue |
+| Run Lola Run | 4 | correctly labelled incl. the English dub — no action |
+
+The cause is structural, so expect it on any disc: the source ships one mix in several formats
+(5.1 / stereo / TrueHD), we transcode them **all to AAC**, which makes them genuinely redundant —
+and the one track that differs, the commentary, ends up unlabelled among them.
+
+`transcode.ps1` now reports untitled and duplicate-signature tracks after every manifest
+(`volumedetect` mean+peak over the same 30 s window; two encodes of one mix agree to ~0.1 dB).
+Treat it as a **prompt to check, never proof** — confirm with `identify-audio.py` before dropping
+anything, then fix by **remux** (stream copy, no re-encode, minutes not hours).
+
+## Write the rule into the SCRIPT, not just into this file
+
+This document is >1,000 lines. Reading it end-to-end costs more than a single tool call allows, and
+after a context compaction it is a summary that survives, not the detail. That is why the same
+mistakes recurred **hours after being documented in capitals**: the Zulu extras were enumerated
+correctly with MakeMKV and then encoded from raw `.m2ts` anyway, which is precisely what the
+"ENUMERATE BLU-RAYS WITH MakeMKV" entry forbids.
+
+Knowing a rule and applying it are different things, and prose cannot enforce itself. When a lesson
+here can be expressed as a check, **put it in the code and make it abort or report**:
+
+- raw-`.m2ts` vs containing-playlist length → preflight abort (`Preflight-BDStreams`)
+- untitled / duplicate audio → postflight report
+- ffmpeg running / recently-touched folder → `prune-empty-folders.ps1` refuses
+- `.mkv` with `duration = N/A` → `publish-work.ps1` refuses
+
+A guard also catches what recall cannot: the containment check above **failed my own "fix"** and
+exposed the duplicate trailers within a minute of being written. Prefer a noisy guard to a
+remembered rule — but make it precise, or it gets ignored. The first version of this preflight
+compared lengths only, so it flagged every extra against the feature playlist; useless noise. It
+became useful once it proved containment.
