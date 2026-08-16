@@ -129,7 +129,23 @@ foreach ($f in $targets) {
   if (-not $PSCmdlet.ShouldProcess($f.Name, "OCR subtitle track $($track.Index) ($($track.Codec))")) { continue }
 
   try {
-    & $mkvx tracks $f.FullName "$($track.Index):$bmp" 2>&1 | Out-Null
+    # mkvextract reads MATROSKA ONLY. A library also contains .mp4 rips that legitimately carry
+    # dvd_subtitle tracks, and on those mkvextract exits quietly having written nothing - which
+    # reads as an OCR failure when it is really a container mismatch. Remux just the wanted
+    # subtitle stream into a temporary single-track mkv first (stream copy, no re-encode); inside
+    # that file the track is always id 0.
+    $extractFrom = $f.FullName
+    $extractId   = $track.Index
+    $shim        = $null
+    if ($f.Extension -ne '.mkv') {
+      $shim = "$stem.shim.mkv"
+      & $ffmpeg -v error -i $f.FullName -map 0:$($track.Index) -c copy -y $shim 2>&1 | Out-Null
+      if (-not (Test-Path $shim)) { throw "could not remux $($f.Extension) subtitle track into mkv for extraction" }
+      $extractFrom = $shim
+      $extractId   = 0
+    }
+
+    & $mkvx tracks $extractFrom "${extractId}:$bmp" 2>&1 | Out-Null
     if (-not (Test-Path $bmp)) { throw "mkvextract produced nothing" }
 
     & $seconv $bmp subrip --ocr-engine:tesseract --ocr-language:$Lang `
@@ -155,7 +171,18 @@ foreach ($f in $targets) {
     $text  = Get-Content $srt -Raw
     $cues  = [regex]::Matches($text, '(?m)^\d+\s*$').Count
     $lines = @($text -split "`r?`n" | Where-Object { $_ -and $_ -notmatch '^\d+$' -and $_ -notmatch '-->' })
-    $junk  = @($lines | Where-Object { $_.Trim().Length -le 2 }).Count
+
+    # Junk = a line that is too short to be dialogue, OR that is mostly not letters. The
+    # length-only test misses the worst real-world failure: a track whose images the engine
+    # cannot read at all still emits long lines, they are just gibberish -
+    #   "= | dea oe ae esa ll"   "2 RES SI ASS SS)"
+    # which are 20 characters of nothing. Measure the alphabetic fraction instead.
+    $junk = @($lines | Where-Object {
+      $t = $_.Trim()
+      if ($t.Length -le 2) { return $true }
+      $alpha = ($t.ToCharArray() | Where-Object { [char]::IsLetter($_) -or $_ -eq ' ' }).Count
+      ($alpha / $t.Length) -lt 0.65
+    }).Count
     $junkPct = if ($lines.Count) { [math]::Round(100 * $junk / $lines.Count) } else { 100 }
 
     # The cue floor has to scale with runtime. A flat "at least 5" is right for a feature but
@@ -163,13 +190,27 @@ foreach ($f in $targets) {
     # holds one or two lines of dialogue, and failing it means the extra ships with only the
     # blocky bitmap for no reason. Allow roughly one cue per 15 s of runtime, capped at 5, so a
     # feature still has to clear the real bar.
+    # A flat floor of 5 is far too lax at the long end: a 51-minute drama came back with EIGHT
+    # unreadable cues and passed. Scale both ways - about one cue per 15 s for short clips (so a
+    # 22-second deleted scene needs only one), and for anything over 5 minutes require a rate a
+    # real dialogue track easily clears (a feature runs 600-1500 cues, so duration/4 is generous).
     $durSec = [double]("$(& $ffprobe -v error -show_entries format=duration -of csv=p=0 $f.FullName 2>$null)".Trim() -replace '^$','0')
-    $minCues = [math]::Max(1, [math]::Min(5, [int][math]::Floor($durSec / 15)))
+    $durMin = $durSec / 60
+    $minCues = if ($durMin -gt 5) { [int][math]::Floor($durMin / 4) }
+               else { [math]::Max(1, [math]::Min(5, [int][math]::Floor($durSec / 15))) }
 
-    if ($cues -lt $minCues) { throw "only $cues cues (need $minCues for $([int]$durSec)s) - recognition failed" }
+    if ($cues -lt $minCues) { throw "only $cues cues for $([math]::Round($durMin,1)) min (need $minCues) - recognition failed" }
     if ($junkPct -gt 30)    { throw "$junkPct% of cues are 1-2 chars - recognition failed (this is the nOCR signature)" }
 
-    if ($Mode -eq 'Sidecar') {
+    # Matroska is the only container here that takes an SRT track cleanly - mp4 would need
+    # mov_text, and rewriting someone's existing mp4 to gain a subtitle is a worse trade than
+    # writing a sidecar Plex reads just as happily.
+    $effMode = if ($Mode -eq 'Mux' -and $f.Extension -ne '.mkv') {
+      Write-Host ("  {0} is {1}, not mkv -> writing a sidecar instead of remuxing" -f $f.Name, $f.Extension)
+      'Sidecar'
+    } else { $Mode }
+
+    if ($effMode -eq 'Sidecar') {
       $dest = Join-Path $f.DirectoryName ($f.BaseName + ".$Lang.srt")
       Copy-Item $srt $dest -Force
       Write-Host ("  OK {0}  {1} cues, {2}% junk -> sidecar" -f $f.Name, $cues, $junkPct) -ForegroundColor Green
