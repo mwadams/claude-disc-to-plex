@@ -18,13 +18,50 @@ where local law permits format-shifting; it does not crack or distribute keys.
 
 ### [`disc-to-plex/`](disc-to-plex/) — transcode & stage (stage 2)
 Turns a decrypted rip into Plex-named MKVs: H.264 NVENC (CQ 20), correct cropping and aspect,
-DVD deinterlacing, PGS/VOBSUB subtitles, an audio matrix that keeps every original track plus a
-universal compatibility downmix, and library naming that merges cleanly into an existing
+DVD deinterlacing, PGS/VOBSUB subtitles with OCR to SRT sidecars, a selectable audio matrix with
+a universal compatibility downmix, and library naming that merges cleanly into an existing
 collection. Reads via ffmpeg's libavformat, so it survives discs that **crash HandBrake's
 libbluray reader** (PGS subtitle timestamp discontinuities). Fully manifest-driven and resumable.
 
 You can use either skill on its own — `disc-to-plex` works on any already-decrypted rip; run
 `disc-backup` first only when you're starting from a physical, possibly-encrypted disc.
+
+## What this repo is really about
+
+The encoding is the easy part. What took the hours — and what most of these files encode — is that
+**disc jobs fail quietly**. They ship a plausible file: the wrong cut of the film, an extra
+truncated at its first clip, a commentary a viewer lands on by picking "English", an episode one
+slot out for a whole series. Every structural check passes. Counts match, durations look sane.
+
+Two things follow, and they shape the whole repo:
+
+1. **Verify identity from the content** — look at a frame, read the title off the screen,
+   transcribe the audio. Names, file sizes and durations are hints, not evidence.
+2. **When a rule can be a check, make it a check.** Prose does not enforce itself. Rules written
+   in this repo — in capitals — were violated within hours of being committed, because the
+   reference file had grown past what anyone (human or model) reads before acting.
+
+So the hard-won rules now run as guards inside the scripts:
+
+| Guard | Catches |
+|---|---|
+| Raw `.m2ts` vs a playlist that **contains** it → abort | truncated extras, wrong cut of a film |
+| Untitled / duplicate-signature audio → report | hidden commentaries, the same mix shipped twice |
+| `.mkv` with `duration = N/A` → refuse to publish | unfinalised partial encodes |
+| ffmpeg live, or folder touched < 5 min ago → refuse | deleting an active encode's output |
+| OCR cue-count and junk-fraction floors → refuse | failed recognition reported as success |
+
+The remaining knowledge lives in [`disc-to-plex/references/gotchas.md`](disc-to-plex/references/gotchas.md),
+an index over seven domain files (Blu-ray, DVD, audio, subtitles, Plex, pipeline, process). It is
+split deliberately: read the one that matches the job, not all of it.
+
+## Project instructions
+
+[`examples/CLAUDE.md`](examples/CLAUDE.md) is the author's working `CLAUDE.md`, which lives at the
+root of the media directory rather than in a skill. It carries the rules that must survive a
+context compaction — source/NAS write protection, a two-command gated-delete protocol,
+publish-immediately/reclaim-only-when-confirmed, and the environment quirks that silently corrupt
+copies. Adapt the paths to your own setup.
 
 ## Install
 
