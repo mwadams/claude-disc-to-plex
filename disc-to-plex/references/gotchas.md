@@ -427,6 +427,43 @@ at 80 MB with `nb_read_packets=5368` and no duration.)
 `format=duration` reads `N/A`, treat it as a partial and delete it before re-running — do not trust
 its size.
 
+## ENUMERATE BLU-RAYS WITH MakeMKV — "the biggest .m2ts" is not the feature
+
+Picking the largest file in `BDMV/STREAM` and reading it with ffmpeg is the obvious approach and it
+is wrong often enough to matter. On The Italian Job it produced THREE faults at once, none of them
+visible from the m2ts:
+
+1. **The wrong cut.** `00001.mpls` is 1:34:58; `00033.mpls` and `00034.mpls` are **1:39:30**. The
+   film's UK theatrical runtime is 99 minutes — the 95-minute version shipped.
+2. **Two invisible commentaries.** The disc declares two, CLPI lists two extra English entries, and
+   ffmpeg exposes NEITHER on the raw clip. MakeMKV exposes all nine audio tracks.
+3. **No language tags at all**, which forces guessing the audio layout from metadata order — the
+   root of every audio mistake on this drive.
+
+```
+makemkvcon64.exe -r --cache=1 info "file:<disc folder>"
+   TINFO:<id>,9,0,"H:MM:SS"    title runtime
+   TINFO:<id>,16,0,"00033.mpls" its source playlist
+   SINFO:<id>,<n>,30,0,"..."    per-stream description
+```
+
+Then rip the chosen title and transcode from the MKV with `kind: "BD"` (NOT `"MKV"`, which applies
+the SD deinterlace path). MakeMKV writes **proper language tags**, so `subTrack: "eng"` and
+`audioLangs` resolve on their own instead of by inference.
+
+`scripts/audit-bd-titles.ps1` runs this comparison across a whole drive. Doing so found 9 of 10
+discs correct — so this is not a reason to distrust every transfer, but it IS a reason to enumerate
+with MakeMKV rather than by file size. (It also disproved a runtime I had flagged from memory: The
+Men Who Stare at Goats is genuinely 89.7 min, not the ~94 I half-remembered. Measure, don't recall.)
+
+**A playlist can also PREPEND clips.** Ratatouille's playlists run 111.07 min against 110.55 for
+the raw m2ts — 31 s of studio idents at the head. Harmless there, but it means raw-m2ts encoding
+silently drops whatever the playlist adds.
+
+**Deleting a superseded .mkv does NOT remove its sidecar .srt.** After re-encoding a longer cut,
+the orphaned subtitle file looked correct at the head and ended five minutes early. Regenerate and
+check the LAST cue timestamp, not the first.
+
 ## IDENTIFY AUDIO TRACKS BY TRANSCRIBING THEM — never by metadata order
 
 Disc metadata tells you which languages EXIST, never which ffprobe ordinal each one is. The two
