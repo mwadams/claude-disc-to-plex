@@ -148,6 +148,20 @@ foreach ($f in $targets) {
     & $mkvx tracks $extractFrom "${extractId}:$bmp" 2>&1 | Out-Null
     if (-not (Test-Path $bmp)) { throw "mkvextract produced nothing" }
 
+    # A track can be DECLARED in the header and hold no packets at all - the stream shows up in
+    # ffprobe, so the survey flags the file, but there is nothing in it. (Two Sherlock Holmes
+    # discs: `nb_read_packets` = N/A, and burning s:0 onto frames at three points rendered no
+    # text.) Extraction "succeeds" and yields an index with no images, which then surfaces as
+    # "seconv produced no SRT" - a failure report for a file that is simply empty. Detect it and
+    # skip cleanly, so real failures stay visible in a long campaign.
+    $payload = if ($ext -eq 'idx') { [IO.Path]::ChangeExtension($bmp, '.sub') } else { $bmp }
+    $payloadSize = if (Test-Path $payload) { (Get-Item $payload).Length } else { 0 }
+    if ($payloadSize -lt 10KB) {
+      Write-Host ("  skip (subtitle track is empty - {0} bytes extracted): {1}" -f $payloadSize, $f.Name)
+      $skipped++
+      continue
+    }
+
     & $seconv $bmp subrip --ocr-engine:tesseract --ocr-language:$Lang `
         --output-folder:$work --overwrite 2>&1 | Out-Null
     $srt = [IO.Path]::ChangeExtension($bmp, '.srt')
