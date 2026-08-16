@@ -852,6 +852,27 @@ Two lessons beyond the fix:
 Decode is worth fixing too, but it is the smaller effect: `-hwaccel cuda` is ~2.3x on VC-1, whose
 ffmpeg decoder has no frame-level threading and pegs a single core.
 
+## A disc's subtitle LANGUAGE TAG can simply be wrong — verify by rendering a cue
+
+`To Serve Them All My Days` (1980) exposes exactly one subtitle stream, tagged `eng`. It is
+**Dutch**. Selecting it by tag — the rule everywhere else in this skill — therefore produced 13
+episodes offering Plex an "English" subtitle that displays Dutch, and an OCR pass that ran an
+English model over Dutch text and returned gibberish (7-8 unreadable cues per 51-minute episode).
+
+Nothing structural catches this: the tag is present and well-formed, the stream decodes, and the
+cue count is the only hint — and only because a wrong-language OCR fails badly.
+
+**When an OCR pass fails on a disc whose subtitles clearly exist, look at the picture before
+blaming the engine.** Burn a cue onto a frame:
+
+```
+ffmpeg -ss <t> -i file.mkv -filter_complex "[0:v][0:s:0]overlay" -frames:v 1 out.png
+```
+
+Sample two or three cues from different episodes. If the text is another language, retag the
+stream (`-metadata:s:s:0 language=dut`, stream copy) rather than shipping it as English — and
+record that the show has no English subtitles instead of retrying the OCR.
+
 ## Bitmap subtitles look oversized and blocky, and no Plex setting fixes it
 
 Disc subtitles are **bitmaps** — PGS on Blu-ray, VOBSUB on DVD — i.e. pictures of text rendered at
