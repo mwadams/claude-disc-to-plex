@@ -29,6 +29,11 @@
                                English at 1), so a fixed ordinal silently ships the wrong language
                                on the next disc. Defaults to 0 (fine for a single-PGS Blu-ray).
     commentary (int, optional) 0-based SOURCE audio index to tag as "Audio Commentary".
+    audioLangs (array, opt)    ISO-639 codes matching `audioTracks` one-for-one, e.g. ["deu","eng"].
+                               Blu-ray m2ts are frequently UNTAGGED, and an untagged stream falls
+                               back to 'eng' - so on a foreign-language disc every kept track ends
+                               up labelled English unless you say otherwise here (or via origLang,
+                               which names the first kept track only).
     origLang (str, optional)   ISO-639 code of the title's ORIGINAL language. Omit or 'eng' for
                                English content -> keep English audio only (drop foreign dubs). For a
                                foreign original (e.g. 'deu' Run Lola Run, 'jpn'): keep the original-
@@ -293,7 +298,21 @@ foreach($it in $items){
   if($it.kind -in @('DVD','MKV')){ $a += @('-aspect',(Get-DAR $inspec)) } else { $a += @('-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-color_range','tv') }
 
   # --- audio codecs ---
-  $lang0 = Audio-Lang $inspec $keep[0]      # language of the FIRST kept track = what the AAC downmix is made from
+  # Audio-Lang reads the SOURCE tag and falls back to 'eng' when a stream is untagged. Blu-ray
+  # m2ts are routinely untagged, so on a FOREIGN-language disc every kept track came out labelled
+  # English - Run Lola Run shipped with the German audio as the default track marked "English",
+  # which is exactly as wrong as picking the wrong track, just harder to spot.
+  #
+  # `audioTracks` already says WHICH streams to keep and in what order; `audioLangs` (optional,
+  # same length) says what they ARE. Failing that, `origLang` names the first kept track, which is
+  # the documented meaning of putting it first. Anything still unknown keeps the source tag.
+  $langOf = {
+    param($j)
+    if((Has $it 'audioLangs') -and $j -lt @($it.audioLangs).Count){ "$(@($it.audioLangs)[$j])" }
+    elseif($j -eq 0 -and $origLang -and $origLang -notin @('eng','en')){ $origLang }
+    else { Audio-Lang $inspec $keep[$j] }
+  }
+  $lang0 = & $langOf 0                      # language of the FIRST kept track = what the AAC downmix is made from
   if($nk -gt 0){
     if($ch0 -ge 6){
       $a += @("-c:a:$aacIdx",'aac',"-b:a:$aacIdx",'160k',"-ac:a:$aacIdx",'6',"-ar:a:$aacIdx",'48000',"-metadata:s:a:$aacIdx",'title=Surround 5.1 (AAC)',"-metadata:s:a:$aacIdx","language=$lang0","-disposition:a:$aacIdx",'default'); $aacIdx++
@@ -306,7 +325,7 @@ foreach($it in $items){
       # passthru the original track bit-for-bit — EXCEPT Blu-ray/DVD LPCM, which Matroska can't store via -c copy
       # ("No wav codec tag for pcm_bluray"); re-encode those to FLAC (lossless, MKV-native) instead.
       if((Audio-Codec $inspec $keep[$j]) -match '^pcm'){ $a += @("-c:a:$oi",'flac') } else { $a += @("-c:a:$oi",'copy') }
-      $a += @("-metadata:s:a:$oi","language=$(Audio-Lang $inspec $keep[$j])")
+      $a += @("-metadata:s:a:$oi","language=$(& $langOf $j)")
       # commentary accepts a single ordinal OR a list - discs often carry two or three separate
       # commentaries (Life of Brian has two), and tagging only the first leaves the rest looking
       # like alternate language mixes in Plex. A list may also be [idx,"Title"] pairs to name them.
