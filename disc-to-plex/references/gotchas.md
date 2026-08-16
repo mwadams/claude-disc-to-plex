@@ -427,6 +427,35 @@ at 80 MB with `nb_read_packets=5368` and no duration.)
 `format=duration` reads `N/A`, treat it as a partial and delete it before re-running — do not trust
 its size.
 
+## IDENTIFY AUDIO TRACKS BY TRANSCRIBING THEM — never by metadata order
+
+Disc metadata tells you which languages EXIST, never which ffprobe ordinal each one is. The two
+orderings do not correspond: The Italian Job's CLPI lists eight audio entries against ffmpeg's
+seven exposed streams, so any mapping from one to the other is a guess. Guessing it produced two
+confident, wrong answers on the same disc — first keeping the Italian dub as "the commentary" and
+dropping a real track, then labelling the French and Italian dubs as "Audio Commentary 1 and 2".
+`volumedetect` did not resolve it either: a 2.0 downmix simply reads louder than a 5.1 mix, so
+spot checks at different timestamps contradicted each other.
+
+Transcribe the tracks instead. `scripts/identify-audio.py` (needs `pip install faster-whisper`)
+samples 40 s of each and reports the detected language plus the text:
+
+```
+a:0  en (0.93)  dialogue      "There are a quarter of a million Italians in Britain..."
+a:3  de (0.95)                "In England leben meine Viertelmillion Italiener..."
+a:5  fr (0.87)                "Il y a 250 000 italien en Grande-Bretagne..."
+a:6  it (0.96)                "In Gran Bretagne, ci sono 250.000 italiani..."
+```
+
+Unambiguous in one run: every track speaking the same line of the film is a DUB. It also separates
+an English commentary from English dialogue by vocabulary ("we shot this", "the scene where"),
+which no signal-level measurement can do.
+
+**Also note what this revealed:** the disc DECLARES two commentaries and CLPI lists two extra
+English entries, but ffmpeg exposes neither — they are Blu-ray secondary audio. If a declared
+commentary cannot be found in the main clip, it is not necessarily missing; try MakeMKV rather
+than concluding the disc lied.
+
 ## The CLPI clip-info file is the authoritative stream list on a Blu-ray — better than the MPLS
 
 For picking audio and subtitle tracks on an untagged BD, `BDMV/CLIPINF/<clip>.clpi` beats both the
