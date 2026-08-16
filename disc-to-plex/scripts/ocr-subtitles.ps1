@@ -216,6 +216,26 @@ foreach ($f in $targets) {
     if ($cues -lt $minCues) { throw "only $cues cues for $([math]::Round($durMin,1)) min (need $minCues) - recognition failed" }
     if ($junkPct -gt 30)    { throw "$junkPct% of cues are 1-2 chars - recognition failed (this is the nOCR signature)" }
 
+    # THE decisive check: does the output contain actual English?
+    #
+    # Some discs defeat Tesseract while producing output that passes every structural test - the
+    # right number of cues, sensible timings, plenty of letters:
+    #   "AMIN ~ FED" PGNGR ED PED wD II"        (Legally Blonde, 1103 cues, 5% "junk")
+    #   "Wy Wavalhlialaatlatiavattacmetit"      (BBC Shakespeare, 2360 cues, 3% "junk")
+    # Counting characters cannot tell that from prose, because it IS mostly letters. Counting
+    # WORDS can: real dialogue is saturated with a handful of function words. Measured across 31
+    # genuine conversions the rate never fell below 43%; the two failures scored 1% and 0%.
+    #
+    # Only meaningful for English, so it is skipped for any other -Lang.
+    if ($Lang -eq 'eng') {
+      $common = '(?i)\b(the|and|you|that|this|with|have|not|for|but|what|are|was|his|her|him|she|they|there|would|your|from|all|been|will|has|had|who|when|were)\b'
+      $withWord = @($lines | Where-Object { $_ -match $common }).Count
+      $wordPct  = if ($lines.Count) { [math]::Round(100 * $withWord / $lines.Count) } else { 0 }
+      if ($wordPct -lt 15) {
+        throw "only $wordPct% of lines contain a common English word - output is not English text (genuine conversions score 43-77%)"
+      }
+    }
+
     # Matroska is the only container here that takes an SRT track cleanly - mp4 would need
     # mov_text, and rewriting someone's existing mp4 to gain a subtitle is a worse trade than
     # writing a sidecar Plex reads just as happily.
