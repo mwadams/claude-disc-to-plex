@@ -101,6 +101,273 @@ cue while still reporting success.
 # Codecs that are bitmaps and therefore need OCR. Anything else is already text.
 $bitmapCodecs = @('hdmv_pgs_subtitle','dvd_subtitle','dvb_subtitle','xsub')
 
+# ---------------------------------------------------------------------------------------------
+# VOBSUB PALETTE REPAIR - the fix for systematically split letters (d->cl, b->lo, m->rn, th->tt)
+#
+# A DVD subpicture is 2 bits per pixel: FOUR indices into a 16-entry palette, each with its own
+# alpha. The near-universal authoring convention is
+#     index 0 = transparent background      index 1 = glyph FILL (white/yellow)
+#     index 2 = ANTI-ALIAS ring (mid grey)  index 3 = OUTLINE (black)
+# Subtitle Edit's VobSub OCR does "colour isolation": it binarises to black-on-white by keeping
+# ONE colour - the fill - and discarding everything else. That is correct only when the fill
+# carries the stroke. Measured on the actual bitmaps:
+#     Queen Christina (1933), OCRs fine : fill 2623 px, anti-alias   70 px  -> aa/fill = 0.03
+#     Blithe Spirit  (1945), garbled    : fill 5745 px, anti-alias 6889 px  -> aa/fill = 1.20
+# On Blithe Spirit MORE THAN HALF the ink is in the anti-alias index, so isolating the fill erodes
+# every stroke to a 1px hairline and the thin joins break: the bowl of a 'd' separates from its
+# ascender and reads as "cl", 'b' as "lo", 'm' as "rn", 'th' as "tt". That is the whole defect. It
+# is per-DISC (a light-weight face with heavy anti-aliasing), NOT per-era - which is why two 1930s
+# discs are clean and three of the same vintage are not.
+#
+# The fix is one line of palette: repaint every ink index with the FILL's colour, so isolation
+# keeps fill+anti-alias as a single solid glyph. Nothing else changes - the .sub bitmap, the
+# timings and the OCR engine are all untouched, and on a disc that never needed it (Queen
+# Christina) the output is byte-for-byte identical.
+#
+# Rejected alternative: seconv's --no-vobsub-isolate-colors. It makes things WORSE, not better -
+# without isolation Tesseract latches onto the black outline and reads the inter-word gaps as
+# letters: "Oncelupontaltime! therelwaslalcharminglcounthy house". Dictionary hit rate 56%, vs 87%
+# for the broken default and 99% with the palette repaired.
+function Repair-VobSubPalette {
+  param([string]$IdxPath)
+
+  $subPath = [IO.Path]::ChangeExtension($IdxPath, '.sub')
+  if (-not (Test-Path $subPath)) { return $null }
+
+  $lines = Get-Content -LiteralPath $IdxPath
+  $palLine = $lines | Where-Object { $_ -match '^palette:' } | Select-Object -First 1
+  if (-not $palLine) { return $null }
+  $pal = @(($palLine -replace '^palette:\s*','') -split ',' | ForEach-Object { [Convert]::ToInt32($_.Trim(), 16) })
+  if ($pal.Count -lt 16) { return $null }
+
+  # Only the first few cues are needed - the four index roles are set per display command and are
+  # constant across a disc in practice. Reading a 1 MB window covers them without slurping a
+  # multi-megabyte .sub.
+  $fs = [IO.File]::OpenRead($subPath)
+  try {
+    $buf = New-Object byte[] ([math]::Min(1MB, $fs.Length))
+    [void]$fs.Read($buf, 0, $buf.Length)
+  } finally { $fs.Dispose() }
+
+  $starts = @($lines | ForEach-Object { if ($_ -match 'filepos:\s*([0-9a-fA-F]+)') { [Convert]::ToInt32($Matches[1], 16) } }) |
+              Select-Object -First 8
+
+  $palIdx = $null; $alpha = $null; $hist = @(0,0,0,0); $decoded = 0
+  foreach ($start in $starts) {
+    if ($start -ge $buf.Length) { continue }
+    $cw = 0; $ch = 0; $off0 = -1; $off1 = -1
+
+    # Reassemble the SPU packet: it is spread over consecutive 2 KB MPEG program-stream sectors,
+    # each carrying a pack header (0x000001BA) then a private_stream_1 PES (0x000001BD) whose
+    # payload begins with a one-byte substream id. Concatenate payloads until we have the length
+    # declared in the SPU's own first two bytes.
+    # EVERY 16-bit field below casts to [int] before shifting. PowerShell's -shl keeps the WIDTH of
+    # its left operand, so `[byte]0x11 -shl 8` is 0, not 0x1100: without the cast every length and
+    # offset silently loses its high byte, the packet reassembles short, and the whole repair
+    # returns $null - i.e. it fails by doing nothing at all, which looks exactly like "this disc
+    # needed no repair". Do not remove the casts.
+    $p = $start; $want = -1
+    $spu = New-Object 'System.Collections.Generic.List[byte]'
+    while ($p -lt $buf.Length - 6) {
+      if ($buf[$p] -ne 0 -or $buf[$p+1] -ne 0 -or $buf[$p+2] -ne 1) { $p++; continue }
+      $sc = $buf[$p+3]
+      if ($sc -eq 0xBA) { $p += 14 + ($buf[$p+13] -band 7); continue }
+      $plen = ([int]$buf[$p+4] -shl 8) -bor $buf[$p+5]
+      if ($sc -eq 0xBD) {
+        $from = $p + 9 + $buf[$p+8] + 1      # +1 skips the substream id byte
+        $to   = [math]::Min($p + 6 + $plen, $buf.Length)
+        for ($i = $from; $i -lt $to; $i++) { $spu.Add($buf[$i]) }
+        if ($want -lt 0 -and $spu.Count -ge 2) { $want = ([int]$spu[0] -shl 8) -bor $spu[1] }
+        if ($want -ge 0 -and $spu.Count -ge $want) { break }
+      }
+      $p += 6 + $plen
+    }
+    if ($spu.Count -lt 8) { continue }
+    $s = $spu.ToArray()
+
+    # Walk the display control sequences for SET_COLOR (0x03) and SET_CONTRAST (0x04). Both pack
+    # the four entries HIGHEST INDEX FIRST across two bytes, so index 0 is the LOW nibble of the
+    # SECOND byte - getting that backwards silently swaps background for outline.
+    $dcsq = ([int]$s[2] -shl 8) -bor $s[3]; $seen = @{}
+    while ($dcsq -gt 0 -and $dcsq -lt $s.Length - 4 -and -not $seen.ContainsKey($dcsq)) {
+      $seen[$dcsq] = $true
+      $next = ([int]$s[$dcsq+2] -shl 8) -bor $s[$dcsq+3]
+      $i = $dcsq + 4
+      while ($i -lt $s.Length) {
+        $c = $s[$i]
+        if ($c -eq 0xFF) { break }
+        elseif ($c -le 0x02) { $i++ }
+        elseif ($c -eq 0x03) {
+          if (-not $palIdx) { $palIdx = @(($s[$i+2] -band 15), ($s[$i+2] -shr 4), ($s[$i+1] -band 15), ($s[$i+1] -shr 4)) }
+          $i += 3
+        }
+        elseif ($c -eq 0x04) {
+          # A fade-in authors an all-zero contrast in the FIRST sequence and the real one later, so
+          # take the first command that actually makes something visible.
+          $a = @(($s[$i+2] -band 15), ($s[$i+2] -shr 4), ($s[$i+1] -band 15), ($s[$i+1] -shr 4))
+          if (-not $alpha -and (@($a | Where-Object { $_ -gt 0 }).Count -gt 0)) { $alpha = $a }
+          $i += 3
+        }
+        elseif ($c -eq 0x05) {
+          # SET_DISPLAY_AREA: two 12-bit pairs packed into six bytes.
+          $x1 = ([int]$s[$i+1] -shl 4) -bor ($s[$i+2] -shr 4)
+          $x2 = (([int]$s[$i+2] -band 15) -shl 8) -bor $s[$i+3]
+          $y1 = ([int]$s[$i+4] -shl 4) -bor ($s[$i+5] -shr 4)
+          $y2 = (([int]$s[$i+5] -band 15) -shl 8) -bor $s[$i+6]
+          $cw = $x2 - $x1 + 1; $ch = $y2 - $y1 + 1
+          $i += 7
+        }
+        elseif ($c -eq 0x06) {
+          # SET_PIXEL_DATA_ADDRESS: byte offsets of the even and odd row fields.
+          $off0 = ([int]$s[$i+1] -shl 8) -bor $s[$i+2]
+          $off1 = ([int]$s[$i+3] -shl 8) -bor $s[$i+4]
+          $i += 5
+        }
+        elseif ($c -eq 0x07) { $i += 1 + (([int]$s[$i+1] -shl 8) -bor $s[$i+2]) }
+        else { $i++ }
+      }
+      if ($next -eq $dcsq) { break }
+      $dcsq = $next
+    }
+
+    # Decode the 2-bit RLE and COUNT pixels per index. This is what makes the repair targeted
+    # rather than blanket: see the ink-weight test further down. Runs are nibble-coded - 1 to 4
+    # nibbles, value = (count << 2) | colour - each row padded to a byte boundary, with even rows
+    # at $off0 and odd rows at $off1.
+    if ($cw -gt 0 -and $ch -gt 0 -and $off0 -ge 0) {
+      foreach ($field in 0,1) {
+        $ni = 2 * $(if ($field -eq 0) { $off0 } else { $off1 })
+        for ($y = $field; $y -lt $ch; $y += 2) {
+          $x = 0
+          while ($x -lt $cw) {
+            $n = 0; $ran = $false
+            for ($k = 0; $k -lt 4; $k++) {
+              # $ni -shr 1, NOT [int]($ni / 2): PowerShell's [int] cast rounds to even rather than
+              # truncating, so [int](7/2) is 4 and every odd nibble index reads the WRONG byte.
+              $bi = $ni -shr 1
+              if ($bi -ge $s.Length) { $ran = $true; break }
+              $v = if ($ni % 2 -eq 0) { $s[$bi] -shr 4 } else { $s[$bi] -band 15 }
+              $ni++
+              $n = ($n -shl 4) -bor $v
+              if ($n -ge (4 -shl (2 * $k))) { break }
+            }
+            if ($ran) { break }
+            $cnt = $n -shr 2; $col = $n -band 3
+            if ($cnt -eq 0 -or $cnt -gt ($cw - $x)) { $cnt = $cw - $x }
+            $hist[$col] += $cnt
+            $x += $cnt
+          }
+          if ($ni % 2) { $ni++ }        # each row restarts on a byte boundary
+        }
+      }
+      $decoded++
+    }
+    if ($palIdx -and $alpha -and $decoded -ge 3) { break }
+  }
+  if (-not $palIdx -or -not $alpha) { return $null }
+
+  # Classify by luminance. DVD subtitles are light text with a dark outline essentially without
+  # exception, so the DARKEST visible index is the outline and everything else visible is ink.
+  # Deliberately not using a midpoint threshold: Blithe Spirit's anti-alias sits at luma 124
+  # against fill 253 and outline 0, i.e. BELOW the midpoint, so a midpoint rule would discard the
+  # very pixels this repair exists to keep.
+  $vis = @(0..3 | Where-Object { $alpha[$_] -gt 0 })
+  if ($vis.Count -lt 2) { return $null }
+  $lum = @{}
+  foreach ($i in $vis) {
+    $c = $pal[$palIdx[$i]]
+    $lum[$i] = 0.299 * (($c -shr 16) -band 255) + 0.587 * (($c -shr 8) -band 255) + 0.114 * ($c -band 255)
+  }
+  $outline = ($vis | Sort-Object { $lum[$_] })[0]
+  # "Everything except the darkest index is ink" is NOT safe: some discs author a hard drop-shadow
+  # as a SECOND near-black index. Kiki's Delivery Service is exactly that - visible indices are
+  # yellow(225), black(0), black(0) - and it OCRs perfectly today because isolating the fill loses
+  # nothing. Merging its second black into the fill would flood every glyph solid yellow and break
+  # a title that works. So ink must be CLEARLY brighter than the darkest index; a real anti-alias
+  # sits midway between fill and outline (Blithe 124, Ponyo 113, Queen 129 against a 0 outline),
+  # while a shadow sits on top of it.
+  $lumMin = ($vis | ForEach-Object { $lum[$_] } | Measure-Object -Minimum).Minimum
+  $ink    = @($vis | Where-Object { ($lum[$_] - $lumMin) -gt 32 })
+  if ($ink.Count -lt 2) { return $null }           # no anti-alias index -> nothing to merge
+  $fill    = ($ink | Sort-Object { -$lum[$_] })[0]
+  $fillCol = $pal[$palIdx[$fill]]
+
+  # INK-WEIGHT TEST - only repair a disc that actually needs it.
+  #
+  # Merging the anti-alias into the fill is not free: it fattens every glyph by up to a pixel. On a
+  # disc whose anti-alias is a token 3% of the fill that is pure downside, and measurably so -
+  # repairing Queen Christina regardless changed 18 lines out of 5028, turning 'we'/'victorious'
+  # into 'We'/'Victorious' as thickened lowercase letters started reading as capitals. It gained
+  # nothing (dictionary score identical at 99.1%) and cost about nine lines.
+  #
+  # So gate on how much ink the anti-alias actually carries, measured from the decoded bitmaps:
+  #     Kiki's Delivery Service  0.00  no anti-alias index at all      -> skip
+  #     Queen Christina          0.03  70 px against a 2623 px fill    -> skip
+  #     Ponyo                    0.76  942 px against 1244 px          -> REPAIR
+  #     Blithe Spirit            1.20  6889 px against 5745 px         -> REPAIR
+  # 0.15 sits in the wide empty gap between the two groups. Below it the fill alone still carries
+  # a legible glyph, which is precisely the condition under which colour isolation is safe.
+  $aaPx   = ($ink | Where-Object { $_ -ne $fill } | ForEach-Object { $hist[$_] } | Measure-Object -Sum).Sum
+  $fillPx = $hist[$fill]
+  if ($fillPx -le 0) { return $null }
+  $ratio = $aaPx / $fillPx
+  if ($ratio -lt 0.15) { return $null }
+
+  # Never repaint a palette ENTRY that the outline or the transparent background also points at -
+  # entries are shared, and recolouring one would repaint the outline white and destroy the image.
+  $protected = @($palIdx[$outline]) + @(0..3 | Where-Object { $alpha[$_] -eq 0 } | ForEach-Object { $palIdx[$_] })
+  $changed = 0
+  foreach ($j in $ink) {
+    $e = $palIdx[$j]
+    if ($e -eq $palIdx[$fill] -or $protected -contains $e) { continue }
+    if ($pal[$e] -ne $fillCol) { $pal[$e] = $fillCol; $changed++ }
+  }
+  if ($changed -eq 0) { return $null }
+
+  $newPal = 'palette: ' + (($pal | ForEach-Object { '{0:x6}' -f $_ }) -join ', ')
+  # WriteAllLines, not Set-Content -Encoding UTF8: under Windows PowerShell 5.1 that spelling emits
+  # a BOM, and a BOM ahead of the "# VobSub index file, v7" line stops the parser recognising the
+  # file at all. WriteAllLines is BOM-free on every runtime.
+  [IO.File]::WriteAllLines($IdxPath, [string[]]($lines | ForEach-Object { if ($_ -match '^palette:') { $newPal } else { $_ } }))
+  return ('anti-alias {0:P0} of fill ink -> merged into #{1:x6}' -f $ratio, $fillCol)
+}
+
+# ---------------------------------------------------------------------------------------------
+# English word list, used by the dictionary gate below. Tesseract ships its own 338k-word English
+# dawg inside eng.traineddata, and the two tools that unpack it (combine_tessdata, dawg2wordlist)
+# sit next to tesseract.exe - so this needs NO new dependency and no download. Built once and
+# cached in the tools dir; a few seconds the first time, nothing thereafter.
+function Get-EnglishWordSet {
+  param([string]$ToolsDir, [string]$TessExe)
+  # Held for the life of the run: a batch is often 100+ files and re-reading 3 MB into a fresh
+  # HashSet for each one costs about a second apiece for no benefit.
+  if ($script:EngWords) { return ,$script:EngWords }
+  $cache = Join-Path $ToolsDir 'eng-words.txt'
+  if (-not (Test-Path $cache)) {
+    $tdir = Join-Path (Split-Path $TessExe) 'tessdata'
+    $comb = Join-Path (Split-Path $TessExe) 'combine_tessdata.exe'
+    $d2w  = Join-Path (Split-Path $TessExe) 'dawg2wordlist.exe'
+    $td   = Join-Path $tdir 'eng.traineddata'
+    if (-not (Test-Path $comb) -or -not (Test-Path $d2w) -or -not (Test-Path $td)) { return $null }
+    $tmp = Join-Path $ToolsDir ("work\dict$PID\")
+    New-Item -ItemType Directory -Force (Split-Path $tmp -Parent) | Out-Null
+    New-Item -ItemType Directory -Force $tmp.TrimEnd('\') | Out-Null
+    & $comb -u $td (Join-Path $tmp 'eng.') 2>&1 | Out-Null
+    & $d2w (Join-Path $tmp 'eng.lstm-unicharset') (Join-Path $tmp 'eng.lstm-word-dawg') $cache 2>&1 | Out-Null
+    Remove-Item $tmp.TrimEnd('\') -Recurse -Force -ErrorAction SilentlyContinue
+    if (-not (Test-Path $cache)) { return $null }
+  }
+  $set = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+  foreach ($w in [IO.File]::ReadLines($cache)) { [void]$set.Add($w) }
+  # `return ,$set` - the leading comma is load-bearing. A bare `return $set` lets PowerShell UNROLL
+  # the HashSet into 338,000 loose strings, so the caller gets an Object[]; .Contains() then binds
+  # to IList.Contains, which is ordinal, CASE-SENSITIVE and O(n). The gate still "works", it just
+  # scores every real conversion at ~13% and takes minutes doing it. Wrapping in a one-element
+  # array keeps the HashSet whole.
+  $script:EngWords = $set
+  return ,$set
+}
+
 $targets = if ((Get-Item $Path).PSIsContainer) {
   Get-ChildItem -LiteralPath $Path -Recurse -File -Filter *.mkv
 } else { @(Get-Item -LiteralPath $Path) }
@@ -171,6 +438,14 @@ foreach ($f in $targets) {
       Write-Host ("  skip (subtitle track is empty - {0} bytes extracted): {1}" -f $payloadSize, $f.Name)
       $skipped++
       continue
+    }
+
+    # Repair the palette BEFORE OCR (VOBSUB only - PGS has 256 colours and a different isolation
+    # path in Subtitle Edit, and no disc here has shown the defect on PGS). This edits the scratch
+    # .idx that mkvextract just wrote; the media file is never touched.
+    if ($ext -eq 'idx') {
+      $repair = Repair-VobSubPalette -IdxPath $bmp
+      if ($repair) { Write-Host "  vobsub palette: $repair" }
     }
 
     & $seconv $bmp subrip --ocr-engine:tesseract --ocr-language:$Lang `
@@ -264,6 +539,56 @@ foreach ($f in $targets) {
       $wordPct  = if ($lines.Count) { [math]::Round(100 * $withWord / $lines.Count) } else { 0 }
       if ($wordPct -lt 15) {
         throw "only $wordPct% of lines contain a common English word - output is not English text (genuine conversions score 43-77%)"
+      }
+
+      # DICTIONARY GATE. Every gate above this line PASSED the split-letter failure described at
+      # Repair-VobSubPalette: Blithe Spirit came back with 1434 cues, 2% "junk" and 60% of lines
+      # holding a common English word, because the damage is INSIDE words -
+      #   "it's unnecessary to co everything at tite cloulsle."
+      #   "try to rememioer to clo it calmly ancl methocically."
+      # The function words survive (they are short) and every character is a letter, so counting
+      # characters or function words cannot see it. Counting words AGAINST A DICTIONARY can.
+      #
+      # Only tokens STARTING WITH A LOWERCASE LETTER are scored. Proper nouns are the one large
+      # legitimate gap in any word list, and how many a film has is an accident of its script, not
+      # a measure of OCR quality: scoring every token rates a correctly converted Ponyo at 92.8%,
+      # because it is wall-to-wall Sosuke/Fujimoto/Ohashi, and that is close enough to the failures
+      # to be unusable as a bar. Restricting to lowercase-initial words drops proper nouns and
+      # all-caps hearing-impaired cues ("PATTERING") and separates the two populations cleanly:
+      #   bad   Ponyo 80.1%  Blithe Spirit 87.6%  Hobson's Choice 88.4%
+      #         The Sound Barrier 88.9%  Great Expectations 90.1%
+      #   good  everything else in a 46-film library >= 96.7% (lowest: King Lear)
+      #   after the palette repair: Blithe 98.9%  Great Expectations 99.1%  Ponyo 99.7%
+      # 95 sits in the 6.6-point gap. Sentence-initial ordinary words are discarded too, but they
+      # are in the dictionary anyway, so nothing is lost but volume.
+      #
+      # Note this flagged The Sound Barrier, which had not been reported as faulty but carries the
+      # same signature ("loucler", "Dackly") - the gate is more sensitive than a viewer skimming
+      # Plex.
+      #
+      # Soft-fails to a warning if the word list cannot be built, since a missing dictionary is a
+      # tooling problem and should not throw away an otherwise good conversion.
+      $words = Get-EnglishWordSet -ToolsDir $ToolsDir -TessExe $tessExe
+      if (-not $words) {
+        Write-Warning "  dictionary gate skipped - could not build the word list from eng.traineddata"
+      } else {
+        $tot = 0; $inDict = 0
+        foreach ($l in $lines) {
+          foreach ($m in [regex]::Matches($l, "[A-Za-z][A-Za-z']{2,}")) {
+            $w = $m.Value.Trim("'")
+            if ($w.Length -lt 3) { continue }
+            if ($w -cnotmatch '^[a-z]') { continue }   # -cnotmatch: must be CASE-SENSITIVE here
+            $tot++
+            # "doesn't" is stored as "doesn" in the dawg, so retry on the pre-apostrophe stem.
+            $bare = ($w -replace "'.*$", '')
+            if ($words.Contains($w) -or $words.Contains($bare)) { $inDict++ }
+          }
+        }
+        $dictPct = if ($tot) { [math]::Round(100 * $inDict / $tot, 1) } else { 0 }
+        if ($tot -ge 200 -and $dictPct -lt 95) {
+          throw "only $dictPct% of lowercase words are in the English dictionary ($tot words) - letters are being split (good conversions score 97-99%)"
+        }
+        Write-Host ("  dictionary: {0}% of {1} lowercase words" -f $dictPct, $tot)
       }
     }
 
