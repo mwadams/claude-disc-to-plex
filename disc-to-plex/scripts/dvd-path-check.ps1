@@ -31,6 +31,36 @@ foreach ($d in $Discs) {
   $src = Join-Path $Root $d
   if (-not (Test-Path -LiteralPath (Join-Path $src 'VIDEO_TS'))) { Write-Host "$d : not a DVD"; continue }
 
+  # ---- INTEGRITY FIRST: is this rip even COMPLETE? -------------------------------------------
+  # The VMG (VIDEO_TS.IFO) declares how many title sets the disc has, at offset 0x3E. An aborted
+  # rip leaves a folder that looks entirely normal - it mounts, it enumerates, it plays - but the
+  # title sets that were never copied are simply absent, and any player following the menu into
+  # them crashes.
+  #
+  # Real case: DIE_MUMINS_3 declares 27 title sets and holds 11. The missing ones were the whole
+  # ENGLISH version of the programme, so the disc looked like a German-only release rather than a
+  # broken copy, and VLC died whenever the English branch was selected. The last present title set
+  # was also short its .BUP with a 64 MB VOB against ~430 MB siblings - truncated mid-write.
+  #
+  # Checking this BEFORE the duration comparison matters: on an incomplete rip the durations are
+  # all perfectly consistent between tools, so the comparison happily reports "safe".
+  $vmg = Join-Path $src 'VIDEO_TS\VIDEO_TS.IFO'
+  if (Test-Path -LiteralPath $vmg) {
+    $b = [IO.File]::ReadAllBytes($vmg)
+    $declared = [int]$b[0x3E]*256 + [int]$b[0x3F]
+    $present  = @(Get-ChildItem (Join-Path $src 'VIDEO_TS') -Filter 'VTS_*_0.IFO').Count
+    if ($declared -gt 0 -and $present -lt $declared) {
+      Write-Host ("{0,-34} *** INCOMPLETE RIP *** declares {1} title sets, {2} present - RE-RIP the disc" -f $d, $declared, $present)
+      continue
+    }
+    # a set missing its .BUP is the signature of a copy that stopped mid-set
+    $noBup = Get-ChildItem (Join-Path $src 'VIDEO_TS') -Filter 'VTS_*_0.IFO' |
+             Where-Object { -not (Test-Path -LiteralPath ($_.FullName -replace '\.IFO$','.BUP')) }
+    if ($noBup) {
+      Write-Host ("{0,-34} !! {1} title set(s) missing their .BUP - possible truncated copy: {2}" -f $d, @($noBup).Count, (($noBup.Name) -join ' '))
+    }
+  }
+
   # MakeMKV is the authority on cell structure: "Title #N was added (K cell(s), H:MM:SS)"
   #
   # --minlength=1, NOT a useful-looking floor. This comparison pairs MakeMKV's Nth title with

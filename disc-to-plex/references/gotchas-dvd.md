@@ -14,6 +14,35 @@ Part of the `disc-to-plex` gotchas set — see [gotchas.md](gotchas.md) for the 
 - [MakeMKV has no `--maxlength`](#makemkv-has-no---maxlength)
 - [A high `--minlength` silently drops EXTRAS, not just episodes](#a-high---minlength-silently-drops-extras-not-just-episodes)
 - [`mymovies.xml` title `Number`s are NOT ffmpeg `dvdvideo` title numbers — map by DURATION](#mymoviesxml-title-numbers-are-not-ffmpeg-dvdvideo-title-numbers-map-by-duration)
+- [An INCOMPLETE RIP in the archive looks like a different edition of the disc](#an-incomplete-rip-in-the-archive-looks-like-a-different-edition-of-the-disc)
+
+## An INCOMPLETE RIP in the archive looks like a different edition of the disc
+
+`DIE_MUMINS_3` presented as a German-only release: ten titles, every one German, no English
+anywhere. Its sibling `DIE_MUMINS_1` carried both languages. The natural reading — different discs
+in the box carry different language options — was wrong.
+
+The disc's own **VMG declares how many title sets exist**, at offset `0x3E` of `VIDEO_TS.IFO`:
+
+```powershell
+$b = [IO.File]::ReadAllBytes("$disc\VIDEO_TS\VIDEO_TS.IFO")
+$declared = [int]$b[0x3E]*256 + [int]$b[0x3F]
+$present  = @(Get-ChildItem "$disc\VIDEO_TS" -Filter 'VTS_*_0.IFO').Count
+```
+
+It declared **27** and held **11**. The copy had aborted: the last present set was missing its
+`.BUP` and its VOB was 64 MB against ~430 MB siblings — truncated mid-write. Everything above it,
+which happened to be the entire **English version**, was never copied.
+
+Why it is dangerous: the folder mounts, enumerates and plays perfectly. Every duration agrees
+between ffmpeg and MakeMKV, so a truncation check reports "safe". The only outward symptom was
+**the user's player crashing** whenever the menu navigated into a title set that isn't there.
+
+**Check integrity BEFORE the duration comparison** — `dvd-path-check.ps1` does both, integrity
+first, because on an incomplete rip the durations are perfectly self-consistent. A set missing its
+`.BUP` is the signature of a copy that stopped mid-set. The fix is to **re-rip the physical disc**,
+not to work around the gap. Across the other 39 DVDs on that drive, none was affected — so this is
+a per-disc accident, not a reason to distrust an archive.
 
 ## Title layout changes between SEASONS of the same show — re-probe every set
 
