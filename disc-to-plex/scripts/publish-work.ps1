@@ -46,14 +46,17 @@ foreach ($f in $local | Where-Object { $_.Extension -eq '.mkv' }) {
 #
 # A file with a BITMAP subtitle track (dvd_subtitle / hdmv_pgs_subtitle) and no matching sidecar is
 # the signature. Text subtitle tracks and files with no subtitles at all are fine.
+#
+# But wait only for a sidecar that CAN exist. A declared bitmap track carrying no packets (a silent
+# film's empty subtitle shell) can never produce one, and blocking on it strands the work here
+# permanently - see lib-subtitles.ps1.
+. (Join-Path $PSScriptRoot 'lib-subtitles.ps1')
 if (-not $SkipSubtitleCheck) {
   $awaiting = @()
   foreach ($f in $local | Where-Object { $_.Extension -eq '.mkv' }) {
-    $codecs = @(& $ffprobe -v error -select_streams s -show_entries stream=codec_name -of csv=p=0 $f.FullName 2>$null)
-    if ($codecs | Where-Object { $_ -match 'dvd_subtitle|hdmv_pgs_subtitle' }) {
-      $sidecar = [IO.Path]::ChangeExtension($f.FullName, $null) + 'eng.srt'
-      if (-not (Test-Path -LiteralPath $sidecar)) { $awaiting += $f.Name }
-    }
+    $sidecar = [IO.Path]::ChangeExtension($f.FullName, $null) + 'eng.srt'
+    if (Test-Path -LiteralPath $sidecar) { continue }
+    if (Test-BitmapSubsPopulated -Path $f.FullName -Ffprobe $ffprobe) { $awaiting += $f.Name }
   }
   if ($awaiting) {
     Write-Warning ("REFUSING: {0} file(s) have bitmap subtitles but no OCR sidecar yet - run ocr-subtitles.ps1 first, or pass -SkipSubtitleCheck:" -f $awaiting.Count)
