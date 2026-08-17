@@ -57,8 +57,12 @@ while ($true) {
     # was an idle GPU that looked like an empty queue. Running in-process means the exit code and
     # all output are right here, and "this instance is busy" is simply "this instance is blocked".
     # Concurrency comes from starting N instances of this script, not from N detached children.
+    # WARNING is in this list because it was NOT, and that is how a Japanese subtitle track reached
+    # the NAS labelled English: transcode.ps1 announced the fallback on a WARNING line, this filter
+    # dropped it, and no log a human reads ever mentioned it. A filter that hides warnings turns a
+    # noisy failure into a silent one.
     & pwsh -File $transcode -Manifest $claim -LogDir $log 2>&1 |
-      Select-String 'OK |FAILED|ABORT|REFUS|MANIFEST DONE|AUDIO REVIEW' | ForEach-Object { "    $_" }
+      Select-String 'OK |FAILED|ABORT|REFUS|WARNING|MANIFEST DONE|AUDIO REVIEW' | ForEach-Object { "    $_" }
     if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) {
       Write-Output "    lane exit $LASTEXITCODE - moving to failed"
       Move-Item -LiteralPath $claim -Destination (Join-Path $Queue "failed\$($next.Name)") -Force

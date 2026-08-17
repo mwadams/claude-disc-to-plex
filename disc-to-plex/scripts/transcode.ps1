@@ -297,7 +297,23 @@ foreach($it in $items){
     else {
       $byLang = Sub-IdxByLang $inspec "$($it.subTrack)"
       if($null -ne $byLang){ $subIdx = $byLang; Write-Output "   subTrack '$($it.subTrack)' -> s:$subIdx" }
-      else { Write-Output "   WARNING: no '$($it.subTrack)' subtitle on this source - falling back to s:0"; }
+      else {
+        # ABORT, do not fall back to s:0.
+        #
+        # Falling back is how a disc that tags NOTHING gets whatever stream happens to be first.
+        # Cloud Atlas's featurettes carry seven untagged PGS streams - ja, en, fr, es, fr, es, ja -
+        # so "eng" resolved to nothing, s:0 was Japanese, and the tagging below stamped
+        # language=eng on it. It reached the NAS. The old behaviour DID say so, on a WARNING line,
+        # which lane-runner.ps1's output filter drops - so in practice the fallback was silent.
+        #
+        # There is no safe default here. Either the caller knows which stream is English (pass the
+        # ORDINAL, established by rendering the streams and reading them) or the source has no
+        # English subtitles (pass "none"). Guessing is what this whole file exists to prevent.
+        Write-Output "   ABORT: no '$($it.subTrack)' subtitle on this source and $ns subtitle stream(s) present."
+        Write-Output "          Refusing to fall back to s:0 - that ships an unknown language tagged as '$($it.subTrack)'."
+        Write-Output "          Fix the manifest: use an explicit 0-based ordinal, or subTrack:'none' if the source has no English subs."
+        continue
+      }
     }
   }
 
