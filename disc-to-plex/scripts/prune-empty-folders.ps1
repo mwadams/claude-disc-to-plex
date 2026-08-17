@@ -12,14 +12,34 @@
 param([string[]]$Roots = @('D:\video\Movies','D:\video\Television Shows','D:\video\_stage','D:\video\_logs4'),
       [switch]$WhatIf)
 
-# REFUSE to run while an encode is live. transcode.ps1 creates the output folder and ffmpeg opens
-# the file a moment later; a prune in that window deletes the folder underneath it and the encode
-# dies with "Error opening output ... No such file or directory" - having still printed
-# MANIFEST DONE. That is exactly how The Italian Job failed at 0 s.
+# REFUSE to run while an encode is writing INTO ONE OF THESE ROOTS. transcode.ps1 creates the
+# output folder and ffmpeg opens the file a moment later; a prune in that window deletes the folder
+# underneath it and the encode dies with "Error opening output ... No such file or directory" -
+# having still printed MANIFEST DONE. That is exactly how The Italian Job failed at 0 s.
+#
+# The check reads each ffmpeg's COMMAND LINE rather than merely counting processes. A bare
+# process count is wrong on a shared machine: an unrelated ffmpeg - another agent's subtitle sync,
+# a media server transcoding for a client - blocked pruning indefinitely while being no risk at
+# all. Refusing forever is not "safe", it just moves the failure somewhere quieter.
+#
+# If the command line cannot be read (permissions), treat that process as dangerous and refuse:
+# unknown is not the same as harmless.
 $live = @(Get-Process ffmpeg -ErrorAction SilentlyContinue)
 if ($live.Count -gt 0 -and -not $WhatIf) {
-  Write-Warning "$($live.Count) ffmpeg process(es) running - not pruning (an encode's output folder may be newly created and still empty)"
-  exit 0
+  $threats = @()
+  foreach ($p in $live) {
+    $cmd = $null
+    try { $cmd = (Get-CimInstance Win32_Process -Filter "ProcessId=$($p.Id)" -ErrorAction Stop).CommandLine } catch { }
+    if (-not $cmd) { $threats += "pid $($p.Id) (command line unreadable)"; continue }
+    foreach ($root in $Roots) {
+      if ($cmd -like "*$root*") { $threats += "pid $($p.Id) -> $root"; break }
+    }
+  }
+  if ($threats.Count -gt 0) {
+    Write-Warning "not pruning - ffmpeg is writing into a root being pruned:`n  $($threats -join "`n  ")"
+    exit 0
+  }
+  Write-Host "note: $($live.Count) unrelated ffmpeg process(es) running (none touching these roots) - proceeding"
 }
 
 # Belt and braces: never touch a folder created or written in the last few minutes, even if the
