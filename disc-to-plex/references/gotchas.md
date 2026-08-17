@@ -25,10 +25,17 @@ loading it whole crowds out the work, and a summary of it loses exactly the oper
 | Staging, copying, gates, encode settings, killing jobs | [gotchas-pipeline.md](gotchas-pipeline.md) |
 | Deciding whether you are *done*, or trusting a check | [gotchas-process.md](gotchas-process.md) |
 
-## The five that cost the most
+## The six that cost the most
 
 Read these before a batch even if you read nothing else. Each shipped wrong content to the
 library, and none of them announced itself — every structural check passed.
+
+0. **Get subtitles by OCRing the disc, never by downloading them.** A guarded, library-wide
+   download pass put **~570 wrong-programme subtitles into 2,681** — one in five. Grange Hill
+   had King of the Hill, Public Eye had Queer Eye, Lord Peter Wimsey had a Pablo Escobar
+   documentary. No threshold separates them: the wrong matches score 0.50 while correct ones
+   score 0.40 (DS9) and 0.00 (The Killing ← *Forbrydelsen*).
+   → [subtitles](gotchas-subtitles.md#sourcing-ocr-the-disc-do-not-download--a-wash-up)
 
 1. **Enumerate Blu-rays with MakeMKV, not by file size.** The biggest `.m2ts` is routinely not the
    feature: The Italian Job shipped a 95-minute cut of a 99.5-minute film, with two commentaries
@@ -64,4 +71,7 @@ Prefer adding to this list over adding to the prose.
 | ffmpeg live, or folder touched < 5 min ago → refuse | `prune-empty-folders.ps1` | deleting an active encode's output |
 | OCR cue-count and junk-fraction floors → refuse | `ocr-subtitles.ps1` | failed recognition reported as success |
 | Bitmap subs with no `.eng.srt` sidecar → refuse | `publish-work.ps1` | publishing AHEAD of the OCR pass |
+| Exact `SxxEyy` no longer satisfies the title guard alone | `plex_subtitle_search.py` | another show's episode N |
+| Resynced tracks keep the SOURCE name, not the library label | `plex_subtitle_resync.py` | a wrong-show sub disguised as correct |
+| Anchor pinned to its search bound → treat as failed, not agreed | `plex_subtitle_resync.py` | confident shifts built on no measurement |
 
