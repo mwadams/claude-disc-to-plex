@@ -1,5 +1,49 @@
 # BD and DVD pipeline details
 
+## Running a batch: the four tracks, and keeping them full
+
+A batch is four INDEPENDENT resources. Idle GPU is the expensive failure, and it happens because
+nothing tells you a lane finished — you have to be told, not remember to look.
+
+| Track | Resource | Concurrency |
+|---|---|---|
+| Encode | NVENC | **2 lanes** |
+| Prefetch (source → NVMe) | one USB spindle | **1 stream, strictly sequential** |
+| Publish (NVMe → NAS) | network + NAS spindles | **1 at a time, SERIAL** |
+| OCR sidecars | CPU (Tesseract) | 1, runs behind the encodes |
+
+- **Prefetch is one stream on purpose.** The source is a single USB spinning disk (~36 MB/s);
+  parallel reads seek-thrash and reduce total throughput.
+- **NAS copies must be SERIAL.** Several concurrent `robocopy` jobs contend on the same spindles
+  and link and everything crawls — with five running on a degraded uplink, nothing completed for
+  an hour. Queue works one after another inside a single job.
+- **OCR is CPU-bound and does not compete with NVENC**, so it should always be running behind the
+  lanes rather than treated as a separate phase. Publishing before it finishes strands the sidecar
+  (`publish-work.ps1` now refuses).
+
+### Watch for a free lane; don't poll for one
+
+```powershell
+pwsh -File _lanewatch.ps1 -Want 2      # prints only on transition, e.g. "LANE FREE: 1/2 busy"
+```
+
+Run it from a monitor on a ~45 s loop. It counts only ffmpeg processes reading from `_stage`, so
+another agent's ffmpeg (e.g. subtitle sync against the NAS) is never mistaken for an encode lane.
+
+### Launching a lane so its completion is reported honestly
+
+Do **not** pipe a lane launch through a filter that can close early:
+
+```powershell
+... transcode.ps1 ... | Select-String 'OK |DONE' | Select-Object -First 3    # WRONG
+```
+
+`Select-Object -First N` closes the pipe once satisfied, so the task reports **completed** while
+`transcode.ps1` keeps encoding. Lane state then reads as free when it is not, and the next
+manifest over-subscribes the GPU. Either let the output through unfiltered, or filter without a
+`-First` cap.
+
+
 Both pipelines share the video encoder — `h264_nvenc -preset medium -rc vbr -cq 20 -b:v 0
 -pix_fmt yuv420p` — and the audio matrix. They differ in source handling.
 

@@ -106,4 +106,40 @@ foreach ($d in $Discs) {
   } else {
     Write-Host ("{0,-34} ok - dvdvideo path safe ({1} titles agree)" -f $d, $mk.Count)
   }
+
+  # ---- Is this disc's mymovies.xml telling the truth about its own contents? -------------------
+  # It is a NAMING hint, never a structural authority. On the Media10 drive it was wrong about
+  # durations on three separate discs: Moomins on the Riviera listed its 74:00 feature as 13:59,
+  # Ballet Shoes listed 59:03 + 56:16 for titles that measure 119:04 + 116:16, and The Snowman and
+  # the Snowdog put MainMovie="True" on a 46:16 title when the film is the 23:57 one.
+  #
+  # Each of those is enough to pick the wrong title, or to conclude a feature is missing from a
+  # disc that holds it. Compare the SETS of durations rather than pairing by index - mymovies title
+  # Numbers are not ffmpeg title numbers, so index pairing has its own well-documented trap.
+  $mmPath = Join-Path $src 'mymovies.xml'
+  if (Test-Path -LiteralPath $mmPath) {
+    try {
+      [xml]$mm = Get-Content -LiteralPath $mmPath -Raw
+      $claimed = @($mm.SelectNodes('//Title[@Number]') |
+                   ForEach-Object { [int]$_.Hours*3600 + [int]$_.Minutes*60 + [int]$_.Seconds } |
+                   Where-Object { $_ -ge 60 } | Sort-Object)
+      $measured = @($mk | Where-Object { $_ -ge 60 } | Sort-Object)
+      if ($claimed.Count) {
+        # every claimed length should have a measured partner within tolerance
+        $orphans = @()
+        $pool = [System.Collections.ArrayList]@($measured)
+        foreach ($c in $claimed) {
+          $hit = $pool | Where-Object { [math]::Abs($_ - $c) -le 30 } | Select-Object -First 1
+          if ($hit) { [void]$pool.Remove($hit) } else { $orphans += $c }
+        }
+        if ($orphans.Count) {
+          Write-Host ("{0,-34} !! mymovies.xml DISAGREES with the disc - treat it as a naming hint only" -f $d)
+          Write-Host ("      claims lengths with no measured match: {0}" -f
+            (($orphans | ForEach-Object { [timespan]::FromSeconds($_).ToString('hh\:mm\:ss') }) -join ', '))
+          Write-Host ("      measured: {0}" -f
+            (($measured | ForEach-Object { [timespan]::FromSeconds($_).ToString('hh\:mm\:ss') }) -join ', '))
+        }
+      }
+    } catch { Write-Host ("{0,-34} !! mymovies.xml unreadable" -f $d) }
+  }
 }
