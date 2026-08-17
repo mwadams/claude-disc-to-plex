@@ -18,6 +18,7 @@ param(
   [Parameter(Mandatory)][string]$Work,
   [ValidateSet('Movies','Television Shows')][string]$Kind = 'Movies',
   [switch]$Overwrite,
+  [switch]$SkipSubtitleCheck,   # publish a work whose bitmap subs are deliberately not being OCR'd
   [string]$LocalRoot = 'D:\video',
   [string]$NasRoot   = '\\NASTEAMV\Multimedia'
 )
@@ -35,6 +36,30 @@ $ffprobe = Join-Path (Split-Path $paths.ffmpeg) 'ffprobe.exe'
 foreach ($f in $local | Where-Object { $_.Extension -eq '.mkv' }) {
   $d = "$(& $ffprobe -v error -show_entries format=duration -of csv=p=0 $f.FullName 2>$null)".Trim()
   if (-not $d -or $d -eq 'N/A') { throw "REFUSING: $($f.Name) has no duration - it is a partial file" }
+}
+
+# Refuse to publish AHEAD of the OCR pass. The documented order is encode -> OCR -> publish, and
+# publishing early is not harmless: the .mkv lands without its sidecar, so every one of them needs
+# a second, individual copy afterwards to carry the .srt up. It is easy to do by accident because
+# the encode finishing feels like the work being finished, and nothing downstream complains - the
+# film plays, with blocky bitmap subtitles, exactly as if no OCR had been intended.
+#
+# A file with a BITMAP subtitle track (dvd_subtitle / hdmv_pgs_subtitle) and no matching sidecar is
+# the signature. Text subtitle tracks and files with no subtitles at all are fine.
+if (-not $SkipSubtitleCheck) {
+  $awaiting = @()
+  foreach ($f in $local | Where-Object { $_.Extension -eq '.mkv' }) {
+    $codecs = @(& $ffprobe -v error -select_streams s -show_entries stream=codec_name -of csv=p=0 $f.FullName 2>$null)
+    if ($codecs | Where-Object { $_ -match 'dvd_subtitle|hdmv_pgs_subtitle' }) {
+      $sidecar = [IO.Path]::ChangeExtension($f.FullName, $null) + 'eng.srt'
+      if (-not (Test-Path -LiteralPath $sidecar)) { $awaiting += $f.Name }
+    }
+  }
+  if ($awaiting) {
+    Write-Warning ("REFUSING: {0} file(s) have bitmap subtitles but no OCR sidecar yet - run ocr-subtitles.ps1 first, or pass -SkipSubtitleCheck:" -f $awaiting.Count)
+    $awaiting | ForEach-Object { Write-Warning "    $_" }
+    exit 2
+  }
 }
 
 Write-Host ("publishing {0} file(s), {1} GB" -f $local.Count, [math]::Round(($local | Measure-Object Length -Sum).Sum / 1GB, 2))

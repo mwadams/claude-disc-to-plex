@@ -63,3 +63,5 @@ Prefer adding to this list over adding to the prose.
 | `.mkv` with `duration = N/A` → refuse to publish | `publish-work.ps1` | unfinalised partial encodes |
 | ffmpeg live, or folder touched < 5 min ago → refuse | `prune-empty-folders.ps1` | deleting an active encode's output |
 | OCR cue-count and junk-fraction floors → refuse | `ocr-subtitles.ps1` | failed recognition reported as success |
+| Bitmap subs with no `.eng.srt` sidecar → refuse | `publish-work.ps1` | publishing AHEAD of the OCR pass |
+
