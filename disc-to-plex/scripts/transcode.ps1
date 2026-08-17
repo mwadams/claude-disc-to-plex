@@ -274,11 +274,26 @@ foreach($it in $items){
   $nk = $keep.Count
   $ch0 = if($nk -gt 0){ Audio-Ch0 $inspec $keep[0] } else { 0 }
   $ns = Sub-Count $inspec
-  # subTrack accepts an ordinal (0-based) OR a language tag ("eng"). The tag is safer: disc
-  # subtitle order is arbitrary, so an ordinal that was right on one disc is wrong on the next.
+  # subTrack accepts an ordinal (0-based), a language tag ("eng"), or "none". The tag is safer than
+  # an ordinal: disc subtitle order is arbitrary, so an ordinal right on one disc is wrong on the
+  # next.
+  #
+  # "none" exists because a tag is NOT proof either. Blu-ray extras are frequently authored with
+  # subtitles for the FOREIGN releases only - an English-language featurette needs none - and the
+  # streams on a raw .m2ts are usually UNTAGGED, so every one of them answers to "eng". Fantasia's
+  # extras carry exactly five, matching the disc's five non-English languages; "eng" selected the
+  # Spanish one, and the tagging below then relabelled it English. The result plays as an English
+  # subtitle track that is not English, and nothing downstream can tell.
+  #
+  # So when the source has no English subtitle, say so explicitly rather than accepting whatever
+  # s:0 happens to be.
   $subIdx = 0
   if(Has $it 'subTrack'){
-    if("$($it.subTrack)" -match '^\d+$'){ $subIdx = [int]$it.subTrack }
+    if("$($it.subTrack)" -eq 'none'){
+      $ns = 0
+      Write-Output "   subTrack 'none' -> no subtitle track kept (source carries no English subs)"
+    }
+    elseif("$($it.subTrack)" -match '^\d+$'){ $subIdx = [int]$it.subTrack }
     else {
       $byLang = Sub-IdxByLang $inspec "$($it.subTrack)"
       if($null -ne $byLang){ $subIdx = $byLang; Write-Output "   subTrack '$($it.subTrack)' -> s:$subIdx" }

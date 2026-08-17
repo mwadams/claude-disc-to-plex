@@ -40,6 +40,10 @@ function Test-BitmapSubsPopulated {
   $hash = [BitConverter]::ToString($md5.ComputeHash([Text.Encoding]::UTF8.GetBytes($key))).Replace('-','')
   $cache = Join-Path $CacheDir "$hash.txt"
 
+  # Three verdicts, two of which mean "stop waiting":
+  #   populated  - there are packets and OCR has not been tried, or succeeded
+  #   empty      - the track is a declared shell with no packets
+  #   exhausted  - OCR ran and produced nothing usable (see Set-BitmapSubsExhausted)
   if (Test-Path -LiteralPath $cache) { return ((Get-Content -LiteralPath $cache -Raw).Trim() -eq 'populated') }
 
   $n = @(& $Ffprobe -v error -select_streams s -show_entries packet=pts_time -of csv=p=0 $Path 2>$null).Count
@@ -47,4 +51,29 @@ function Test-BitmapSubsPopulated {
   New-Item -ItemType Directory -Path $CacheDir -Force | Out-Null
   Set-Content -LiteralPath $cache -Value $verdict
   return ($n -gt 0)
+}
+
+# Record that OCR RAN on this file and produced nothing usable, so the pipeline stops waiting for
+# a sidecar that is never coming.
+#
+# The empty-stream case above is not the only dead end. Knick Knack (1989) is a WORDLESS short: its
+# bitmap track carries packets (signs and gags, not dialogue), OCR converts them to noise, and the
+# dictionary gate correctly refuses to write a sidecar - "0% of lines contain a common English
+# word". Correct on its own terms, but the consequences were identical to Camille (1921): no
+# sidecar, so publish-work held back the ENTIRE work (a 3-minute short blocking all of Finding
+# Nemo), and the OCR loop re-attempted it on every pass forever.
+#
+# A rejected OCR is a RESULT, not an absence of one. Recording it is what separates "not tried yet"
+# from "tried, and there is nothing here" - the distinction the pipeline kept failing to make.
+function Set-BitmapSubsExhausted {
+  param(
+    [Parameter(Mandatory)][string]$Path,
+    [string]$CacheDir = (Join-Path $env:LOCALAPPDATA 'disc-to-plex\subcache')
+  )
+  $item = Get-Item -LiteralPath $Path
+  $key  = '{0}|{1}|{2}' -f $item.FullName, $item.Length, $item.LastWriteTimeUtc.Ticks
+  $md5  = [Security.Cryptography.MD5]::Create()
+  $hash = [BitConverter]::ToString($md5.ComputeHash([Text.Encoding]::UTF8.GetBytes($key))).Replace('-','')
+  New-Item -ItemType Directory -Path $CacheDir -Force | Out-Null
+  Set-Content -LiteralPath (Join-Path $CacheDir "$hash.txt") -Value 'exhausted'
 }
