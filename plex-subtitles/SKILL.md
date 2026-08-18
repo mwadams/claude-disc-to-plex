@@ -259,6 +259,28 @@ was found immediately and needed no alignment at all. Symptoms: `year`
 disagreeing with `originallyAvailableAt`, a runtime far from the matched
 title's, or a folder name unlike the title. Fix the match first.
 
+## Persist a verified subtitle as a SIDECAR — downloads are transient
+
+A provider-downloaded subtitle carries `transient="1"` and lives only in Plex's
+metadata store. **It is discarded when the item is re-analysed** — a library
+scan, a forced refresh, or the file being republished is enough. It vanishes
+mid-check with nothing in any log to say why, after all the quota and
+measurement work has been spent proving it correct.
+
+So once a candidate passes verification, write it next to the media as
+`<media basename>.eng.srt` and let the scanner pick it up:
+
+```powershell
+Copy-Item verified.srt "\nas\...\Show (2010) - S02E10.eng.srt"
+```
+
+The re-read stream then reports `transient` empty — that is the check that it
+is file-based and will survive. This also matches how disc-OCR subtitles are
+shipped, so a library ends up with one mechanism rather than two, and the SRT
+can be corrected in a text editor instead of re-downloaded.
+
+Write it with **no BOM**: a BOM 406s on upload and reads oddly as a sidecar.
+
 ## Recovering from a bad upload
 
 Plex uploads **replace** the current subtitle irreversibly, which is why
