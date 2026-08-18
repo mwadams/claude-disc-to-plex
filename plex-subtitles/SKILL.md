@@ -299,7 +299,18 @@ recorded as `kept` in the search state file.
   `Accept: text/plain, */*`. **500s unless the title ends `.srt`**; adding a
   `language` param or `Content-Type` header also 500s; a BOM in the body 406s.
 - Downloaded/uploaded subtitles report no `file` path - they live in Plex's
-  metadata store, not as sidecars, so removing them touches no media.
+  metadata store, not as sidecars, so removing THOSE touches no media.
+- 🔴 **`DELETE /library/streams/<id>` on a FILE-BASED stream DELETES THE FILE ON
+  DISK.** The line above holds only for `transient="1"` provider downloads. Once
+  a verified SRT is written beside the media — which this skill recommends,
+  because provider downloads are discarded on re-analysis — its stream is
+  file-based, and deleting the stream removes the `.srt` from the media volume,
+  including a NAS share, with no prompt and nothing in the log to distinguish it
+  from dropping a cached stream. Four sidecars were destroyed on a NAS this way
+  during what was meant to be a Plex-side-only cleanup.
+  **Check `transient` first**: empty means it is a file on disk, so delete the
+  file deliberately — and on a write-protected volume, hand that to the user
+  instead of calling this endpoint.
 - Plex serves subtitles with **no charset**, so `requests` falls back to
   ISO-8859-1. Decoding with that and re-encoding as UTF-8 corrupts every
   non-ASCII character. Decode explicitly.
