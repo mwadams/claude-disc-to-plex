@@ -88,6 +88,23 @@ which applies the SD deinterlace path). MakeMKV writes proper language tags, so 
 and `audioLangs` resolve on their own instead of by inference.
 `scripts/audit-bd-titles.ps1` runs this comparison across a whole drive.
 
+🔴 **A title id is not a property of the disc — it is a position in a list MakeMKV rebuilds on
+every invocation, and `--minlength` decides what is in that list.** Any title shorter than the
+floor is omitted and everything after it shifts up. So **the rip must use the same `--minlength`
+as the `info` that produced the ids**, or you rip different content under the right name.
+
+Enumerating For Your Eyes Only's extras with `--minlength=60` and then ripping with the default
+120 s dropped five sub-2-minute titles and renumbered the rest: the file written as `_t05` was the
+29:48 documentary (4.70 GB) instead of the 2:04 clip (9.9 MB). Nothing errored, every filename
+looked right, and every file was wrong.
+
+Cheapest guard: **`info` reports each title's size (`TINFO:<id>,10`) — check what landed against
+it.** A mismatch means the numbering moved under you.
+
+Use `--minlength=60` (or lower) whenever a disc's extras matter: MakeMKV's default hides short
+items entirely, and they show up only as `MSG:3025` "…was therefore skipped" lines. Cloud Atlas had
+three real extras below the 120 s floor.
+
 **DVD: `pwsh -File scripts/scan-disc.ps1 -SrcRoot <parent> -Pattern "<Show> * Disk *"`** (or
 `-Root <one disc>`). It probes every title and labels each EPISODE?/PLAYALL?/REVIEW/BOILERPLATE/
 ARTIFACT, using cross-disc identical durations to unmask copyright/promo reels.

@@ -212,8 +212,14 @@ function Sub-IdxByLang($inspec,$lang){
   # Resolve a subtitle ORDINAL from its language tag. Subtitle order on a disc means nothing —
   # it is often just alphabetical (dan,eng,fin,nor,swe puts English at 1, not 0), so a
   # hard-coded index silently ships the wrong language. Returns $null if the tag isn't present.
-  $langs = @(& $fp -v error @inspec -select_streams s -show_entries stream_tags=language -of csv=p=0 2>$null) |
-           ForEach-Object { "$_".Trim() }
+  # The @() must wrap the WHOLE pipeline, not just the ffprobe call. A pipeline emitting ONE item
+  # collapses to a bare string, and indexing a string returns a CHARACTER: with a single subtitle
+  # stream, $langs became "eng" and $langs[0] was 'e', which never equals 'eng'. So this returned
+  # $null for every source carrying exactly one subtitle track - Peaky Blinders, Coco Chanel - and
+  # nobody noticed, because the old behaviour then fell back to s:0, which in that exact case is
+  # the right stream anyway. It only surfaced once the fallback became an abort.
+  $langs = @(@(& $fp -v error @inspec -select_streams s -show_entries stream_tags=language -of csv=p=0 2>$null) |
+             ForEach-Object { "$_".Trim() })
   for($i=0; $i -lt $langs.Count; $i++){ if($langs[$i] -eq $lang){ return $i } }
   return $null
 }
