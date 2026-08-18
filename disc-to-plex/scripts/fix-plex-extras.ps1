@@ -54,6 +54,27 @@ $h  = @{ "X-Plex-Token"=$tok; "Accept"="application/json" }
 $ff = Join-Path $FfmpegDir 'ffmpeg.exe'; $fp = Join-Path $FfmpegDir 'ffprobe.exe'
 if(-not (Test-Path $MediaDir)){ throw "MediaDir not found: $MediaDir" }
 
+# --- the season must be the one MediaDir actually holds -------------------------------------
+# `-Season` defaults to 0 because extras have always lived in Season 00. That stopped being true
+# the moment a show put REAL episodes there (Spartacus: Gods of the Arena is season 0 in the
+# tvdbAiring tree, with its extras moved to Season 90). Run without -Season then, and this script
+# cheerfully cleared and LOCKED the summaries of six correctly-matched episodes - while reporting
+# "file not in MediaDir" for every single one. Evidence of the wrong target is not a reason to
+# continue: derive the season from the files, and refuse when it disagrees.
+$dirSeasons = @(Get-ChildItem $MediaDir -Filter '*.mkv' -File -EA SilentlyContinue |
+                ForEach-Object { if($_.Name -match '[Ss](\d{1,3})[Ee]\d{1,3}'){ [int]$Matches[1] } } |
+                Sort-Object -Unique)
+if($dirSeasons.Count -eq 0){ throw "No SxxEyy-named .mkv files in MediaDir - cannot tell which season this is: $MediaDir" }
+if($dirSeasons.Count -gt 1){ throw "MediaDir mixes seasons ($($dirSeasons -join ', ')) - point this at ONE season folder: $MediaDir" }
+if($PSBoundParameters.ContainsKey('Season')){
+  if($Season -ne $dirSeasons[0]){
+    throw "REFUSING: -Season $Season was given but MediaDir holds season $($dirSeasons[0]) files. One of them is wrong, and guessing would edit the wrong episodes: $MediaDir"
+  }
+} else {
+  $Season = $dirSeasons[0]
+  Write-Host "season not specified - taking $Season from the files in MediaDir"
+}
+
 # --- locate show -> season -> episodes ---
 $allmeta = @((Invoke-RestMethod "$base/library/sections/$Section/all?type=2" -Headers $h).MediaContainer.Metadata)
 $showObj = $allmeta | Where-Object { $_.title -like "*$Show*" -and $_.ratingKey } | Select-Object -First 1

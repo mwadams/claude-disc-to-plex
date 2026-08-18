@@ -109,6 +109,12 @@ three real extras below the 120 s floor.
 `-Root <one disc>`). It probes every title and labels each EPISODE?/PLAYALL?/REVIEW/BOILERPLATE/
 ARTIFACT, using cross-disc identical durations to unmask copyright/promo reels.
 
+**Enumerate only a COMPLETE copy.** A disc still being staged enumerates perfectly happily and
+returns a plausible, wrong answer: mid-copy, a 4-disc Spartacus set reported ONE episode on disc 1,
+which reads like a genuine box-set quirk rather than a truncated folder. Nothing in MakeMKV's output
+says "incomplete". Gate on whatever your fetch step writes only after it verifies the copy (here,
+`_fetch-done.txt`), not on the folder existing or on its size looking about right.
+
 **Account for every real title.** Map it to an episode, keep it as an extra, or exclude it only as
 *identified* boilerplate. Each REVIEW row is a probable extra: look at a frame and place it. Never
 drop a title for being the wrong length — that once silently discarded real extras
