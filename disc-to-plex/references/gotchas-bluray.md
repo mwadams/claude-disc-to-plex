@@ -4,6 +4,25 @@ Playlists, streams, cropping, PGS, and why the biggest .m2ts is not the feature.
 
 Part of the `disc-to-plex` gotchas set — see [gotchas.md](gotchas.md) for the full index.
 
+## A raw `.m2ts` title is only a duplicate if it MATCHES AN EPISODE PLAYLIST
+
+MakeMKV lists both playlist titles (`00800.mpls`) and raw stream titles (`00002.m2ts`). On a
+Newsroom disc the raw `00002.m2ts` ran 1:12:44 — exactly the same as the `00800.mpls` episode — so
+it was that episode listed twice, 19 GB of pure duplicate. But the SAME disc also exposed
+`00045.m2ts`, `00046.m2ts` and `00047.m2ts` as raw titles, and those were **genuine extras**,
+including the "Inside the Episode" featurette.
+
+So the rule is narrow:
+
+> Exclude a raw `.m2ts` title **only** when its duration matches an episode playlist on that disc.
+> Every other raw stream is an extra until identified otherwise.
+
+**Do not "optimise" a rip by passing MakeMKV an explicit title list that omits raw streams**, and do
+not skip them wholesale to save space or time. It saves ~15 GB per disc and costs you the extras —
+which is the failure this project keeps paying for, in a new disguise. Rip `all`, then delete the
+proven duplicate once its duration is confirmed against the playlist title.
+
+
 ## Contents
 
 - [`crop: "auto"` cropped the SIDES off a letterboxed widescreen film](#crop-auto-cropped-the-sides-off-a-letterboxed-widescreen-film)
