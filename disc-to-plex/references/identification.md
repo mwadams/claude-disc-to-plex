@@ -167,12 +167,42 @@ pwsh -File scripts/plex-season-map.ps1 -Show "Spartacus" -Season 2 -MatchDir <ri
 Underneath: take the library item's `guid` (`plex://show/<id>`) and ask the provider —
 
 ```
-GET https://metadata.provider.plex.tv/library/metadata/<id>/children?X-Plex-Token=...
+GET https://metadata.provider.plex.tv/library/metadata/<id>/children?episodeOrder=<ord>&X-Plex-Token=...
 ```
 
 which returns the seasons as `<Directory>` elements carrying `index`, `title`, `leafCount` and a
 `key` to drill into episodes (title, `index`, `duration`, `originallyAvailableAt`). **Parse it as
 XML** — it is not shaped like the local server's JSON, and asking for JSON yields empty fields.
+
+### `episodeOrder` is not optional — the provider serves several different trees
+
+Omit it and you get the `watch.plex.tv` catalogue tree, **which the scanner never matches against**.
+The tree your server uses is the one for the section's `showOrdering` preference, read from
+`GET /library/sections/<key>/prefs`. The pref spells TheTVDB as `aired`, but the provider wants
+`tvdbAiring`. Measured on `plex://show/5d9c0833ba2e21001f18ea2b` (Spartacus):
+
+| `episodeOrder` | seasons returned |
+|---|---|
+| *(none)* | 1=Blood and Sand 2=Gods of the Arena 3=Vengeance 4=War of The Damned |
+| `tvdbAiring` | **0=Gods of the Arena** 1=Blood and Sand 2=Vengeance 3=War of the Damned |
+| `tmdbAiring` | 0=Specials 1=Blood and Sand 2=Vengeance 3=War of the Damned |
+| `aired` | *(empty — not a provider value, only a section-pref value)* |
+| `tvdbDvd` | 1=Season 1 2=Season 2 3=Season 3 *(no titles)* |
+
+Both orderings a library can actually use put **Vengeance at 2**; only the catalogue puts Gods of
+the Arena there. Six episodes published as `S02E01–E04` were therefore matched to Vengeance's
+episodes, with plausible-looking titles and summaries throughout.
+
+### The binding is sticky — fix it before publishing, not after
+
+Once an episode is matched, none of these move it: a forced item refresh, a forced show refresh,
+re-applying the same match via `/match`, or changing the section's ordering. The episode keeps its
+`plex://episode/...` guid. Only `PUT /library/metadata/<rk>/unmatch` clears it, and the season
+object holds its own binding independently — a season bound to the wrong canonical season will
+re-bind its children the same wrong way, so unmatch the SEASON too.
+
+Check `parentIndex` on a matched episode to see which canonical season it really belongs to; when
+that disagrees with the season it is filed under, the binding came from a different tree.
 
 ### Why this is a step and not an optimisation
 

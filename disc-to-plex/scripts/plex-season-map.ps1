@@ -56,23 +56,58 @@ if($s.guid -notmatch 'plex://show/([0-9a-f]+)'){ throw "Show '$($s.title)' has g
 $showId = $Matches[1]
 "SHOW: $($s.title) ($($s.year))  ratingKey=$($s.ratingKey)  guid=$($s.guid)"
 
+# --- WHICH tree? The provider serves a DIFFERENT season tree per episode ordering ------------
+# This is the trap that cost a rebuild of Spartacus. Querying /children with NO parameter returns
+# the watch.plex.tv catalogue tree, which the scanner NEVER matches against. The server matches
+# against the tree for the SECTION's showOrdering preference. For Spartacus the two disagree about
+# where a whole 6-episode prequel lives:
+#
+#   (no param)   1=Blood and Sand  2=Gods of the Arena  3=Vengeance  4=War of the Damned
+#   tvdbAiring   0=Gods of the Arena  1=Blood and Sand  2=Vengeance  3=War of the Damned
+#   tmdbAiring   0=Specials           1=Blood and Sand  2=Vengeance  3=War of the Damned
+#
+# Publishing to the no-param tree put six episodes in a season the agent reads as Vengeance.
+$pref = ([xml](Invoke-WebRequest "$base/library/sections/$Section/prefs" -Headers @{'X-Plex-Token'=$tok} -UseBasicParsing).Content).MediaContainer.Setting |
+          Where-Object { $_.id -eq 'showOrdering' } | Select-Object -First 1
+$ordPref = if($pref -and $pref.value){ $pref.value } else { 'tmdbAiring' }
+# The section pref spells TheTVDB as 'aired'; the provider wants 'tvdbAiring' for the same tree.
+$order   = if($ordPref -eq 'aired'){ 'tvdbAiring' } else { $ordPref }
+"SECTION $Section episode ordering: '$ordPref'  ->  provider episodeOrder=$order"
+
 # The provider returns XML whose children are <Directory>/<Video> ELEMENTS - not a Metadata array,
 # so parse as XML rather than JSON.
-function Provider-Children($id){
-  $raw = Invoke-WebRequest "https://metadata.provider.plex.tv/library/metadata/$id/children?X-Plex-Token=$tok" -TimeoutSec 60 -UseBasicParsing
+function Provider-Children($id, $ord){
+  $q = "https://metadata.provider.plex.tv/library/metadata/$id/children?X-Plex-Token=$tok"
+  if($ord){ $q += "&episodeOrder=$ord" }
+  $raw = Invoke-WebRequest $q -TimeoutSec 60 -UseBasicParsing
   ([xml]$raw.Content).MediaContainer.ChildNodes | Where-Object { $_.NodeType -eq 'Element' }
 }
 
-$seasons = Provider-Children $showId
+$seasons = Provider-Children $showId $order
+if(-not $seasons){ throw "Provider returned no seasons for episodeOrder=$order. Check the ordering value." }
 ''
-'CANONICAL SEASONS (use these index numbers):'
+"CANONICAL SEASONS as THIS SERVER will match them (episodeOrder=$order):"
 foreach($x in $seasons){ "  index={0,-3} {1,-26} episodes={2}" -f $x.index, $x.title, $x.leafCount }
+
+# Show the catalogue tree too when it disagrees - that is the one a human sees on watch.plex.tv,
+# and the mismatch is exactly what leads to publishing into the wrong season.
+$catalogue = Provider-Children $showId $null
+$a = ($seasons   | ForEach-Object { "$($_.index)=$($_.title)" }) -join ' '
+$b = ($catalogue | ForEach-Object { "$($_.index)=$($_.title)" }) -join ' '
+if($a -ne $b){
+  ''
+  '  *** WARNING: watch.plex.tv shows a DIFFERENT structure to the one your server matches. ***'
+  "      server (episodeOrder=$order): $a"
+  "      watch.plex.tv (no param)    : $b"
+  '      Name files to the SERVER row. The catalogue row is not what the scanner uses.'
+}
 
 if($Season -lt 0){ return }
 
 $sel = $seasons | Where-Object { [int]$_.index -eq $Season } | Select-Object -First 1
 if(-not $sel){ throw "Season $Season not found. Available: $(($seasons | ForEach-Object { $_.index }) -join ', ')" }
-$eps = Provider-Children $sel.ratingKey
+# The season ratingKey is already ordering-specific, so its children need no episodeOrder.
+$eps = Provider-Children $sel.ratingKey $null
 ''
 "CANONICAL EPISODES - season $Season '$($sel.title)':"
 $canon = @()

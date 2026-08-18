@@ -132,13 +132,34 @@ pwsh -File scripts/plex-season-map.ps1 -Show "<name>" -Season <n> -MatchDir <rip
 It asks Plex's own metadata provider what the show actually looks like, then matches your ripped
 files to it by runtime. Renaming 40 episodes after the fact is the alternative.
 
-Two things that have already caused this to be got wrong:
+**There is no single canonical structure — the provider serves a different season tree per episode
+ordering, and only ONE of them is what your server matches against.** The script reads the
+section's `showOrdering` preference and queries with the matching `episodeOrder`, then warns when
+the catalogue disagrees. Do not query `/children` without that parameter and treat the answer as
+authoritative — that returns the `watch.plex.tv` tree, which the scanner never uses. For Spartacus
+the two disagree about where a whole six-episode prequel lives:
+
+```
+(no param)   1=Blood and Sand  2=Gods of the Arena  3=Vengeance  4=War of the Damned
+tvdbAiring   0=Gods of the Arena  1=Blood and Sand  2=Vengeance  3=War of the Damned
+tmdbAiring   0=Specials           1=Blood and Sand  2=Vengeance  3=War of the Damned
+```
+
+The section pref spells TheTVDB as `aired`; the provider wants `tvdbAiring` for that same tree.
+
+Three things that have already caused this to be got wrong:
 
 - **Box-set season NAMES are not season NUMBERS**, and `watch.plex.tv` lists seasons in broadcast
   order with no indices — so reading the order as the numbering is an inference, not a fact.
 - **A wrong title in Season 00 says nothing about where a real season lives.** A show with no
   canonical season 0 will have the agent fill the specials slots you invented using the nearest
   season's episode list.
+- **A miniseries or prequel is often season 0 in the matching tree** even though the catalogue
+  presents it as a numbered season. Publishing it to the catalogue's number silently binds every
+  episode to a different season's titles. Once bound, neither a forced refresh, a re-match, nor
+  changing the ordering will move it — the binding is sticky, and only unmatching clears it. If
+  season 0 is occupied by real episodes, put the extras in a high season (e.g. `Season 90`) and
+  lock its title, rather than displacing the episodes.
 
 The matcher flags `AMBIGUOUS` when two canonical episodes share a runtime, which is common — treat
 runtime as corroboration and settle those from content. If the show itself is matched to the wrong
