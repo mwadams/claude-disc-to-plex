@@ -9,3 +9,7 @@ tool-paths.json
 *.vob
 *.sup
 *.log
+
+# python bytecode
+__pycache__/
+*.pyc

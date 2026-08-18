@@ -1,11 +1,15 @@
 # claude-disc-to-plex
 
-Two [Claude Code](https://claude.com/claude-code) **skills** that together take a physical
+Three [Claude Code](https://claude.com/claude-code) **skills** that together take a physical
 Blu-ray or DVD all the way to a clean, Plex-ready media library — decrypt & back up the disc,
-then GPU-transcode it with NVIDIA NVENC and stage it into a correctly-named library.
+GPU-transcode it with NVIDIA NVENC into a correctly-named library, then fill in the subtitles the
+disc could not supply.
 
 ```
-physical disc ──[ disc-backup ]──▶ decrypted BDMV/VIDEO_TS folder ──[ disc-to-plex ]──▶ Plex-ready MKVs
+physical disc ──[ disc-backup ]──▶ decrypted BDMV/VIDEO_TS ──[ disc-to-plex ]──▶ Plex-ready MKVs
+                                                                                      │
+                                                            [ plex-subtitles ]◀───────┘
+                                                          (only where the disc has none)
 ```
 
 ## The skills
@@ -23,8 +27,19 @@ a universal compatibility downmix, and library naming that merges cleanly into a
 collection. Reads via ffmpeg's libavformat, so it survives discs that **crash HandBrake's
 libbluray reader** (PGS subtitle timestamp discontinuities). Fully manifest-driven and resumable.
 
-You can use either skill on its own — `disc-to-plex` works on any already-decrypted rip; run
-`disc-backup` first only when you're starting from a physical, possibly-encrypted disc.
+### [`plex-subtitles/`](plex-subtitles/) — find, verify & align subtitles (stage 3)
+For the items a disc genuinely cannot serve: audits a Plex library for anything with no usable
+**text** subtitle (PGS/VOBSUB count as missing — they cannot be resynced or restyled), searches
+Plex's provider, and downloads only candidates that pass guards against wrong-film and wrong-show
+matches. Then aligns each one to the actual audio, applying **nothing that a second independent
+measurement does not confirm**.
+
+Reach for `disc-to-plex`'s OCR first: the disc's own subtitles are always the right cut and the
+right episode. This skill is for when there is no subtitle stream at all.
+
+Each skill works on its own — `disc-to-plex` takes any already-decrypted rip; run `disc-backup`
+first only when starting from a physical, possibly-encrypted disc; `plex-subtitles` needs only a
+Plex server and direct file access to the media.
 
 ## What this repo is really about
 
@@ -50,6 +65,8 @@ So the hard-won rules now run as guards inside the scripts:
 | `.mkv` with `duration = N/A` → refuse to publish | unfinalised partial encodes |
 | ffmpeg live, or folder touched < 5 min ago → refuse | deleting an active encode's output |
 | OCR cue-count and junk-fraction floors → refuse | failed recognition reported as success |
+| Subtitle title-similarity + `SxxEyy` guards → reject | the wrong show's subtitles (8.4% of one library) |
+| Two alignment anchors must agree, neither railed → hold | ffsubsync's confident nonsense at its search bound |
 
 The remaining knowledge lives in [`disc-to-plex/references/gotchas.md`](disc-to-plex/references/gotchas.md),
 an index over seven domain files (Blu-ray, DVD, audio, subtitles, Plex, pipeline, process). It is
@@ -70,8 +87,9 @@ Clone the repo, then point Claude Code at each skill (copy or symlink into your 
 ```bash
 git clone https://github.com/mwadams/claude-disc-to-plex.git
 # then, e.g.
-cp -r claude-disc-to-plex/disc-backup   ~/.claude/skills/disc-backup
-cp -r claude-disc-to-plex/disc-to-plex  ~/.claude/skills/disc-to-plex
+cp -r claude-disc-to-plex/disc-backup     ~/.claude/skills/disc-backup
+cp -r claude-disc-to-plex/disc-to-plex    ~/.claude/skills/disc-to-plex
+cp -r claude-disc-to-plex/plex-subtitles  ~/.claude/skills/plex-subtitles
 ```
 
 Claude discovers them automatically and consults the relevant `SKILL.md` when you ask to rip or
@@ -84,9 +102,13 @@ convert discs for Plex.
 - The transcode toolchain (a driver-compatible ffmpeg + SupMover) is fetched automatically by
   `disc-to-plex/scripts/install-tools.ps1` — no manual installs.
 
+`plex-subtitles` additionally needs **Python 3** with a VAD for alignment (`silero` recommended,
+`auditok` avoids the torch download) — installed by `plex-subtitles/scripts/install-tools.ps1`.
+
 Each skill's `SKILL.md` and `references/` document the full workflow and the non-obvious failure
-modes. Start with [`disc-backup/SKILL.md`](disc-backup/SKILL.md) and
-[`disc-to-plex/SKILL.md`](disc-to-plex/SKILL.md).
+modes. Start with [`disc-backup/SKILL.md`](disc-backup/SKILL.md),
+[`disc-to-plex/SKILL.md`](disc-to-plex/SKILL.md) and
+[`plex-subtitles/SKILL.md`](plex-subtitles/SKILL.md).
 
 ## License
 
