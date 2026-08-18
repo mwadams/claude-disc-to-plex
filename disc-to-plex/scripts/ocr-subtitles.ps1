@@ -519,6 +519,21 @@ foreach ($f in $targets) {
     $minCues = if ($durMin -gt 5) { [int][math]::Floor($durMin / 4) }
                else { [math]::Max(1, [math]::Min(5, [int][math]::Floor($durSec / 15))) }
 
+    # ...but no runtime-derived floor can be higher than what the TRACK ACTUALLY HOLDS. A sparse
+    # track is not a failed OCR: "Ten Easy Steps to Dismemberment" (2:14) carries its text as
+    # burned-in graphics and has exactly 4 real subtitles, so a floor of 5 declared a perfect
+    # extraction a wrong-track failure and blocked publishing indefinitely. PGS writes a display
+    # set plus a clearing packet per cue, so packets/2 is the ceiling on recoverable cues. Counted
+    # only when the file is about to fail, so features pay nothing for it.
+    if ($cues -lt $minCues) {
+      $pkts = @(& $ffprobe -v error -select_streams s -show_packets -show_entries packet=stream_index -of csv=p=0 $f.FullName 2>$null)
+      $perStream = $pkts | Where-Object { $_ } | Group-Object | ForEach-Object { $_.Count }
+      $trackCap  = if ($perStream) { [int][math]::Ceiling(($perStream | Measure-Object -Maximum).Maximum / 2) } else { 0 }
+      if ($trackCap -gt 0 -and $minCues -gt $trackCap) {
+        Write-Output "      note: track holds only $trackCap cue(s) - floor lowered from $minCues (sparse track, not a failure)"
+        $minCues = [math]::Max(1, $trackCap)
+      }
+    }
     if ($cues -lt $minCues) { throw "only $cues cues for $([math]::Round($durMin,1)) min (need $minCues) - recognition failed" }
     if ($junkPct -gt 30)    { throw "$junkPct% of cues are 1-2 chars - recognition failed (this is the nOCR signature)" }
 
@@ -535,10 +550,30 @@ foreach ($f in $targets) {
     # Only meaningful for English, so it is skipped for any other -Lang.
     if ($Lang -eq 'eng') {
       $common = '(?i)\b(the|and|you|that|this|with|have|not|for|but|what|are|was|his|her|him|she|they|there|would|your|from|all|been|will|has|had|who|when|were)\b'
-      $withWord = @($lines | Where-Object { $_ -match $common }).Count
-      $wordPct  = if ($lines.Count) { [math]::Round(100 * $withWord / $lines.Count) } else { 0 }
-      if ($wordPct -lt 15) {
-        throw "only $wordPct% of lines contain a common English word - output is not English text (genuine conversions score 43-77%)"
+
+      # SDH SOUND CUES ARE NOT FAILURES. A line like "(explosion)" or
+      # "(McClane grunting/banging noise)" is correct English and contains no function word at all.
+      # On a piece with almost no dialogue the whole track is such lines: Die Hard 2's "Visual
+      # Effects Breakdown 2" scored 7% and was rejected, yet rendering its cues showed clean English
+      # SDH over storyboard artwork. The gate was right about the numbers and wrong about the file.
+      #
+      # So judge the DIALOGUE lines, and let sound cues abstain rather than count against the track.
+      # This does not weaken the gate - gibberish is not parenthesised, so the failures it exists to
+      # catch (Legally Blonde 5%, BBC Shakespeare 3%) still fail. A track that is ENTIRELY sound
+      # cues has nothing to judge, so it passes on the strength of being well-formed SDH.
+      $soundCue = '^\s*[\(\[][^\)\]]{2,}[\)\]]\s*$'
+      $cueLines = @($lines | Where-Object { $_ -match $soundCue })
+      $judgeable = @($lines | Where-Object { $_ -notmatch $soundCue })
+
+      $withWord = @($judgeable | Where-Object { $_ -match $common }).Count
+      $wordPct  = if ($judgeable.Count) { [math]::Round(100 * $withWord / $judgeable.Count) } else { 0 }
+      $cuePct   = if ($lines.Count) { [math]::Round(100 * $cueLines.Count / $lines.Count) } else { 0 }
+
+      if ($judgeable.Count -lt 10 -and $cuePct -ge 50) {
+        Write-Output "      SDH sound-cue track: $cuePct% of lines are bracketed sound descriptions, only $($judgeable.Count) dialogue line(s) to judge - dictionary gate not applicable"
+      }
+      elseif ($wordPct -lt 15) {
+        throw "only $wordPct% of dialogue lines contain a common English word - output is not English text (genuine conversions score 43-77%; $cuePct% of lines were bracketed sound cues, which are exempt)"
       }
 
       # DICTIONARY GATE. Every gate above this line PASSED the split-letter failure described at
