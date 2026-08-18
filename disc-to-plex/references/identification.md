@@ -151,3 +151,45 @@ Everything that isn't an episode/feature goes to `Season 00` (Plex "Specials"). 
 `S00E01…` in a sensible order (documentary, alternate edits, galleries, behind-the-scenes,
 textless, restoration comparisons, featurettes, trailers). Numbering is local per show and can
 have gaps; reconcile if multiple discs feed one show over time.
+
+
+## Canonical season/episode structure — ask Plex, do not infer it
+
+`scripts/plex-season-map.ps1` fetches what Plex itself believes about a show and matches ripped
+files to it. Run it BEFORE naming anything for a TV set.
+
+```powershell
+pwsh -File scripts/plex-season-map.ps1 -Show "Spartacus"                                  # seasons + INDEX numbers
+pwsh -File scripts/plex-season-map.ps1 -Show "Spartacus" -Season 2                        # canonical titles + runtimes
+pwsh -File scripts/plex-season-map.ps1 -Show "Spartacus" -Season 2 -MatchDir <rip folder> # match by runtime
+```
+
+Underneath: take the library item's `guid` (`plex://show/<id>`) and ask the provider —
+
+```
+GET https://metadata.provider.plex.tv/library/metadata/<id>/children?X-Plex-Token=...
+```
+
+which returns the seasons as `<Directory>` elements carrying `index`, `title`, `leafCount` and a
+`key` to drill into episodes (title, `index`, `duration`, `originallyAvailableAt`). **Parse it as
+XML** — it is not shaped like the local server's JSON, and asking for JSON yields empty fields.
+
+### Why this is a step and not an optimisation
+
+- **Season NAMES are not season NUMBERS.** A box set labelled "Blood and Sand / Gods of the Arena /
+  Vengeance / War of the Damned" says nothing about indices, and `watch.plex.tv` lists seasons in
+  broadcast order with no numbers at all. Reading the order as the numbering is an inference.
+- **A wrong title in Season 00 says nothing about where a real season lives.** Publishing extras as
+  `S00E01..` on a show with no canonical season 0 makes the agent fill those invented slots from the
+  nearest season's episode list — which looks exactly like evidence that the season lives at 0.
+- **Runtime matching gets you the rest of the way, but only with the canonical runtimes in hand.**
+
+### Read the matcher's flags honestly
+
+`AMBIGUOUS` means two canonical episodes are within a minute of each other — common, and it means
+runtime CANNOT decide. Gods of the Arena E01 and E04 are both 53 minutes. `NO CLOSE MATCH` means the
+file is not an episode at all (an extra, a promo, a play-all). In both cases identify from content:
+frames, dialogue, or commentary that names the episode.
+
+If the show itself is matched to the wrong thing, `GET /library/metadata/<ratingKey>/matches?manual=1`
+is the API behind the UI's "Fix Match" dialog — candidates with guids and scores.

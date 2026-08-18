@@ -121,6 +121,29 @@ Map each title to the right episode/feature and, for TV, the **Plex/TMDB episode
 IMDb, not on-disc order). See `references/identification.md` for the techniques (DVD menu "episode
 selection" screens, extracted frames, runtime matching, on-screen episode titles).
 
+**For TV, get the canonical structure from Plex FIRST — before naming anything:**
+
+```powershell
+pwsh -File scripts/plex-season-map.ps1 -Show "<name>"                      # seasons WITH index numbers
+pwsh -File scripts/plex-season-map.ps1 -Show "<name>" -Season <n>          # canonical episode titles + runtimes
+pwsh -File scripts/plex-season-map.ps1 -Show "<name>" -Season <n> -MatchDir <ripped folder>
+```
+
+It asks Plex's own metadata provider what the show actually looks like, then matches your ripped
+files to it by runtime. Renaming 40 episodes after the fact is the alternative.
+
+Two things that have already caused this to be got wrong:
+
+- **Box-set season NAMES are not season NUMBERS**, and `watch.plex.tv` lists seasons in broadcast
+  order with no indices — so reading the order as the numbering is an inference, not a fact.
+- **A wrong title in Season 00 says nothing about where a real season lives.** A show with no
+  canonical season 0 will have the agent fill the specials slots you invented using the nearest
+  season's episode list.
+
+The matcher flags `AMBIGUOUS` when two canonical episodes share a runtime, which is common — treat
+runtime as corroboration and settle those from content. If the show itself is matched to the wrong
+thing, `GET /library/metadata/<ratingKey>/matches?manual=1` is the API behind the UI's "Fix Match".
+
 **Identify audio tracks by transcribing them:**
 
 ```
