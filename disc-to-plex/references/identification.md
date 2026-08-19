@@ -145,12 +145,74 @@ Note the API numbering check (`scripts/verify-plex-episodes.ps1`) is complementa
 catch this class of error: it compares the agent title to the filename title, both of which agree
 when the *number* is right but the *content* is swapped. Only the title card validates content.
 
+`scripts/verify-title-cards.ps1` automates this: it OCRs the card and reports OK/MISMATCH per
+episode. Two things it taught us the hard way:
+
+- **The card does not land at a consistent time**, even within one series. *Survivors* series 1 puts
+  it at 60s, 68s, 108s — and **276s** for *Corn Dolly*, which opens on a long teaser. A window that
+  stops at 200s reports a confident MISMATCH on a correctly-named file. Widen, never narrow.
+- **Binarise, don't just greyscale.** These are thin white titles laid over live footage; in plain
+  greyscale tesseract returned *nothing* on most of an older transfer, which reads as "unidentifiable"
+  when the card is perfectly legible to the eye. Keep only near-white pixels
+  (`format=gray,lutyuv=y='if(gt(val,205),255,0)'`) and it reads reliably.
+- **Strip stopwords before scoring.** "The Peacemaker" reduces to {the, peacemaker}; a frame
+  containing only the word "the" scored **0.50** — a match on nothing.
+
+### 🔴 The card identifies the PROGRAMME, never the VERSION — check the audio before calling it a duplicate
+
+A disc routinely ships the **same episode twice**: once plain, once as a *commentary version*. Both
+carry the identical title card, so card-reading alone says "these are the same thing" and invites the
+conclusion that one is a misfiled duplicate to be deleted.
+
+On *Survivors* this nearly destroyed genuine extras. `Season 00\Survivors S00E09.mkv` read as *LAW OF
+THE JUNGLE* (a series 3 episode) and was logged as an episode misfiled into Specials — the user
+corrected it: its **primary audio is a commentary** (cast reminiscing about the shoot), so it is an
+extra, correctly placed and merely unnamed. The same was true of `S02E13.mkv` (*Lights of London (1)*
+with commentary, filed as though it were episode 13).
+
+**So: when two files carry the same title card, transcribe a:0 on both before concluding anything.**
+Programme dialogue vs. people discussing the production is unmistakable in one 20-second sample —
+and take two samples, because a commentary track carries programme audio underneath wherever the
+participants fall silent, which makes a single quiet sample look identical to the plain version.
+Name the survivor descriptively, e.g. `S00E09 - Law of the Jungle (with commentary)`.
+
 ## Extras → Season 00
 
 Everything that isn't an episode/feature goes to `Season 00` (Plex "Specials"). Number them
 `S00E01…` in a sensible order (documentary, alternate edits, galleries, behind-the-scenes,
 textless, restoration comparisons, featurettes, trailers). Numbering is local per show and can
 have gaps; reconcile if multiple discs feed one show over time.
+
+
+## A disc does NOT always hold CONSECUTIVE episodes — check runtimes against canon
+
+The Newsroom season 2 disc 2 holds **E03, E04 and E06**. It skips E05 entirely, because E05 is
+absent from this copy of the set. Numbering its three titles in disc order as E03/E04/E05 — the
+obvious reading, and the one that had worked on every disc of Spartacus, Chandler & Co and season 1
+— shipped an episode one slot out. It encoded cleanly, verified against its source, OCR'd, and
+published without a single structural complaint.
+
+What caught it was the **canonical runtime list**, which the provider gives per episode:
+
+```
+canonical  E03 58:00  E04 58:00  E05 57:00  E06 50:00  E07 57:00  E08 47:00  E09 59:00
+on disc 2  57:46      57:07      —          50:19
+```
+
+50:19 is E06, not E05. A seven-minute gap is not rounding.
+
+**So before naming ANY multi-disc set: pull the canonical durations and match every title against
+them.** Disc order tells you the sequence of what is present, not which episodes those are. This is
+the same class of error as numbering a partial set sequentially, and it is invisible to every check
+that does not know what the episodes are supposed to be:
+
+```powershell
+# season durations, in the ordering the server actually matches with
+pwsh -File scripts/plex-season-map.ps1 -Show "<name>" -Season <n>
+```
+
+Content identification remains the arbiter when two canonical runtimes are close (Spartacus had
+pairs 23 seconds apart); runtimes are what tell you *which pairs to worry about*.
 
 
 ## Canonical season/episode structure — ask Plex, do not infer it

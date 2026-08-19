@@ -73,6 +73,19 @@ often too new for the installed NVIDIA driver (`references/gotchas-pipeline.md`)
 
 ### 2. Enumerate the disc — with the right tool for its type
 
+**First, prove the copy finished.** MakeMKV enumerates the stream files that are PRESENT, so a
+half-copied folder yields a shorter, wholly plausible title list with no error — and that list
+becomes the episode mapping. On *The Newsroom* S2 D1 it reported 6 titles of 13; the disc shipped
+two episodes instead of three and none of its six extras, and the gap was rationalised for two days
+as "the episode isn't in this set" because the remaining runtimes still fitted a story.
+
+```powershell
+pwsh -File scripts/assert-staged-complete.ps1 -StageDir "D:\video\_stage\<DISC>"
+```
+
+It throws if the folder is still growing, or if it is short against the source. `_fetch-done.txt`
+does **not** cover this — that gate protects the fetch, and enumeration is a separate command.
+
 **Blu-ray: use MakeMKV, never file size.** The largest `.m2ts` is routinely not the feature, and
 ffmpeg cannot see secondary-audio commentaries at all.
 
@@ -101,9 +114,19 @@ looked right, and every file was wrong.
 Cheapest guard: **`info` reports each title's size (`TINFO:<id>,10`) — check what landed against
 it.** A mismatch means the numbering moved under you.
 
-Use `--minlength=60` (or lower) whenever a disc's extras matter: MakeMKV's default hides short
-items entirely, and they show up only as `MSG:3025` "…was therefore skipped" lines. Cloud Atlas had
-three real extras below the 120 s floor.
+**Use `--minlength=10`** whenever a disc's extras matter — not 60. MakeMKV's default (120 s) hides
+short items entirely; they show up only as `MSG:3025` "…was therefore skipped" lines. Cloud Atlas
+had three real extras below the 120 s floor.
+
+60 s is NOT low enough, and reads as safe when it is not. A whole batch was enumerated at 60
+before anyone noticed that the per-unit gate's "every title accounted for" was being checked
+against an already-filtered list — the floor decides what you are even able to account for. A
+10 s floor surfaces the sub-minute material; what it then turns up is usually a 10-20 s logo sting
+you exclude as an artefact, which costs one line to dismiss and is the whole point of seeing it.
+
+⚠ This still only finds what MakeMKV exposes as a TITLE. Extras authored as chapters inside another
+title, or reachable only down a menu path, will not appear however low the floor goes — for those,
+render the menu (`-f dvdvideo -menu 1`) and read what it offers.
 
 **DVD: `pwsh -File scripts/scan-disc.ps1 -SrcRoot <parent> -Pattern "<Show> * Disk *"`** (or
 `-Root <one disc>`). It probes every title and labels each EPISODE?/PLAYALL?/REVIEW/BOILERPLATE/
@@ -286,7 +309,7 @@ PUT /library/metadata/<ratingKey>/refresh?force=1
 | `src` | BD: the `.m2ts`, a MakeMKV `.mkv`, or a `.txt` concat list for a seamless-branching disc. DVD: **the disc FOLDER** containing `VIDEO_TS`, not a VOB path |
 | `title` | DVD only, **required** — the 1-based dvdvideo title number from `scan-disc.ps1` |
 | `crop` | BD only. `"auto"` = cropdetect, `"none"` = full frame (galleries, split-screen, native 16:9), or an explicit `"W:H:X:Y"` |
-| `subTrack` | language tag (`"eng"`) — resolved per item. Prefer this to an ordinal: subtitle order is arbitrary and often alphabetical |
+| `subTrack` | **state it on every item.** A language tag (`"eng"`), a 0-based ordinal, or `"none"` when the source has no English subs. Prefer the tag to an ordinal: subtitle order is arbitrary and often alphabetical. Omitting it now behaves as `"eng"` and **aborts** rather than falling back to `s:0` — because the encoder stamps `language=eng` on whatever it keeps, so a silent fallback ships a foreign subtitle labelled English (it did: 14 Band of Brothers extras, Spanish, 2026-08-19) |
 | `audioTracks` | explicit 0-based ordinals to keep, in order (first = default). Overrides the automatic pick |
 | `audioLangs` | language tag per kept track, when the source has none |
 | `commentary` | 0-based **source** audio index to tag as "Audio Commentary" |
@@ -313,6 +336,7 @@ Core pipeline, in the order you use them:
 | Script | Purpose |
 |---|---|
 | `install-tools.ps1` | fetch a driver-compatible ffmpeg, SupMover, mkvextract, seconv |
+| `assert-staged-complete.ps1` | **run BEFORE enumerating** — throws if the staging folder is still growing or short against source |
 | `scan-disc.ps1` | enumerate and classify DVD titles across a set of discs |
 | `audit-bd-titles.ps1` | compare MakeMKV's title list against what was shipped |
 | `identify-audio.py` | transcribe each audio track to identify language and commentary |
@@ -326,6 +350,7 @@ Plex fix-ups, after the scan:
 
 | Script | Purpose |
 |---|---|
+| `verify-title-cards.ps1` | **OCR each episode's on-screen title card** and report OK/MISMATCH against the filename — the check that catches a one-slot numbering shift |
 | `verify-plex-episodes.ps1` | diff each episode's agent title against its filename |
 | `fix-plex-extras.ps1` | set+lock Season 00 titles, clear wrong summaries, upload posters |
 | `lock-plex-titles.ps1` | set+lock titles generally |

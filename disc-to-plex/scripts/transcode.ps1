@@ -293,16 +293,28 @@ foreach($it in $items){
   #
   # So when the source has no English subtitle, say so explicitly rather than accepting whatever
   # s:0 happens to be.
-  $subIdx = 0
-  if(Has $it 'subTrack'){
-    if("$($it.subTrack)" -eq 'none'){
+  # OMITTING subTrack IS NOT A SAFE DEFAULT - it used to mean "keep s:0", which is the SAME hazard
+  # the abort below exists to prevent, reached by the one route that did not check. The tagging
+  # step near the end of this file stamps `language=eng` on whichever stream is kept, unconditionally.
+  #
+  # Band of Brothers disc 6 (2026-08-19): fourteen SD extras whose sources carry spa+por subtitles
+  # and NO English. The manifest simply left subTrack out, so s:0 - Spanish - was kept and relabelled
+  # English on all fourteen. Nothing in the encode log said so; it was caught only because
+  # publish-work.ps1 refuses a bitmap track with no sidecar, i.e. by luck of a different guard.
+  #
+  # So an absent subTrack now means exactly `subTrack: 'eng'`: resolve by TAG, and abort rather than
+  # guess. A source with no subtitle streams at all still passes straight through.
+  $subIdx  = 0
+  $subSpec = if(Has $it 'subTrack'){ "$($it.subTrack)" } else { 'eng' }
+  $subDflt = if(Has $it 'subTrack'){ '' } else { " (defaulted - manifest omits subTrack)" }
+  if($subSpec -eq 'none'){
       $ns = 0
       Write-Output "   subTrack 'none' -> no subtitle track kept (source carries no English subs)"
     }
-    elseif("$($it.subTrack)" -match '^\d+$'){ $subIdx = [int]$it.subTrack }
-    else {
-      $byLang = Sub-IdxByLang $inspec "$($it.subTrack)"
-      if($null -ne $byLang){ $subIdx = $byLang; Write-Output "   subTrack '$($it.subTrack)' -> s:$subIdx" }
+    elseif($subSpec -match '^\d+$'){ $subIdx = [int]$subSpec }
+    elseif($ns -gt 0){
+      $byLang = Sub-IdxByLang $inspec $subSpec
+      if($null -ne $byLang){ $subIdx = $byLang; Write-Output "   subTrack '$subSpec'$subDflt -> s:$subIdx" }
       else {
         # ABORT, do not fall back to s:0.
         #
@@ -315,13 +327,12 @@ foreach($it in $items){
         # There is no safe default here. Either the caller knows which stream is English (pass the
         # ORDINAL, established by rendering the streams and reading them) or the source has no
         # English subtitles (pass "none"). Guessing is what this whole file exists to prevent.
-        Write-Output "   ABORT: no '$($it.subTrack)' subtitle on this source and $ns subtitle stream(s) present."
-        Write-Output "          Refusing to fall back to s:0 - that ships an unknown language tagged as '$($it.subTrack)'."
+        Write-Output "   ABORT: no '$subSpec' subtitle on this source and $ns subtitle stream(s) present.$subDflt"
+        Write-Output "          Refusing to fall back to s:0 - that ships an unknown language tagged as 'eng'."
         Write-Output "          Fix the manifest: use an explicit 0-based ordinal, or subTrack:'none' if the source has no English subs."
         continue
       }
     }
-  }
 
   $a = @('-y','-hide_banner','-v','error','-stats') + $encspec
 

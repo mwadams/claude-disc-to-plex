@@ -54,6 +54,10 @@ library, and none of them announced itself — every structural check passed.
 4. **Structural checks are not identity checks.** On Lovejoy every count, duration and slot check
    passed while a whole series sat one episode out. Read the episode's title off the screen.
    → [process](gotchas-process.md)
+   **And the card identifies the PROGRAMME, not the VERSION** — a disc ships the same episode plain
+   and as a *commentary version*, both with the identical card. Transcribe `a:0` before calling
+   either a duplicate; on Survivors that mistake would have deleted genuine extras.
+   → [identification](identification.md)
 
 5. **Gate every rip on a byte-complete copy.** Enumerating a half-copied disc silently under-reports
    titles and invents partial sets — and rip-vs-encode duration checks agree with each other, so
@@ -65,6 +69,8 @@ Prefer adding to this list over adding to the prose.
 
 | Guard | In | Catches |
 |---|---|---|
+| Staging folder still growing, or short against source → **abort** | `assert-staged-complete.ps1` (run BEFORE enumerating) | **#5** — the half-copied disc. `_fetch-done.txt` does NOT cover this: it gates the FETCH, and enumeration is a separate command |
+| On-screen episode title card OCR'd vs filename → **MISMATCH** | `verify-title-cards.ps1` | **#4** — a one-slot numbering shift that every count and duration check passes |
 | Raw `.m2ts` vs a playlist that **contains** it → abort | `transcode.ps1` preflight | truncated extras, wrong cut |
 | Untitled / duplicate-signature audio → report | `transcode.ps1` postflight | hidden commentaries, duplicate mixes |
 | `.mkv` with `duration = N/A` → refuse to publish | `publish-work.ps1` | unfinalised partial encodes |
