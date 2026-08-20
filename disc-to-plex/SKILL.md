@@ -205,6 +205,24 @@ English commentary from English dialogue. Disc metadata order does **not** map o
 ordinals — inferring it has produced confident wrong answers repeatedly
 (`references/gotchas-audio.md`). Confirm ambiguous cases with the user.
 
+**But transcription cannot tell a commentary from a DUPLICATE — hash the audio for that:**
+
+```powershell
+pwsh -File scripts/audio-dup-check.ps1 -Path "<file or folder of rips>"
+```
+
+Discs often give every title the same two-stream layout and fill the unused slot with a **byte-identical
+copy** of the programme audio, so "it has two English tracks" means nothing. Transcription can't
+resolve it either way: a commentary carries the programme audio underneath and the commentators fall
+silent for long stretches, so a sample taken in a gap transcribes as the dialogue and reads as a copy.
+Both errors happened on Gangsters (2026-08-20) — a real commentary written off as a duplicate from one
+transcript, and `commentary:1` applied to a whole series after checking a single episode. The script
+decodes both tracks at several offsets and compares hashes: identical everywhere = duplicate (keep one),
+different anywhere = real commentary (keep both, set `commentary`).
+
+**Decide PER TITLE.** Commentary is commonly recorded only for a pilot and each series
+opener/finale — on Gangsters exactly the film, S01E01, S01E06, S02E01 and S02E06.
+
 ### 4. Build a manifest and transcode
 
 For a multi-episode show, don't hand-write the JSON (error-prone at 26+ items): put the mapping in
@@ -340,6 +358,7 @@ Core pipeline, in the order you use them:
 | `scan-disc.ps1` | enumerate and classify DVD titles across a set of discs |
 | `audit-bd-titles.ps1` | compare MakeMKV's title list against what was shipped |
 | `identify-audio.py` | transcribe each audio track to identify language and commentary |
+| `audio-dup-check.ps1` | hash decoded audio to tell a REAL commentary from a duplicate copy |
 | `make-manifest.ps1` | build a manifest from a pipe-delimited episode table |
 | `transcode.ps1` | the encoder — BD/DVD/MKV, crop, audio matrix, subtitles, guards |
 | `ocr-subtitles.ps1` | bitmap subtitles → SRT sidecar |
