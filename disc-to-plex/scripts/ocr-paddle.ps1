@@ -33,6 +33,26 @@
 param(
   [Parameter(Mandatory)][string]$Path,
   [string]$Lang = 'eng',                 # tag to select the subtitle track
+  # 🔴 TESSERACT IS THE DEFAULT. PADDLE IS MARGINALLY MORE ACCURATE AND 33x SLOWER.
+  # This script was written because Tesseract scored ~94% on Pulling and PaddleOCR looked like the
+  # answer. It was not: PaddleOCR reproduced Tesseract's "I'd Uke to, but no one will Usten"
+  # character for character, which showed the fault was the BITMAP, not the engine. Once
+  # vobsub-render.py preserved the anti-alias as a real mid-tone, BOTH engines read the cue
+  # correctly ("I'd like to, but no one will listen.").
+  #
+  # BOTH ENGINES RUN OVER THE IDENTICAL RENDERS, so this is a clean comparison. Measured on the
+  # full Pulling S01E03 (504 cues, 497 with a shared timing span):
+  #     differ in WORDS            3 cues (0.6%) - and Paddle is the better one in all three
+  #                                ("If I came in" vs Tesseract's "lf I came in ... Later")
+  #     differ only in PUNCTUATION 153 cues - Tesseract keeps the source's curly apostrophes and
+  #                                em-dashes; Paddle normalises to ASCII. Neither is wrong.
+  #     speed                      Tesseract ~0.6-1 s/cue (~8 min an episode)
+  #                                Paddle    ~20 s/cue    (93 min an episode, measured)
+  #
+  # So Tesseract by default: three cues an episode is not worth 33x the time, and it needs no
+  # paddlepaddle, no mkldnn workaround and no GPU. Reach for -Engine paddle when accuracy on a
+  # particular disc matters more than throughput, or as a second opinion on a disputed cue.
+  [ValidateSet('tesseract','paddle')][string]$Engine = 'tesseract',
   [string]$PaddleLang = 'en',
   [int]$Scale = 3,
   [switch]$KeepWork,
@@ -85,11 +105,25 @@ try {
   Write-Host "  rendering $cueCount cue(s) ..."
   python 'D:\video\.claude\skills\disc-to-plex\scripts\vobsub-render.py' "$work\sub.idx" "$work\cues" --scale $Scale | ForEach-Object { "    $_" }
 
-  Write-Host "  OCR (one batch, model loads once) ..."
   $t0 = Get-Date
-  & $paddle ocr -i "$work\cues" --lang $PaddleLang --enable_mkldnn False `
-      --use_doc_orientation_classify False --use_doc_unwarping False --use_textline_orientation False `
-      --save_path "$work\out" *> "$work\paddle.log"
+  New-Item -ItemType Directory -Path "$work\out" -Force | Out-Null
+  if ($Engine -eq 'tesseract') {
+    Write-Host "  OCR with Tesseract ..."
+    $tess = $tools.tesseract
+    if (-not (Test-Path -LiteralPath $tess)) { $tess = (Get-Command tesseract -EA SilentlyContinue).Source }
+    if (-not $tess) { throw 'tesseract not found' }
+    foreach ($png in Get-ChildItem "$work\cues" -Filter *.png) {
+      # --psm 6: treat the image as a single uniform block. Each render is ONE cue cropped to its
+      # ink, so page segmentation has nothing to find and psm 6 avoids it inventing columns.
+      $txt = (& $tess $png.FullName stdout --psm 6 -l $Lang 2>$null) -join "`n"
+      Set-Content -LiteralPath (Join-Path "$work\out" ($png.BaseName + '.txt')) -Value $txt -Encoding UTF8
+    }
+  } else {
+    Write-Host "  OCR with PaddleOCR (one batch, model loads once) ..."
+    & $paddle ocr -i "$work\cues" --lang $PaddleLang --enable_mkldnn False `
+        --use_doc_orientation_classify False --use_doc_unwarping False --use_textline_orientation False `
+        --save_path "$work\out" *> "$work\paddle.log"
+  }
   "    {0:N1} min" -f ((Get-Date) - $t0).TotalMinutes
 
   python 'D:\video\.claude\skills\disc-to-plex\scripts\srt-from-paddle.py' "$work\sub.srt" "$work\out" $sidecar |

@@ -38,8 +38,24 @@ def read_timings(path):
 
 
 def read_texts(json_dir):
-    """Return {cue_index: 'line1\\nline2'} from paddleocr's per-image JSON."""
+    """Return {cue_index: 'line1\\nline2'} from either engine's per-cue output.
+
+    Tesseract writes cue_NNNN.txt; PaddleOCR writes cue_NNNN_res.json. Tesseract is the default
+    engine (see ocr-paddle.ps1) because on identical renders it matches Paddle's accuracy at
+    ~0.6-1 s per cue instead of ~20 s.
+    """
     texts = {}
+    for path in glob.glob(os.path.join(json_dir, "**", "cue_*.txt"), recursive=True):
+        m = re.search(r"cue_(\d+)\.txt$", os.path.basename(path))
+        if not m:
+            continue
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                lines = [l.strip() for l in fh.read().splitlines() if l.strip()]
+        except Exception:
+            continue
+        if lines:
+            texts[int(m.group(1))] = "\n".join(lines)
     for path in glob.glob(os.path.join(json_dir, "**", "cue_*_res.json"), recursive=True):
         m = re.search(r"cue_(\d+)_res\.json$", os.path.basename(path))
         if not m:
@@ -90,6 +106,14 @@ def main():
             if not body:
                 dropped += 1
                 continue
+            # Capital I read as a pipe is by far the commonest residual artefact on this material
+            # ("| don't know what | was doing"). "|" is essentially never legitimate in dialogue
+            # and "I" is one of the commonest characters in English, so the substitution is safe in
+            # this ONE direction only. Nothing else is touched: l/I and ./, are genuinely ambiguous
+            # and a wrong "fix" would corrupt correct text. Same rule as fix-srt-pipes.ps1, applied
+            # here because that script is driven by a CSV of already-published files.
+            # Only cue TEXT passes through this - index and timing lines are written separately.
+            body = body.replace("|", "I")
             n += 1
             fh.write("%d\n%s\n%s\n\n" % (n, span, body))
             written += 1
