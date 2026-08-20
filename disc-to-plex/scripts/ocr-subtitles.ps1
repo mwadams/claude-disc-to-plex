@@ -313,9 +313,25 @@ function Repair-VobSubPalette {
   $ratio = $aaPx / $fillPx
   if ($ratio -lt 0.15) { return $null }
 
-  # Never repaint a palette ENTRY that the outline or the transparent background also points at -
-  # entries are shared, and recolouring one would repaint the outline white and destroy the image.
-  $protected = @($palIdx[$outline]) + @(0..3 | Where-Object { $alpha[$_] -eq 0 } | ForEach-Object { $palIdx[$_] })
+  # Never repaint a palette ENTRY that a VISIBLE NON-INK index also points at - entries are shared,
+  # and recolouring one would repaint the outline (or a drop-shadow) white and destroy the image.
+  #
+  # 🔴 A TRANSPARENT index must NOT protect its entry. It used to, and that silently disabled the
+  # repair on a disc that needed it badly. Pulling (2000s BBC DVDs) authors palIdx = [4,4,2,0]: the
+  # transparent background (index 0) and the ANTI-ALIAS (index 1) share palette entry 4. Measured
+  # ink weight was 1.27 - worse than Blithe Spirit's 1.20, the disc this repair was written for -
+  # yet every candidate entry came back "protected", $changed stayed 0, and the function returned
+  # $null, which is indistinguishable from "this disc needs no repair". Fourteen episodes then
+  # failed the dictionary gate at ~94% ("letters are being split") and shipped with no sidecar.
+  #
+  # Repainting a transparent index's entry is safe because alpha 0 means those pixels are never
+  # drawn. Verified empirically before changing this, not assumed: repainting entry 4 to the fill
+  # colour and re-running seconv turned split-letter mush into clean sentences, and the background
+  # did NOT flood - so the converter honours alpha, as the format requires.
+  #
+  # The rule is therefore about VISIBILITY, not about which index number happens to reference the
+  # entry: protect what is drawn and is not ink; everything else is fair game.
+  $protected = @($vis | Where-Object { $ink -notcontains $_ } | ForEach-Object { $palIdx[$_] })
   $changed = 0
   foreach ($j in $ink) {
     $e = $palIdx[$j]

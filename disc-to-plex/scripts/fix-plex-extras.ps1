@@ -32,7 +32,8 @@
   pwsh -File fix-plex-extras.ps1 -Show "Deep Space" -MediaDir "\\NAS\media\Television Shows\Star Trek Deep Space Nine (1993)\Season 00"
 #>
 param(
-  [Parameter(Mandatory)] [string]$Show,          # substring match on series title
+  [string]$Show,                                  # substring match on series title
+  [string]$RatingKey,                             # exact show ratingKey - prefer this in bulk runs
   [Parameter(Mandatory)] [string]$MediaDir,      # folder holding the Season-N mkv files (local or UNC)
   [int]$Season = 0,
   [int]$Section = 5,                              # Plex library section id (5 = "TV programmes" here)
@@ -61,7 +62,13 @@ if(-not (Test-Path $MediaDir)){ throw "MediaDir not found: $MediaDir" }
 # cheerfully cleared and LOCKED the summaries of six correctly-matched episodes - while reporting
 # "file not in MediaDir" for every single one. Evidence of the wrong target is not a reason to
 # continue: derive the season from the files, and refuse when it disagrees.
-$dirSeasons = @(Get-ChildItem $MediaDir -Filter '*.mkv' -File -EA SilentlyContinue |
+# NOT just *.mkv. This pipeline writes .mkv, but the library also holds older transfers in .mp4,
+# and globbing for mkv alone made this script throw "No SxxEyy-named .mkv files in MediaDir" on
+# SEVEN shows in one bulk run (Adam Adamant Lives, Big Train, Callan, Quatermass, Spindoe,
+# Big Breadwinner Hogg, A Bit of Fry & Laurie) whose Season 00 is entirely .mp4. The message named
+# the extension, which is the only reason it was diagnosable rather than just "no files".
+$mediaExt = @('*.mkv', '*.mp4', '*.m4v', '*.avi')
+$dirSeasons = @($mediaExt | ForEach-Object { Get-ChildItem $MediaDir -Filter $_ -File -EA SilentlyContinue } |
                 ForEach-Object { if($_.Name -match '[Ss](\d{1,3})[Ee]\d{1,3}'){ [int]$Matches[1] } } |
                 Sort-Object -Unique)
 if($dirSeasons.Count -eq 0){ throw "No SxxEyy-named .mkv files in MediaDir - cannot tell which season this is: $MediaDir" }
@@ -77,8 +84,22 @@ if($PSBoundParameters.ContainsKey('Season')){
 
 # --- locate show -> season -> episodes ---
 $allmeta = @((Invoke-RestMethod "$base/library/sections/$Section/all?type=2" -Headers $h).MediaContainer.Metadata)
-$showObj = $allmeta | Where-Object { $_.title -like "*$Show*" -and $_.ratingKey } | Select-Object -First 1
-if(-not $showObj -or -not $showObj.ratingKey){ throw "No show matching '$Show' in section $Section (matched $($allmeta.Count) shows)." }
+if ($RatingKey) {
+  # Exact target. -Show is a SUBSTRING match that silently takes the FIRST hit, which is fine when
+  # a human is watching and dangerous in a bulk run: "Rome" also matches "Rome: Power & Glory",
+  # "Raven" matches "Raven's Home", and the library holds two Randall & Hopkirks. Pass -RatingKey
+  # when driving this from a script so the show cannot be mistaken.
+  $showObj = $allmeta | Where-Object { "$($_.ratingKey)" -eq "$RatingKey" } | Select-Object -First 1
+  if (-not $showObj) { throw "No show with ratingKey $RatingKey in section $Section." }
+} else {
+  $matches = @($allmeta | Where-Object { $_.title -like "*$Show*" -and $_.ratingKey })
+  if ($matches.Count -gt 1) {
+    Write-Warning ("'{0}' matched {1} shows: {2}. Taking the first - pass -RatingKey to be exact." -f `
+      $Show, $matches.Count, (($matches | ForEach-Object { "$($_.title) [$($_.ratingKey)]" }) -join '; '))
+  }
+  $showObj = $matches | Select-Object -First 1
+  if(-not $showObj -or -not $showObj.ratingKey){ throw "No show matching '$Show' in section $Section (matched $($allmeta.Count) shows)." }
+}
 $seasonMeta = (Invoke-RestMethod "$base/library/metadata/$($showObj.ratingKey)/children" -Headers $h).MediaContainer.Metadata |
               Where-Object { $_.index -eq $Season } | Select-Object -First 1
 if(-not $seasonMeta){ throw "Show '$($showObj.title)' has no season index $Season." }
