@@ -176,6 +176,31 @@ and take two samples, because a commentary track carries programme audio underne
 participants fall silent, which makes a single quiet sample look identical to the plain version.
 Name the survivor descriptively, e.g. `S00E09 - Law of the Jungle (with commentary)`.
 
+## 🔴 Ask the provider for the SPECIALS list too, BEFORE naming any extra
+
+`plex-season-map.ps1 -Season 0` returns the canonical specials with **names and runtimes**, exactly
+as `-Season 1` does for episodes. Run it before naming extras, not after.
+
+Rome (2026-08-20) is the cautionary case. The provider lists nine specials — *The Rise of Rome* 24
+min, *When In Rome* 23, *Friends, Romans, Countrymen* 11, *Shot by Shot: Caesar's Triumph* 23,
+*Shot by Shot: Gladiator* 23 … — and the season-1 box carries the first five. That list was never
+consulted, so the extras were named descriptively from what was on screen, and `fix-plex-extras.ps1`
+then LOCKED those invented titles over the agent's correct ones:
+
+| canonical | shipped as | why the guess looked right |
+|---|---|---|
+| Friends, Romans, Countrymen | `Rome 52 B.C.` | "ROME 52 B.C." is a **scene caption inside** the featurette, not its title |
+| The Rise of Rome | `Behind the Scenes` | generic placeholder; the piece has no title card |
+
+Runtime matching against the specials list resolves these immediately: 11:03 → the 11-minute one,
+23:38 → the 24-minute one. Two of the five were later confirmed outright by their own title cards
+(*When In Rome*, *Shot by Shot: Caesar's Triumph*), which proves the provider's names are the real
+ones and not an arbitrary catalogue.
+
+The agent's Season 00 titles are usually WRONG for our files because it assigns them **by index** —
+that is why `fix-plex-extras.ps1` exists. But the NAMES in that list are genuine. Use the list to
+identify what each extra IS; use the filename to fix the ORDER.
+
 ## Extras → Season 00
 
 Everything that isn't an episode/feature goes to `Season 00` (Plex "Specials"). Number them
