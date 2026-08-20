@@ -81,7 +81,7 @@ foreach ($s in $shows) {
   if (-not $s00) { continue }
 
   $eps = @((Plex-Get "/library/metadata/$($s00.ratingKey)/children").Video)
-  $bad = @(); $notes = @()
+  $bad = @(); $notes = @(); $unver = @()
   foreach ($e in $eps) {
     # per-item fetch: the bulk listing omits the Field[] that says which fields are LOCKED
     $full = (Plex-Get "/library/metadata/$($e.ratingKey)").Video
@@ -103,6 +103,19 @@ foreach ($s in $shows) {
     if ($full.title -match '^Episode\s+\d+$')               { $reason = "placeholder '$($full.title)'" }
     elseif ($want -and (Norm $want) -ne (Norm $full.title))  { $reason = "'$($full.title)' != file '$want'" }
     if ($reason) { $bad += "S00E{0:D2} {1}" -f [int]$full.index, $reason }
+    # 🔴 A CONFIDENTLY-WRONG AGENT TITLE IS INVISIBLE TO BOTH TESTS ABOVE.
+    # When the filename carries no title token there is nothing to contradict, and a name the agent
+    # invented is not a placeholder — so it passes silently. The West Wing shipped 14 extras of
+    # 31 s–9 min; the agent had labelled the first four after canonical specials that run 45–64 min
+    # (*Isaac and Ishmael*, *Documentary Special*, *The Debate*, …). The audit called them OK.
+    # Duration is what exposes it, so report these separately WITH the runtime rather than as a
+    # fault — a hard fault here would re-create the Spartacus false positive, where season 0 holds
+    # six REAL episodes whose agent titles are correct.
+    elseif (-not $want) {
+      $mins = if ($full.duration) { [math]::Round([double]$full.duration / 60000, 1) } else { $null }
+      $unver += "S00E{0:D2} '{1}'{2}" -f [int]$full.index, $full.title,
+                $(if ($null -ne $mins) { " [{0} min]" -f $mins } else { '' })
+    }
     elseif (-not $locked) { $notes += "S00E{0:D2} '{1}' not locked (title agrees with the file)" -f [int]$full.index, $full.title }
   }
 
@@ -111,7 +124,11 @@ foreach ($s in $shows) {
     "{0}: {1} of {2} Season 00 item(s) need fix-plex-extras.ps1" -f $s.title, $bad.Count, $eps.Count
     if (-not $Quiet) { $bad | ForEach-Object { "    $_" } }
   }
-  elseif ($notes.Count -and -not $Quiet) {
+  if ($unver.Count -and -not $Quiet) {
+    "{0}: {1} of {2} item(s) UNVERIFIED - agent title, filename carries none. Check the runtime is credible for that title." -f $s.title, $unver.Count, $eps.Count
+    $unver | ForEach-Object { "    $_" }
+  }
+  if (-not $bad.Count -and $notes.Count -and -not $Quiet) {
     "{0}: OK ({1} unlocked but matching - no action; may be REAL episodes at season 0)" -f $s.title, $notes.Count
   }
 }
