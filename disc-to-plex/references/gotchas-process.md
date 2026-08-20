@@ -8,6 +8,7 @@ Part of the `disc-to-plex` gotchas set — see [gotchas.md](gotchas.md) for the 
 
 - [Silent extras drop — the episode-length filter is not a classifier](#silent-extras-drop-the-episode-length-filter-is-not-a-classifier)
 - [Structural checks are NOT identity checks — ALWAYS verify identity from the content](#structural-checks-are-not-identity-checks-always-verify-identity-from-the-content)
+- ["Same size" is not "same file" — and "it finished" is not "it finished"](#same-size-is-not-same-file-and-it-finished-is-not-it-finished)
 - [Write the rule into the SCRIPT, not just into this file](#write-the-rule-into-the-script-not-just-into-this-file)
 
 ## Silent extras drop — the episode-length filter is not a classifier
@@ -57,6 +58,34 @@ So "no caption in the first minute" does not mean "this show has no captions". S
 full-frame, not a cropped band) before concluding one doesn't exist. If a show genuinely has none
 (sitcoms often don't), say so explicitly and record that ordering is the only evidence — do not
 let silence pass as verification.
+
+## "Same size" is not "same file" — and "it finished" is not "it finished"
+
+Two variants of one habit: reaching for a signal that is *easy to test* instead of the one that
+means what you need it to mean. Both happened on Pulling (2026-08-20), neither shipped a bad file,
+and both would have if the next step had trusted them.
+
+**Identity from a rounded size.** Series 2's two idents displayed as `32.1 MB` / `11.7 MB`, exactly
+matching series 1's, and were reported as *byte-for-byte identical*. **The MD5s differ.** What
+actually matched was the DURATION, to the millisecond (33.000 s / 10.720 s) — the same boilerplate
+encoded separately per disc. The conclusion happened to hold; the evidence never supported it.
+`Get-FileHash` costs a second, and a frame grab settles what the thing *is*.
+
+**Completion from the wrong signal.** Three consecutive waits for "the encode finished" were built
+on signals never verified to mean that:
+
+| waited on | why it fired early / never |
+|---|---|
+| `_queue/done` being non-empty | it already held ~50 manifests from earlier in the batch |
+| `pulling-s1.json` appearing in `_queue/done` | **lane-runner moves the manifest there when it CLAIMS the job**, not when it completes |
+| `MANIFEST DONE` in `_logs/<name>/*.log` | `transcode.ps1` writes nothing to `-LogDir` here — every prior run's log dir is empty too |
+
+The second one produced a confident "21 items done" report while ffmpeg was still writing item 1,
+whose duration read `N/A`. What actually settled it: **ffprobe every output against its source** —
+count, duration delta, stream layout. That is the gate step, and it is cheap.
+
+**Before waiting on a signal, confirm it exists and fires at the moment you think.** `ls` the log
+dir, check whether the marker has ever been written, or skip the proxy and measure the artefacts.
 
 ## Write the rule into the SCRIPT, not just into this file
 
