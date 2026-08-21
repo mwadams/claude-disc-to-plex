@@ -69,10 +69,29 @@ Write-Host ("publishing {0} file(s), {1} GB" -f $local.Count, [math]::Round(($lo
 $local | Group-Object Extension | ForEach-Object { "   {0,-6} {1}" -f $_.Name, $_.Count }
 
 # /E = whole tree, ALL file types. Without -Overwrite keep the no-clobber flags so a re-run is safe.
-$flags = @('/E','/R:3','/W:5','/NP','/NFL','/NDL')
+#
+# ALWAYS LOG, because an exit >=8 CANNOT BE DIAGNOSED AFTER THE FACT. Rome season 2 threw
+# `exit 11` on two separate publishes (2026-08-21). Both times every file verified byte-identical
+# on the NAS, and a re-run reported FAILED=0 with everything already present - because by then
+# there was nothing left to copy, so the failing pass could never be reproduced. Exit 11 is
+# 1 (copied) + 2 (extras in destination, normal - the target holds earlier discs) + 8 (something
+# failed). Without the log from the FAILING pass, the 8 is unattributable.
+$rcLog  = Join-Path $env:TEMP ("robocopy_{0}_{1}.log" -f ($Work -replace '[^\w]','_'), $PID)
+$flags = @('/E','/R:3','/W:5','/NP','/NFL','/NDL',"/LOG:$rcLog")
 if (-not $Overwrite) { $flags += @('/XC','/XN','/XO') }
 robocopy $src $dst @flags | Out-Null
-if ($LASTEXITCODE -ge 8) { throw "robocopy failed (exit $LASTEXITCODE)" }
+$rcExit = $LASTEXITCODE
+if ($rcExit -ge 8) {
+  Write-Warning "robocopy exit $rcExit - the >=8 bit means at least one item failed. Log: $rcLog"
+  # Surface the actual errors AND the summary, then let the per-file byte check below decide.
+  # A failure here does NOT necessarily mean data loss: verify before concluding either way.
+  Get-Content -LiteralPath $rcLog -EA SilentlyContinue |
+    Select-String -Pattern 'ERROR|Access is denied|The process cannot access' |
+    Select-Object -First 10 | ForEach-Object { Write-Warning "    $_" }
+  Get-Content -LiteralPath $rcLog -EA SilentlyContinue | Select-Object -Last 8 |
+    ForEach-Object { Write-Warning "    $_" }
+  Write-Warning "continuing to the byte-for-byte verification - it, not the exit code, decides."
+}
 
 $ok = 0; $bad = 0
 foreach ($f in $local) {
