@@ -157,6 +157,42 @@ function Preflight-BDStreams($items){
 }
 if(-not ($items | Where-Object { $_.allowRawStream -eq $true })){ Preflight-BDStreams $items }
 
+# PREFLIGHT: kind "BD" on a STANDARD-DEFINITION source.
+#
+# "BD" means HD: no deinterlace, and the crop filter is configured for an HD frame. Point it at a
+# 720x480 / 720x576 source and cropdetect returns a crop the BD path cannot configure -
+# "Failed to configure input pad on Parsed_crop_0" - and the item fails after ~2 seconds having
+# written a ZERO-BYTE output. The failure names the crop filter, so it reads like a crop bug; the
+# actual fault is one word in the manifest.
+#
+# This is easy to get wrong because a disc mixes resolutions freely: Goldfinger's extras are seven
+# HD titles and three NTSC SD ones, and To Kill a Mockingbird's are six SD and one HD. On
+# 2026-08-21 the same mistake was made twice within an hour - once per disc - because the ONLY
+# signal was a crop error two stages downstream.
+#
+# SD sources want kind "MKV", which applies the SD deinterlace path and preserves the source DAR.
+$sdKind = @()
+foreach($it in $items){
+  if("$($it.kind)" -ne 'BD'){ continue }
+  $sp = "$($it.src)"
+  if(-not (Test-Path -LiteralPath $sp)){ continue }
+  $wh = (& $fp -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 $sp) -split ','
+  if($wh.Count -lt 2){ continue }
+  $w = [int]$wh[0]; $h = [int]$wh[1]
+  if($w -le 720 -and $h -le 576){
+    $sdKind += [pscustomobject]@{ Out = Split-Path $it.out -Leaf; Src = Split-Path $sp -Leaf; Res = "${w}x${h}" }
+  }
+}
+if($sdKind){
+  Write-Output ''
+  Write-Output '*** PREFLIGHT ABORT: kind "BD" on a standard-definition source ***'
+  $sdKind | Format-Table -AutoSize | Out-String | Write-Output
+  Write-Output 'The BD path applies no deinterlace and configures crop for an HD frame; on an SD source'
+  Write-Output 'it fails with "Failed to configure input pad on Parsed_crop_0" and writes a 0-byte file.'
+  Write-Output 'Fix: set "kind": "MKV" for these items (SD deinterlace + source DAR preserved).'
+  exit 2
+}
+
 function Has($o,$n){ $o.PSObject.Properties.Name -contains $n -and $null -ne $o.$n -and "$($o.$n)" -ne '' }
 function InSpec($it,[switch]$Hwaccel){   # ffmpeg/ffprobe input args (demuxer + -i) for this item
   # -hwaccel cuda decodes on the GPU and hands frames back in system memory, so the crop/bwdif
