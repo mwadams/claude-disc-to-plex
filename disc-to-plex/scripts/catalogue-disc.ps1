@@ -53,8 +53,25 @@ New-Item -ItemType Directory -Force -Path $frameDir | Out-Null
 
 # ---- 1. ENUMERATE AT THE LOW FLOOR --------------------------------------------------------
 # NEVER MakeMKV's default. The floor defines what you are able to account for at all.
-Write-Output "cataloguing $discName (minlength=$MinLength) ..."
-$info = & $MakeMkv -r --cache=1 --minlength=$MinLength info "file:$Disc" 2>&1
+#
+# SOME STAGED "DISCS" ARE AN .ISO, NOT A BDMV/VIDEO_TS TREE. MakeMKV's `file:` protocol finds
+# nothing in a folder that merely CONTAINS an iso, so enumeration returns zero titles and the guard
+# below fires - which is correct, but reads as "the disc is still copying" when the real answer is
+# "wrong protocol". Sleep Dealer in batch 6 was exactly this. Use `iso:` for those.
+$isIso = $false
+$source = "file:$Disc"
+if((Test-Path -LiteralPath $Disc -PathType Leaf) -and $Disc -match '\.iso$'){
+  $isIso = $true; $source = "iso:$Disc"
+} elseif(Test-Path -LiteralPath $Disc -PathType Container) {
+  $hasDisc = (Test-Path -LiteralPath (Join-Path $Disc 'BDMV')) -or (Test-Path -LiteralPath (Join-Path $Disc 'VIDEO_TS'))
+  if(-not $hasDisc){
+    $isos = @(Get-ChildItem -LiteralPath $Disc -Filter *.iso -File -ErrorAction SilentlyContinue)
+    if($isos.Count -eq 1){ $isIso = $true; $source = "iso:$($isos[0].FullName)" }
+    elseif($isos.Count -gt 1){ throw "no BDMV/VIDEO_TS and $($isos.Count) iso files in $Disc - point -Disc at the one you want" }
+  }
+}
+Write-Output ("cataloguing $discName (minlength=$MinLength){0} ..." -f $(if($isIso){' [ISO]'}else{''}))
+$info = & $MakeMkv -r --cache=1 --minlength=$MinLength info $source 2>&1
 
 $byId = @{}
 # Every key is declared up front. An [ordered] record rejects assignment to a key that does not
@@ -104,6 +121,9 @@ if($byId.Count -eq 0){ throw "enumeration returned NO titles - is the disc still
 $streamDir   = Join-Path $Disc 'BDMV\STREAM'
 $playlistDir = Join-Path $Disc 'BDMV\PLAYLIST'
 function Get-ProbeFile($src){
+  # An ISO is a sealed container: its clips are not on the filesystem, so there is nothing to probe
+  # or frame-grab without mounting it. Say so rather than silently producing a frameless catalogue.
+  if($isIso){ return $null }
   if(-not $src){ return $null }
   if($src -match '\.m2ts$'){
     $p = Join-Path $streamDir $src
@@ -247,6 +267,12 @@ if($dupes){
   Write-Output "SHARED SOUNDTRACKS (whole-title fingerprints only) - LOOK at the frames before"
   Write-Output "deciding. Alternate angle, textless master and true duplicate all present like this:"
   foreach($g in $dupes){ Write-Output ("  {0}" -f (($g.Group | ForEach-Object { "t{0:D2}" -f $_ }) -join ' = ')) }
+}
+if($isIso){
+  Write-Output ""
+  Write-Output "ISO SOURCE - no frames or fingerprints. The clips are inside the image, so nothing was"
+  Write-Output "probed: durations, sizes and MakeMKV's stream descriptions above are all you have here."
+  Write-Output "Rip the titles to identify them, or mount the image first."
 }
 $partial = @($ids | Where-Object { $byId[$_].probeScope -eq 'first-clip' })
 if($partial){
