@@ -585,8 +585,23 @@ foreach ($f in $targets) {
       $wordPct  = if ($judgeable.Count) { [math]::Round(100 * $withWord / $judgeable.Count) } else { 0 }
       $cuePct   = if ($lines.Count) { [math]::Round(100 * $cueLines.Count / $lines.Count) } else { 0 }
 
-      if ($judgeable.Count -lt 10 -and $cuePct -ge 50) {
-        Write-Output "      SDH sound-cue track: $cuePct% of lines are bracketed sound descriptions, only $($judgeable.Count) dialogue line(s) to judge - dictionary gate not applicable"
+      # A PERCENTAGE NEEDS A SAMPLE. Below ~10 dialogue lines this statistic cannot separate
+      # gibberish from terse copy, and it rejected a PERFECT conversion: On Her Majesty's Secret
+      # Service "TV Spot 4" OCRs to exactly four lines -
+      #     Far up. / Far out. / Far more. / James Bond is back.
+      # - which is verbatim correct against the audio, yet scores 0% because none of the 32 function
+      # words above appears in it ("is" and "back" are not on the list). That single 21-second spot
+      # then held back all 44 files of the work, which is the "one short extra blocks Finding Nemo"
+      # pathology this pipeline has hit before.
+      #
+      # So abstain here and let the DICTIONARY decide instead - it is the better instrument for a
+      # short track anyway, because it judges whether the words are English words rather than
+      # whether the sentence happens to use a function word. The short-track dictionary check sits
+      # in the block below, keyed off $shortTrack.
+      $shortTrack = ($judgeable.Count -lt 10)
+      if ($shortTrack) {
+        $why = if ($cuePct -ge 50) { "$cuePct% of lines are bracketed sound descriptions" } else { 'too few lines for a percentage to mean anything' }
+        Write-Output "      only $($judgeable.Count) dialogue line(s) to judge ($why) - function-word gate abstains, dictionary gate decides"
       }
       elseif ($wordPct -lt 15) {
         throw "only $wordPct% of dialogue lines contain a common English word - output is not English text (genuine conversions score 43-77%; $cuePct% of lines were bracketed sound cues, which are exempt)"
@@ -636,7 +651,38 @@ foreach ($f in $targets) {
           }
         }
         $dictPct = if ($tot) { [math]::Round(100 * $inDict / $tot, 1) } else { 0 }
-        if ($tot -ge 200 -and $dictPct -lt 95) {
+
+        # SHORT TRACK: the function-word gate abstained above, so this is the only English test
+        # left. The 95% floor is calibrated for hundreds of tokens and is far too tight for a
+        # handful, so use a much lower bar - it only has to separate English from NOT-English, not
+        # measure conversion quality. Correct four-line spot: far/out/more/back -> 100%. A Spanish
+        # track of the same length ("Fue su primer intento") scores 0% on lowercase-initial words,
+        # so the wrong-language hole this gate exists to close stays closed.
+        if ($shortTrack) {
+          # TESTED AGAINST A KNOWN POSITIVE, and the first attempt FAILED it. Re-muxing this same
+          # spot's SPANISH track tagged `eng` produced "A mas altura / Mas audaz / Todo lo que
+          # esperan y aun mas / James Bond esta de regreso" and scored 66.7%, because Tesseract's
+          # eng word list carries enough short loanwords to clear a 60% bar on 9 tokens. A
+          # percentage cannot separate the two populations at this sample size.
+          #
+          # So test for the thing itself: high-frequency function words that are NOT English words.
+          # The Spanish track hits que/de/esta/todo on half its lines; the correct English track
+          # hits none. English homographs are deliberately absent from this list - `die`, `van`,
+          # `met`, `son`, `con`, `no` and `a` are all ordinary English and would fire on English.
+          # Restricted to short tracks: on a feature, a few subtitled foreign-dialogue lines are
+          # normal and this would reject a perfectly good conversion.
+          $foreign = '(?i)\b(de|la|el|los|las|una|que|por|para|del|esta|pero|todo|lo|les|des|du|une|pour|avec|dans|qui|mais|cette|vous|nous|der|das|und|ist|nicht|f[uü]r|mit|ein|eine|sich|von|dem|den|het|een|niet|voor|zijn)\b'
+          $fLines = @($lines | Where-Object { $_ -match $foreign }).Count
+          $fPct   = if ($lines.Count) { [math]::Round(100 * $fLines / $lines.Count) } else { 0 }
+          if ($fPct -ge 25) {
+            throw "short track: $fPct% of lines carry non-English function words - this is not an English track (the disc's language tag is wrong)"
+          }
+          if ($tot -ge 3 -and $dictPct -lt 85) {
+            throw "short track: only $dictPct% of lowercase words are in the English dictionary ($tot words) - not English text"
+          }
+          Write-Output "      short-track check: $dictPct% of $tot lowercase word(s) English, $fPct% of lines with non-English function words"
+        }
+        elseif ($tot -ge 200 -and $dictPct -lt 95) {
           throw "only $dictPct% of lowercase words are in the English dictionary ($tot words) - letters are being split (good conversions score 97-99%)"
         }
         Write-Host ("  dictionary: {0}% of {1} lowercase words" -f $dictPct, $tot)
