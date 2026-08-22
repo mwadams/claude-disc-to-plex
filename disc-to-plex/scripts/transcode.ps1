@@ -29,6 +29,13 @@
                                English at 1), so a fixed ordinal silently ships the wrong language
                                on the next disc. Defaults to 0 (fine for a single-PGS Blu-ray).
     commentary (int, optional) 0-based SOURCE audio index to tag as "Audio Commentary".
+                               Accepts a list, or [idx,"Title"] pairs to name them.
+    audioDescription (int, optional) 0-based SOURCE audio index of a narrated-visuals track for
+                               blind viewers. Same shapes as commentary. Tagged "Audio Description"
+                               with the `visual_impaired` disposition (VERIFIED - Matroska silently
+                               ignores `descriptions`). Without this there is no way to LABEL such a
+                               track, and an unlabelled one is a hazard a viewer can select by
+                               accident - so they were being dropped.
     audioLangs (array, opt)    ISO-639 codes matching `audioTracks` one-for-one, e.g. ["deu","eng"].
                                Blu-ray m2ts are frequently UNTAGGED, and an untagged stream falls
                                back to 'eng' - so on a foreign-language disc every kept track ends
@@ -526,6 +533,34 @@ foreach($it in $items){
           if($entry -is [array]){ $cidx = [int]$entry[0]; if($entry.Count -gt 1){ $ctitle = "$($entry[1])" } }
           else { $cidx = [int]$entry; if($cm.Count -gt 1){ $ctitle = "Audio Commentary $($ci+1)" } }
           if($cidx -eq $keep[$j]){ $a += @("-disposition:a:$oi",'comment',"-metadata:s:a:$oi","title=$ctitle") }
+        }
+      }
+      # AUDIO DESCRIPTION - narrated visuals for blind viewers. Accepts the same shapes as
+      # `commentary`: an ordinal, a list of ordinals, or [idx,"Title"] pairs.
+      #
+      # It needs its own field because it is neither a commentary nor an alternate mix, and until
+      # this existed there was NO way to label one. Skyfall's Blu-ray carries an English AC3 5.1 AD
+      # track alongside the feature mix, identified by transcription ("Q reaches into his pocket and
+      # takes out an envelope. He hands it to Bond."). With no label it would have reached Plex as a
+      # second unnamed "Surround 5.1" that a viewer could select by accident - the same hazard as an
+      # unlabelled commentary - so it was being DROPPED instead. Now it can be kept and named.
+      #
+      # The disposition is `visual_impaired`, and that was VERIFIED, not assumed. The obvious
+      # candidate, `descriptions`, is an MP4/QuickTime flag: the Matroska muxer accepts the option,
+      # writes NOTHING, and reports no error - ffprobe comes back `descriptions=0` on the output.
+      # A silently-ignored flag is exactly the kind of thing that ships looking correct, so the
+      # three candidates were muxed into test files and read back:
+      #   visual_impaired -> DISPOSITION:visual_impaired=1   <- persists, and is the Matroska flag
+      #   descriptions    -> all flags 0                     <- silently dropped
+      #   comment         -> DISPOSITION:comment=1           <- wrong meaning; that is a commentary
+      if(Has $it 'audioDescription'){
+        $ad = @($it.audioDescription)
+        for($di=0; $di -lt $ad.Count; $di++){
+          $entry = $ad[$di]
+          $didx = $null; $dtitle = 'Audio Description'
+          if($entry -is [array]){ $didx = [int]$entry[0]; if($entry.Count -gt 1){ $dtitle = "$($entry[1])" } }
+          else { $didx = [int]$entry; if($ad.Count -gt 1){ $dtitle = "Audio Description $($di+1)" } }
+          if($didx -eq $keep[$j]){ $a += @("-disposition:a:$oi",'visual_impaired',"-metadata:s:a:$oi","title=$dtitle") }
         }
       }
     }

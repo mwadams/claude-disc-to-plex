@@ -333,7 +333,8 @@ PUT /library/metadata/<ratingKey>/refresh?force=1
 | `subTrack` | **state it on every item.** A language tag (`"eng"`), a 0-based ordinal, or `"none"` when the source has no English subs. Prefer the tag to an ordinal: subtitle order is arbitrary and often alphabetical. Omitting it now behaves as `"eng"` and **aborts** rather than falling back to `s:0` — because the encoder stamps `language=eng` on whatever it keeps, so a silent fallback ships a foreign subtitle labelled English (it did: 14 Band of Brothers extras, Spanish, 2026-08-19) |
 | `audioTracks` | explicit 0-based ordinals to keep, in order (first = default). Overrides the automatic pick |
 | `audioLangs` | language tag per kept track, when the source has none |
-| `commentary` | 0-based **source** audio index to tag as "Audio Commentary" |
+| `commentary` | 0-based **source** audio index to tag as "Audio Commentary". A list tags several; `[idx,"Title"]` pairs name them |
+| `audioDescription` | 0-based **source** audio index of a narrated-visuals track for blind viewers. Same shapes as `commentary`; tagged "Audio Description" with the `visual_impaired` disposition (Matroska silently ignores `descriptions`). **Check for one on every disc** — it looks exactly like a second English 5.1 mix in ffprobe, and transcription is what identifies it ("*Q reaches into his pocket and takes out an envelope*") |
 | `chapterStart` / `chapterEnd` | DVD only — split a one-VTS disc into episodes |
 | `allowRawStream` | skip the preflight playlist check for this item (use only when you have proved the longer playlist is a different item) |
 
