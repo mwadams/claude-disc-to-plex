@@ -205,6 +205,31 @@ $cat = [ordered]@{
 $catPath = Join-Path $OutDir "$discName.catalogue.json"
 $cat | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $catPath -Encoding UTF8
 
+# ---- 5b. THE DISC'S OWN EXTRAS LIST -------------------------------------------------------
+# mymovies.xml frequently carries an <ExtraFeatures> block naming every extra on the disc. That is
+# the single highest-value identification source there is, and reading it was already a documented
+# rule that got missed anyway - on Serenity it named all eight featurettes including "The Green
+# Clan", a title no amount of frame-staring would produce, and it arrived only after the frames and
+# transcripts had already been done. Printing it as part of the catalogue makes it unmissable.
+#
+# It NAMES the extras; it does not map them to title ids, and it may list DVD-era items this
+# particular disc does not carry. Confirm each from content before using it as a name.
+$mm = Join-Path $Disc 'mymovies.xml'
+if(Test-Path -LiteralPath $mm){
+  $xmlText = Get-Content -LiteralPath $mm -Raw -Encoding UTF8
+  if($xmlText -match '(?s)<ExtraFeatures[^>]*>\s*(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?\s*</ExtraFeatures>'){
+    $listed = ($Matches[1] -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if($listed){
+      Write-Output ""
+      Write-Output "THE DISC'S OWN EXTRAS LIST (mymovies.xml) - names, not title ids. Confirm each from"
+      Write-Output "content before using it, and expect DVD-era entries this disc may not carry:"
+      $listed | ForEach-Object { Write-Output "  - $_" }
+    }
+  }
+  if($xmlText -match '(?s)<LocalTitle>(.*?)</LocalTitle>'){ Write-Output ("  disc says title: {0}" -f $Matches[1].Trim()) }
+  if($xmlText -match '(?s)<IMDB>(.*?)</IMDB>'){ Write-Output ("  disc says imdb : {0}" -f $Matches[1].Trim()) }
+}
+
 # ---- 6. REPORT ----------------------------------------------------------------------------
 Write-Output ""
 Write-Output ("{0,-5} {1,9} {2,10} {3,-14} {4,-11} {5,-10} {6}" -f 'id','duration','size','source','video','fields','audio')
