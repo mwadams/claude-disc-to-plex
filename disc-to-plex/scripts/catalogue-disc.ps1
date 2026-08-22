@@ -153,7 +153,15 @@ foreach($id in $ids){
     if($v){ $pp = $v -split ','; $t.width=[int]$pp[0]; $t.height=[int]$pp[1]; $t.fieldOrder=$pp[2]; $t.frameRate=$pp[3] }
     $md5 = @(& $ff -v error -i $probe -map 0:a:0 -t 120 -f md5 - 2>$null) | Select-Object -First 1
     if($md5){ $t.audioMd5 = ($md5 -replace '^MD5=','') }
-    foreach($sec in $FrameAt){
+    # CLAMP THE SAMPLE POINTS TO THE TITLE. A fixed 30 s/95 s lands past the end of a short clip and
+    # yields a BLACK frame, which reads as "nothing here" rather than "sampled past the end" - on
+    # Serenity that silently blanked the 11-35 s set-tour clips, the very titles hardest to identify.
+    # Keep any requested point that fits, and fall back to fractions of the duration when none does.
+    $durSec = 0
+    if("$($t.duration)" -match '^(\d+):(\d\d):(\d\d)$'){ $durSec = [int]$Matches[1]*3600 + [int]$Matches[2]*60 + [int]$Matches[3] }
+    $points = @($FrameAt | Where-Object { $durSec -eq 0 -or $_ -lt $durSec * 0.95 })
+    if(-not $points -and $durSec -gt 0){ $points = @([math]::Max(1,[int]($durSec*0.25)), [math]::Max(2,[int]($durSec*0.65))) | Sort-Object -Unique }
+    foreach($sec in $points){
       $png = Join-Path $frameDir ("t{0:D3}-{1:D4}.png" -f $id, $sec)
       # Fixed cell size via pad: a sheet built from differently-sized frames silently misaligns and
       # you end up reading the wrong title into the wrong cell.
