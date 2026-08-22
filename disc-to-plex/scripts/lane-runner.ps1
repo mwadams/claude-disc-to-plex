@@ -23,7 +23,7 @@ param(
 )
 
 $transcode = 'D:\video\.claude\skills\disc-to-plex\scripts\transcode.ps1'
-foreach ($d in @($Queue, (Join-Path $Queue 'done'), (Join-Path $Queue 'failed'), $LogRoot)) {
+foreach ($d in @($Queue, (Join-Path $Queue 'running'), (Join-Path $Queue 'done'), (Join-Path $Queue 'failed'), $LogRoot)) {
   New-Item -ItemType Directory -Force $d | Out-Null
 }
 
@@ -47,7 +47,13 @@ while ($true) {
 
     # Claim the manifest FIRST by moving it out of the queue, so a second runner instance cannot
     # pick up the same one. The queue folder is then always "what is left".
-    $claim = Join-Path $Queue "done\$($next.Name)"
+    #
+    # It is claimed into `running\`, NOT `done\`. Claiming straight into `done` made an IN-PROGRESS
+    # manifest indistinguishable from a finished one: a run 20 items into 23 showed its manifest in
+    # `done` with three outputs absent, which reads exactly like three items that failed silently -
+    # and "MANIFEST DONE with failed items" is a real failure mode this pipeline has. Checking the
+    # lane log was the only way to tell the two apart. Now the folder name states which it is.
+    $claim = Join-Path $Queue "running\$($next.Name)"
     try { Move-Item -LiteralPath $next.FullName -Destination $claim -Force }
     catch { Start-Sleep -Seconds 2; continue }        # another instance claimed it first
 
@@ -66,6 +72,10 @@ while ($true) {
     if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) {
       Write-Output "    lane exit $LASTEXITCODE - moving to failed"
       Move-Item -LiteralPath $claim -Destination (Join-Path $Queue "failed\$($next.Name)") -Force
+    }
+    else {
+      # Only NOW is it done. `running\` empty + `done\` populated is the truthful resting state.
+      Move-Item -LiteralPath $claim -Destination (Join-Path $Queue "done\$($next.Name)") -Force
     }
     $idle = 0
     continue
