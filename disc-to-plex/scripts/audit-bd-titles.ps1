@@ -25,7 +25,7 @@ foreach ($d in $Discs) {
   $src = Join-Path $SrcRoot $d
   if (-not (Test-Path -LiteralPath $src)) { Write-Host "$d : not on drive"; continue }
 
-  $info = & $MakeMkv -r --cache=1 info "file:$src" 2>&1
+  $info = & $MakeMkv -r --cache=1 --minlength=10 info "file:$src" 2>&1
   $titles = @()
   foreach ($line in $info) {
     if ($line -match '^TINFO:(\d+),9,0,"(\d+):(\d\d):(\d\d)"') {

@@ -97,7 +97,7 @@ function Preflight-BDStreams($items){
   foreach($g in $byDisc){
     $disc = $g.Name
     if(-not (Test-Path -LiteralPath $disc)){ continue }
-    $info = & $makemkv -r --cache=1 info "file:$disc" 2>&1
+    $info = & $makemkv -r --cache=1 --minlength=10 info "file:$disc" 2>&1
 
     # TINFO:<id>,9,0,"H:MM:SS" = runtime, TINFO:<id>,16,0,"<source>" = playlist or stream it came from
     $len = @{}; $srcOf = @{}
@@ -150,7 +150,7 @@ function Preflight-BDStreams($items){
     $problems | Format-Table -AutoSize | Out-String | Write-Output
     Write-Output 'A playlist spans multiple streams; encoding the raw .m2ts ships a TRUNCATED file.'
     Write-Output 'Fix: rip the title with MakeMKV, then point src at the resulting .mkv (kind stays "BD"):'
-    Write-Output '  makemkvcon64.exe -r --cache=1 --noscan mkv "file:<disc>" <titleId> <outdir>'
+    Write-Output '  makemkvcon64.exe -r --cache=1 --minlength=10 --noscan mkv "file:<disc>" <titleId> <outdir>'
     Write-Output 'If the longer playlist is genuinely unrelated, set "allowRawStream": true on that item.'
     exit 2
   }
