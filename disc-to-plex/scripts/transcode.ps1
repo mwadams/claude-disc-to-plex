@@ -410,6 +410,20 @@ foreach($it in $items){
     if($it.crop -eq 'auto'){ $crop = Get-Crop $it.src; $vf = "crop=$crop"; Write-Output "   crop=$crop (auto)" }
     elseif("$($it.crop)" -match '^\d+:\d+:\d+:\d+$'){ $crop = "$($it.crop)"; $vf = "crop=$crop"; Write-Output "   crop=$crop (explicit)" }
     else { $vf = $null; Write-Output "   crop=none" }
+    # "BD" used to mean "HD, therefore progressive, therefore no deinterlace". That holds for
+    # features and not for BONUS material: Bond disc extras are routinely authored 1080i29.97 from
+    # interlaced video masters, and they shipped combed because nothing looked. Decide from the
+    # SOURCE's field order rather than from `kind`, which is a naming convention, not a measurement.
+    # Set "deinterlace": false on an item to override (e.g. a source mistagged interlaced).
+    $wantDi = $true
+    if($null -ne $it.deinterlace){ $wantDi = [bool]$it.deinterlace }
+    if($wantDi){
+      $fo = "$(& $fp -v error @inspec -select_streams v:0 -show_entries stream=field_order -of csv=p=0 2>$null | Select-Object -First 1)".Trim()
+      if($fo -and $fo -notin @('progressive','unknown','')){
+        $vf = if($vf){ "bwdif=mode=send_frame,$vf" } else { 'bwdif=mode=send_frame' }
+        Write-Output "   source is INTERLACED (field_order=$fo) -> bwdif"
+      }
+    }
     # The -color_* options further down are OUTPUT options: when the source declares different (or
     # UNKNOWN) colour properties, ffmpeg silently inserts a full software colour conversion and every
     # 1080p frame goes through swscale on the CPU. Measured on a VC-1 Blu-ray whose tags are all

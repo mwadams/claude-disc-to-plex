@@ -53,8 +53,11 @@ will never print `MANIFEST DONE` loops forever and can fire a stale lane-free si
 
 Before calling any unit done, confirm all six:
 
-1. **Every title accounted for** — mapped to an episode/feature, kept as an extra, or excluded as
-   *identified* boilerplate. On BDMV that means listing the streams NOT in the feature playlist.
+1. **Every title accounted for** — `pwsh -File scripts/assert-accounted.ps1 -Disc "<disc>"`, which
+   exits 2 unless every catalogued title carries a written disposition. Do **not** check this from
+   memory: it is the check most often signed off wrongly, because the rips you took verify fine
+   while titles you never enumerated stay invisible. The script also refuses a catalogue taken
+   above a 10 s floor, since completeness is unknowable from a pre-filtered list.
 2. **Identity verified from content** — not from the folder name, the disc label, or duration alone.
 3. **Audio identified** — every track named, no unlabelled commentary, no duplicate mixes.
    The postflight report flags candidates; confirm with `identify-audio.py` before acting.
