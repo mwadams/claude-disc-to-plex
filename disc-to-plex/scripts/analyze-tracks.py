@@ -253,6 +253,29 @@ def main():
 
     src = a.src
     dur_total = duration(src)
+
+    # REFUSE AN IMPLAUSIBLE DURATION - it means a broken container, not a long film.
+    #
+    # A truncated MakeMKV rip reports a nonsense header: Back to the Future t18 died mid-rip and
+    # claimed 77 HOURS. Sampling offsets are derived from that duration, so this script then asked
+    # ffmpeg to seek to -ss 97010 and -ss 166304 in a 25 GB file. Each seek scans the whole file
+    # looking for a position that does not exist, taking ~13 minutes, and there is one per sample
+    # per stream. The analyse track was wedged for half an hour on a file already known to be
+    # garbage, and the manifest waiting on it could not be authored.
+    #
+    # No disc title runs 12 hours. Refusing here is not merely faster - it turns "silently wedged"
+    # into a NAMED failure the operator can act on, and the caller records nothing and retries,
+    # which is the correct outcome for a source that needs re-ripping rather than re-analysing.
+    if dur_total is None or dur_total <= 0:
+        print(f'REFUSING: {src} reports no usable duration - the container is broken or the file '
+              f'is still being written. Re-rip it, or wait for the writer to finish.')
+        return 2
+    if dur_total > 12 * 3600:
+        print(f'REFUSING: {src} reports a duration of {dur_total/3600:.1f} HOURS. No disc title '
+              f'runs that long - this is a broken/truncated container (a killed rip reports a '
+              f'bogus header). Re-rip the title; analysing it would seek for hours and learn '
+              f'nothing.')
+        return 2
     # Sample WELL INSIDE the film: titles and end credits are music over every track alike, which
     # makes distinct mixes look identical and silent tracks look like failures.
     offsets = a.offsets or [int(dur_total * f) for f in (0.35, 0.6)]
