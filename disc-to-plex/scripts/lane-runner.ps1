@@ -65,7 +65,10 @@ while ($true) {
     # LOSSY DTS CORE. Both were structurally perfect and would have shipped. analyze-tracks.py
     # measures each stream and writes <src>.tracks.json; this refuses when the two disagree.
     $audit = & pwsh -File 'D:\video\.claude\skills\disc-to-plex\scripts\assert-tracks-analysed.ps1' -Manifest $claim 2>&1
-    if ($LASTEXITCODE -eq 2) {
+    # ANY non-zero exit blocks, not just the documented refusal code 2. An exception inside
+    # the gate exits 1, and treating that as 'fine' means a crashing guard silently approves
+    # everything - which is exactly how the dot-source failure let publishes through earlier.
+    if ($LASTEXITCODE -ne 0) {
       $audit | ForEach-Object { "    $_" }
       Write-Output '    REFUSED before encoding - moving to failed'
       Move-Item -LiteralPath $claim -Destination (Join-Path $Queue ('failed' + [IO.Path]::DirectorySeparatorChar + $next.Name)) -Force

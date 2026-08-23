@@ -239,8 +239,29 @@ def main():
     # --- redundancy: which tracks are the same content? -------------------------------------
     print('\npairwise subtraction (dB below signal; >%.0f = same content):' % REDUNDANT_DB)
     groups = []
-    for i in range(len(streams)):
-        for j in range(i + 1, len(streams)):
+    # ONLY COMPARE PAIRS THAT COULD ACTUALLY BE THE SAME CONTENT.
+    #
+    # This was every pair: 12 streams on When Harry Met Sally = 66 subtractions, each decoding two
+    # 30 s segments, putting ~20 minutes of CPU between the rip finishing and the GPU starting.
+    # The check exists to catch a lossy core beside its lossless parent, or a straight duplicate -
+    # and BOTH always share a channel count and a language tag. A 6-channel DTS track cannot be a
+    # duplicate of a 2-channel AC3 one, so subtracting them only burns time.
+    #
+    # An untagged stream is still compared against everything with its channel count: a missing tag
+    # tells us nothing, and that is exactly where a duplicate hides.
+    def could_match(a, b):
+        if a['channels'] != b['channels']:
+            return False
+        ta, tb = (a['langTag'] or '').lower(), (b['langTag'] or '').lower()
+        return (not ta) or (not tb) or ta == tb
+
+    pairs = [(i, j) for i in range(len(streams)) for j in range(i + 1, len(streams))
+             if could_match(streams[i], streams[j])]
+    skipped = len(streams) * (len(streams) - 1) // 2 - len(pairs)
+    print('  %d candidate pair(s); %d skipped as impossible (channel count / language tag differ)'
+          % (len(pairs), skipped))
+    for i, j in pairs:
+        if True:
             d = compare(src, i, j)
             if d is None:
                 continue

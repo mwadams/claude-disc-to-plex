@@ -99,11 +99,19 @@ foreach ($it in $items) {
   }
 
   if ($it.PSObject.Properties.Name -contains 'commentary') {
-    $s = $byIdx[[int]$it.commentary]
-    if ($s -and $s.role -notin @('commentary', 'commentary?')) {
-      $problems += "$(Split-Path $out -Leaf): a:$($it.commentary) tagged as commentary but the " +
-                   "analysis calls it '$($s.role)' - a dub labelled 'Audio Commentary' is how " +
-                   "Thunderball nearly shipped"
+    # SAME SHAPES AS transcode.ps1: an ordinal, a list of ordinals, or [idx,"Title"] pairs.
+    # This used to do [int]$it.commentary, which throws on the array form - and because
+    # lane-runner only treated exit 2 as a refusal, an ERRORING gate let the manifest straight
+    # through. A guard that fails open is not a guard. Observed on When Harry Met Sally, which
+    # carries TWO commentaries.
+    foreach ($e in @($it.commentary)) {
+      $ci = if ($e -is [array]) { [int]$e[0] } else { [int]$e }
+      $s = $byIdx[$ci]
+      if ($s -and $s.role -notin @('commentary', 'commentary?')) {
+        $problems += "$(Split-Path $out -Leaf): a:$ci tagged as commentary but the analysis " +
+                     "calls it '$($s.role)' - a dub labelled 'Audio Commentary' is how " +
+                     "Thunderball nearly shipped"
+      }
     }
   }
 

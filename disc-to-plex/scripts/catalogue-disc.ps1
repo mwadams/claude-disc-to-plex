@@ -48,6 +48,28 @@ $tp = Get-Content (Join-Path $ToolsDir 'tool-paths.json') | ConvertFrom-Json
 $ff = $tp.ffmpeg
 $fp = Join-Path (Split-Path $ff) 'ffprobe.exe'
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+# DISC TYPE IS DETECTED AND DISPATCHED, not left to the operator to notice.
+#
+# A DVD has no .m2ts to probe, so every piece of CONTENT evidence this sweep exists to collect -
+# frames, head strip, speech sample, fingerprint - came back empty while the run still printed a
+# title list and "N titles need a disposition". That reads exactly like a successful sweep, and on
+# 2026-08-23 Witness produced 16 titles with probeFile=None and zero evidence.
+#
+# Telling the operator "use scan-disc.ps1 instead" is a PROSE rule in the middle of an automated
+# pipeline, and prose rules get missed - which is the whole reason this file is full of guards.
+# So: detect the type and run the right enumerator automatically.
+if (Test-Path -LiteralPath (Join-Path $Disc 'VIDEO_TS')) {
+  Write-Output "DVD detected (VIDEO_TS) - dispatching to scan-disc.ps1, which understands DVD titles."
+  $scan = Join-Path $PSScriptRoot 'scan-disc.ps1'
+  if (-not (Test-Path -LiteralPath $scan)) { throw "scan-disc.ps1 not found beside catalogue-disc.ps1" }
+  & pwsh -NoProfile -File $scan -Root $Disc
+  Write-Output ""
+  Write-Output "NOTE: the DVD path enumerates and classifies titles, but does NOT yet capture frames,"
+  Write-Output "head strips or speech samples the way the Blu-ray path does. Identification for this"
+  Write-Output "disc still needs content evidence - see follow-up.md."
+  exit $LASTEXITCODE
+}
+
 $frameDir = Join-Path $OutDir "$discName-frames"
 
 # Speech capture is best-effort: if faster-whisper is not installed the sweep still runs, it just

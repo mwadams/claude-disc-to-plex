@@ -16,6 +16,15 @@ Exit 0 clean, 2 if a suspect control character is present.
 """
 import sys, io
 
+# This tool reports on arbitrary file content, so it MUST NOT die on it. A redirected stdout
+# defaults to cp1252 on Windows and an arrow or dash in the snippet raised UnicodeEncodeError -
+# a checker that crashes on the file it is checking reports nothing, which reads as "clean".
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
 SUSPECT = {0x0b: r'\v (vertical tab)', 0x0c: r'\f (form feed)', 0x07: r'\a (bell)',
            0x08: r'\b (backspace)'}
 
