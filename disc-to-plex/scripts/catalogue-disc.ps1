@@ -59,14 +59,10 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 # pipeline, and prose rules get missed - which is the whole reason this file is full of guards.
 # So: detect the type and run the right enumerator automatically.
 if (Test-Path -LiteralPath (Join-Path $Disc 'VIDEO_TS')) {
-  Write-Output "DVD detected (VIDEO_TS) - dispatching to scan-disc.ps1, which understands DVD titles."
-  $scan = Join-Path $PSScriptRoot 'scan-disc.ps1'
-  if (-not (Test-Path -LiteralPath $scan)) { throw "scan-disc.ps1 not found beside catalogue-disc.ps1" }
-  & pwsh -NoProfile -File $scan -Root $Disc
-  Write-Output ""
-  Write-Output "NOTE: the DVD path enumerates and classifies titles, but does NOT yet capture frames,"
-  Write-Output "head strips or speech samples the way the Blu-ray path does. Identification for this"
-  Write-Output "disc still needs content evidence - see follow-up.md."
+  Write-Output "DVD detected (VIDEO_TS) - dispatching to catalogue-dvd.ps1."
+  $dvd = Join-Path $PSScriptRoot 'catalogue-dvd.ps1'
+  if (-not (Test-Path -LiteralPath $dvd)) { throw "catalogue-dvd.ps1 not found beside catalogue-disc.ps1" }
+  & pwsh -NoProfile -File $dvd -Disc $Disc -OutDir $OutDir
   exit $LASTEXITCODE
 }
 

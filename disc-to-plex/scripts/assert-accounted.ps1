@@ -56,6 +56,7 @@ if($cat.minLength -gt 10){
 
 $disp = @{}
 $badReason = @()
+$unresolved = @()
 if(Test-Path -LiteralPath $dispPath){
   foreach($line in (Get-Content -LiteralPath $dispPath)){
     $l = $line.Trim()
@@ -67,6 +68,14 @@ if(Test-Path -LiteralPath $dispPath){
     $kind = $p[1].Trim().ToLower()
     $note = if($p.Count -ge 3){ $p[2].Trim() } else { '' }
     $disp[$id] = @{ kind = $kind; note = $note }
+    # A DISPOSITION MUST BE A DECISION. '?' and friends are the ABSENCE of one, and this gate
+    # accepted them as "accounted for" because it only checked that the line existed: When Harry
+    # Met Sally passed with TEN titles marked '?', and Witness with six. That is the one gate whose
+    # entire job is to stop a half-known disc, so it must reject a non-answer as loudly as a
+    # missing line.
+    if($kind -in @('?', 'unknown', 'tbd', 'todo', 'unidentified', '')){
+      $unresolved += ("t{0:D2}  disposition is '{1}' - that is not a decision: {2}" -f $id, $kind, $note)
+    }
     if($kind -eq 'exclude'){
       # An exclusion must name what the thing IS. Non-identifications are how real extras get lost.
       if(-not $note -or $note.Length -lt 8 -or $note -match '^(too short|short|duplicate|dupe|not needed|n/?a|junk|skip)\.?$'){
@@ -109,6 +118,12 @@ $byKind = $disp.Values | Group-Object { $_.kind } | Sort-Object Name
 Write-Output ""
 foreach($g in $byKind){ Write-Output ("  {0,-9} {1}" -f $g.Name, $g.Count) }
 Write-Output ""
+if($unresolved.Count -gt 0){
+  Write-Warning ("NOT ACCOUNTED FOR - {0} title(s) carry a placeholder, not a decision:" -f $unresolved.Count)
+  $unresolved | ForEach-Object { Write-Warning "   $_" }
+  Write-Warning "Identify them, or record an exclusion that says what the title IS."
+  exit 2
+}
 Write-Output "ACCOUNTED FOR - every catalogued title has a written disposition."
 Write-Output "Raw staging may be released once the encoded outputs are byte-verified on the NAS."
 exit 0
