@@ -82,7 +82,7 @@ function Ensure-Title($id){
     $byId[$id] = [ordered]@{
       title=$id; duration=$null; sizeText=$null; source=$null; outName=$null
       width=$null; height=$null; fieldOrder=$null; frameRate=$null
-      probeFile=$null; probeScope=$null; audioMd5=$null; frames=@(); disposition=$null; streams=@()
+      probeFile=$null; probeScope=$null; audioMd5=$null; frames=@(); headStrip=$null; disposition=$null; streams=@()
     }
   }
 }
@@ -190,6 +190,32 @@ foreach($id in $ids){
       & $ff -v error -ss $sec -i $probe -frames:v 1 -vf $vf -y $png 2>$null
       if(Test-Path -LiteralPath $png){ $t.frames += $png }
     }
+
+    # ---- HEAD STRIP: the first 40 s at 1 fps, tiled -------------------------------------------
+    #
+    # WHY, and why it belongs HERE rather than after the rip. Sample points at 30 s and 95 s show
+    # what a title LOOKS like, which is enough to spot structure - duplicates, play-alls, HD/SD
+    # pairs. It is NOT enough to NAME anything, because a title card appears in the first seconds
+    # and is gone. So naming was being guessed from a mid-title frame, then re-done properly from
+    # a dense head sweep AFTER the rip - the same work twice, with the first pass worthless and
+    # occasionally WRONG: on 2026-08-23 a You Only Live Twice title was recorded as "Whicker's
+    # World part 2" from a mid-title frame; its head strip reads "KEN ADAM'S PRODUCTION FILMS".
+    #
+    # The catalogue already has the title open. Capturing the head costs one more pass over 40 s
+    # and lets identification happen ONCE, before a single byte is ripped.
+    #
+    # LIMIT, and it matters: for a PLAYLIST title this samples the FIRST CLIP only (see
+    # probeScope). On a compilation the head strip therefore shows the first ITEM, not the
+    # title - You Only Live Twice t02 is a 52-minute playlist whose head is trailer material,
+    # which would name the whole thing after its opening segment. Treat a head strip as
+    # naming evidence only when probeScope is NOT 'first-clip', or when the runtime matches
+    # what the card claims.
+    $head = Join-Path $frameDir ("t{0:D3}-head.png" -f $id)
+    $headLen = if($durSec -gt 0 -and $durSec -lt 40){ $durSec } else { 40 }
+    $hvf = "fps=1,scale=300:169:force_original_aspect_ratio=decrease," +
+           "pad=300:169:(ow-iw)/2:(oh-ih)/2:black,tile=8x5"
+    & $ff -v error -t $headLen -i $probe -vf $hvf -frames:v 1 -y $head 2>$null
+    if(Test-Path -LiteralPath $head){ $t.headStrip = $head } else { $t.headStrip = $null }
   }
   # Filled in by the operator. assert-accounted.ps1 refuses to release the raw disc until every
   # title has one, which is the check that "every title accounted for" never actually had.
