@@ -197,7 +197,25 @@ The matcher flags `AMBIGUOUS` when two canonical episodes share a runtime, which
 runtime as corroboration and settle those from content. If the show itself is matched to the wrong
 thing, `GET /library/metadata/<ratingKey>/matches?manual=1` is the API behind the UI's "Fix Match".
 
-**Identify audio tracks by transcribing them:**
+**Derive the audio fields, do not assert them.** Run the analyzer; it writes
+`<src>.tracks.json` and proposes `audioTracks` / `audioLangs` / `commentary` / `audioDescription`:
+
+```
+python scripts/analyze-tracks.py "<source .mkv>"
+```
+
+It measures three things and trusts none of the metadata: what language is actually SPOKEN on each
+stream (whisper, at two offsets), whether any two streams are the SAME CONTENT (every pair
+downmixed and subtracted - a lossy DTS core cancels to ~54 dB below the signal, two real mixes do
+not), and each stream's ROLE. `lane-runner` then runs `assert-tracks-analysed.ps1`, which REFUSES a
+manifest disagreeing with that evidence before the GPU is committed.
+
+This exists because audio was being decided from expectation and corrected later. Thunderball's
+`a:5` was written down as the second commentary the edition advertises - it is an ITALIAN DUB
+tagged `eng`; its `a:1` was assumed a second mix - it is the lossy core. Both were structurally
+perfect and would have shipped.
+
+For a one-off look at a single track, `identify-audio.py` still transcribes on demand:
 
 ```
 python scripts/identify-audio.py "<source>" --tracks 0 1 2 3 --start 2700
@@ -364,6 +382,8 @@ Core pipeline, in the order you use them:
 | `identify-audio.py` | transcribe each audio track to identify language and commentary |
 | `audio-dup-check.ps1` | hash decoded audio to tell a REAL commentary from a duplicate copy |
 | `make-manifest.ps1` | build a manifest from a pipe-delimited episode table |
+| `analyze-tracks.py` | **measure** each audio stream (spoken language, duplicate/lossy-core, role) and propose the manifest's audio fields |
+| `assert-tracks-analysed.ps1` | refuse a manifest whose audio claims disagree with that evidence (runs in `lane-runner`) |
 | `transcode.ps1` | the encoder — BD/DVD/MKV, crop, audio matrix, subtitles, guards |
 | `ocr-subtitles.ps1` | bitmap subtitles → SRT sidecar |
 | `publish-work.ps1` | copy a finished work to the NAS and verify every file |

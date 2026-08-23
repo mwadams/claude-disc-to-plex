@@ -64,8 +64,22 @@ param(
   # control works ONLY on text subtitles. Converting the bitmap to SRT is precisely what lets the
   # viewer fix timing themselves, non-destructively. Baking an offset in takes that choice away.
   [int]$OffsetMs = 0,
-  [string]$ToolsDir = 'D:\video\.transcode-tools'
+  [string]$ToolsDir = 'D:\video\.transcode-tools',
+  [switch]$Manual   # override the track guard (see lib-track-guard.ps1)
 )
+
+# The guard must be IMPOSSIBLE to skip by failing to load. A dot-source of a bad path raises a
+# NON-TERMINATING error, so Assert-TrackOwner was simply undefined, calling it wrote one more
+# error to the stream, and the script sailed on and published anyway (observed 2026-08-23 with
+# a mangled path). Verify the load, and abort if the function is not there.
+$guardLib = '$PSScriptRoot/lib-track-guard.ps1'
+if (-not (Test-Path -LiteralPath $guardLib)) { throw "track guard missing: $guardLib" }
+. $guardLib
+if (-not (Get-Command Assert-TrackOwner -ErrorAction SilentlyContinue)) {
+  throw 'track guard failed to load - refusing to run unguarded'
+}
+Assert-TrackOwner -Track OCR -Manual:$Manual
+
 
 $ErrorActionPreference = 'Stop'
 $paths = Get-Content (Join-Path $ToolsDir 'tool-paths.json') -Raw | ConvertFrom-Json

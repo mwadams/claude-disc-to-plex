@@ -20,8 +20,23 @@ param(
   [switch]$Overwrite,
   [switch]$SkipSubtitleCheck,   # publish a work whose bitmap subs are deliberately not being OCR'd
   [string]$LocalRoot = 'D:\video',
-  [string]$NasRoot   = '\\NASTEAMV\Multimedia'
+  [string]$NasRoot   = '\\NASTEAMV\Multimedia',
+  [switch]$NoIndex,   # skip the Plex reindex (copy only)
+  [switch]$Manual   # override the track guard (see lib-track-guard.ps1)
 )
+
+# The guard must be IMPOSSIBLE to skip by failing to load. A dot-source of a bad path raises a
+# NON-TERMINATING error, so Assert-TrackOwner was simply undefined, calling it wrote one more
+# error to the stream, and the script sailed on and published anyway (observed 2026-08-23 with
+# a mangled path). Verify the load, and abort if the function is not there.
+$guardLib = '$PSScriptRoot/lib-track-guard.ps1'
+if (-not (Test-Path -LiteralPath $guardLib)) { throw "track guard missing: $guardLib" }
+. $guardLib
+if (-not (Get-Command Assert-TrackOwner -ErrorAction SilentlyContinue)) {
+  throw 'track guard failed to load - refusing to run unguarded'
+}
+Assert-TrackOwner -Track Publish -Manual:$Manual
+
 
 $src = Join-Path (Join-Path $LocalRoot $Kind) $Work
 $dst = Join-Path (Join-Path $NasRoot   $Kind) $Work
@@ -101,3 +116,26 @@ foreach ($f in $local) {
 }
 Write-Host ("verified {0}/{1}{2}" -f $ok, $local.Count, $(if ($bad) { ", $bad MISMATCHED" } else { '' }))
 if ($bad) { exit 1 }
+
+# REINDEX IS PART OF PUBLISHING, not a separate thing to remember.
+#
+# A Plex SECTION scan does not index local movie extras - only a forced ITEM refresh does. Leaving
+# that in a separate script meant it ran only when somebody remembered to run it, and on 2026-08-22
+# Stravinsky shipped with one extra Plex never indexed; it was caught solely because the user
+# counted them. A publish nobody can see is not a publish, so the copy and the refresh are one step.
+if (-not $NoIndex) {
+  $token = [Environment]::GetEnvironmentVariable('PLEX_TOKEN','User')
+  $base  = [Environment]::GetEnvironmentVariable('PLEX_BASEURL','User')
+  if (-not $token -or -not $base) {
+    Write-Host '   (PLEX_TOKEN / PLEX_BASEURL not set - skipping reindex)'
+  } elseif (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'plex-index-work.ps1'))) {
+    Write-Warning "   reindex script not found: (Join-Path $PSScriptRoot 'plex-index-work.ps1')"
+  } else {
+    $plexKind = if ($Kind -eq 'Movies') { 'Movies' } else { 'TV' }
+    # Never pipe this through Select-Object -First N: closing the pipe kills the child mid-run.
+    $ixOut = & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'plex-index-work.ps1') -Work $Work -Kind $plexKind 2>&1
+    $verdict = @($ixOut | Select-String 'OK - every shipped extra|NOT indexed|missing|NOT FOUND')
+    if ($verdict) { $verdict | ForEach-Object { "   $_" } }
+    else { Write-Warning "   reindex produced no verdict - check manually"; @($ixOut)[-3..-1] | ForEach-Object { "   $_" } }
+  }
+}

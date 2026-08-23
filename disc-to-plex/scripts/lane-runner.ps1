@@ -57,6 +57,23 @@ while ($true) {
     try { Move-Item -LiteralPath $next.FullName -Destination $claim -Force }
     catch { Start-Sleep -Seconds 2; continue }        # another instance claimed it first
 
+    # AUDIO CLAIMS MUST BE EVIDENCED BEFORE THE GPU IS COMMITTED.
+    #
+    # A manifest asserting audioTracks / commentary / audioDescription asserts facts about what is
+    # on each stream. Those assertions were being made from expectation and corrected afterwards:
+    # Thunderball's 'second commentary' was an ITALIAN DUB tagged eng, and its 'second mix' was a
+    # LOSSY DTS CORE. Both were structurally perfect and would have shipped. analyze-tracks.py
+    # measures each stream and writes <src>.tracks.json; this refuses when the two disagree.
+    $audit = & pwsh -File 'D:\video\.claude\skills\disc-to-plex\scripts\assert-tracks-analysed.ps1' -Manifest $claim 2>&1
+    if ($LASTEXITCODE -eq 2) {
+      $audit | ForEach-Object { "    $_" }
+      Write-Output '    REFUSED before encoding - moving to failed'
+      Move-Item -LiteralPath $claim -Destination (Join-Path $Queue ('failed' + [IO.Path]::DirectorySeparatorChar + $next.Name)) -Force
+      $idle = 0
+      continue
+    }
+    $audit | Select-String 'audio evidence OK|nothing to verify' | ForEach-Object { "    $_" }
+
     Write-Output "lane: running $($next.Name)"
     # RUN IT SYNCHRONOUSLY. An earlier version launched detached via Start-Process and the launch
     # silently did nothing - the manifest left the queue, no ffmpeg appeared, and the only symptom
