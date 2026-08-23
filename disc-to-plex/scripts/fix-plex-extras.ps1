@@ -106,7 +106,10 @@ if(-not $seasonMeta){ throw "Show '$($showObj.title)' has no season index $Seaso
 $eps = (Invoke-RestMethod "$base/library/metadata/$($seasonMeta.ratingKey)/children" -Headers $h).MediaContainer.Metadata | Sort-Object index
 Write-Host "SHOW: $($showObj.title)  Season $Season  ($($eps.Count) items)`n"
 
-$tmp = Join-Path $env:TEMP ("plexposters_{0}_{1}" -f $showObj.ratingKey,$Season)
+# PID-suffixed: the ratingKey+season key is unique per TARGET but not per RUN, and a stale dir
+# from an earlier run could feed old posters into a new pass. Same shape (weaker instance) as
+# the catalogue scratch collision of 2026-08-23.
+$tmp = Join-Path $env:TEMP ("plexposters_{0}_{1}_{2}" -f $showObj.ratingKey,$Season,$PID)
 New-Item -ItemType Directory -Force $tmp | Out-Null
 
 foreach($e in $eps){
@@ -147,4 +150,5 @@ foreach($e in $eps){
   }
   Write-Host $line
 }
+Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host "`nDone. Re-open the season in Plex to confirm."

@@ -65,7 +65,14 @@ foreach ($f in $local | Where-Object { $_.Extension -eq '.mkv' }) {
 # But wait only for a sidecar that CAN exist. A declared bitmap track carrying no packets (a silent
 # film's empty subtitle shell) can never produce one, and blocking on it strands the work here
 # permanently - see lib-subtitles.ps1.
+#
+# The load is VERIFIED for the same reason as the track guard above: if this dot-source fails,
+# Test-BitmapSubsPopulated is simply undefined, every call errors WITHOUT stopping the script,
+# $awaiting stays empty - and the subtitle gate approves everything it exists to block.
 . (Join-Path $PSScriptRoot 'lib-subtitles.ps1')
+if (-not (Get-Command Test-BitmapSubsPopulated -ErrorAction SilentlyContinue)) {
+  throw 'lib-subtitles.ps1 failed to load - refusing to publish with the subtitle gate undefined'
+}
 if (-not $SkipSubtitleCheck) {
   $awaiting = @()
   foreach ($f in $local | Where-Object { $_.Extension -eq '.mkv' }) {

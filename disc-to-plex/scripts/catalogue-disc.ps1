@@ -48,6 +48,16 @@ $tp = Get-Content (Join-Path $ToolsDir 'tool-paths.json') | ConvertFrom-Json
 $ff = $tp.ffmpeg
 $fp = Join-Path (Split-Path $ff) 'ffprobe.exe'
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+
+# Shared evidence classifiers (Resolve-TranscribeOutput). The load is VERIFIED because a
+# dot-source of a bad path raises a NON-terminating error and the function is simply undefined -
+# which is exactly how a guard got skipped on 2026-08-23.
+$evidenceLib = Join-Path $PSScriptRoot 'lib-subtitles.ps1'
+if (-not (Test-Path -LiteralPath $evidenceLib)) { throw "lib-subtitles.ps1 missing beside catalogue-disc.ps1" }
+. $evidenceLib
+if (-not (Get-Command Resolve-TranscribeOutput -ErrorAction SilentlyContinue)) {
+  throw 'lib-subtitles.ps1 loaded but Resolve-TranscribeOutput is not defined - refusing to sweep with unclassifiable speech evidence'
+}
 # DISC TYPE IS DETECTED AND DISPATCHED, not left to the operator to notice.
 #
 # A DVD has no .m2ts to probe, so every piece of CONTENT evidence this sweep exists to collect -
@@ -64,6 +74,45 @@ if (Test-Path -LiteralPath (Join-Path $Disc 'VIDEO_TS')) {
   if (-not (Test-Path -LiteralPath $dvd)) { throw "catalogue-dvd.ps1 not found beside catalogue-disc.ps1" }
   & pwsh -NoProfile -File $dvd -Disc $Disc -OutDir $OutDir
   exit $LASTEXITCODE
+}
+
+# ---- PER-DISC LOCK + PER-RUN SCRATCH (placed AFTER the DVD dispatch - the child catalogue-dvd
+# takes the same disc's lock itself, and taking it here first would deadlock the pair).
+#
+# WHY. The speech wav used to be `Join-Path $env:TEMP ("cat-t{0:D3}.wav" -f $id)` - keyed on the
+# TITLE NUMBER ONLY, the exact bug that made three concurrent DVD catalogues transcribe each
+# other's audio on 2026-08-23 (The Day the Earth Caught Fire's catalogue carries verbatim WITNESS
+# trailer narration). CONFIDENT WRONG EVIDENCE attributed to the wrong disc, in the field used to
+# NAME titles, undetectable downstream. Scratch is therefore unique per disc AND per run
+# (PID + GUID), concurrency across different discs stays supported, and the SAME disc is limited
+# to one run at a time (a second would race this one on catalogue.json and the frames dir).
+$mutexName = 'Global\catalogue-' + ($discName -replace '[^\w\-\.]', '_')
+$catalogueMutex = New-Object System.Threading.Mutex($false, $mutexName)
+$mutexOwned = $false
+try { $mutexOwned = $catalogueMutex.WaitOne(0) }
+catch [System.Threading.AbandonedMutexException] { $mutexOwned = $true }  # holder died; the lock is ours
+if (-not $mutexOwned) {
+  Write-Output "*** another catalogue run already holds the lock for '$discName' - refusing to double-sweep."
+  Write-Output "    Wait for it to finish (its catalogue.json is the artifact); this run produced NOTHING."
+  exit 2
+}
+$runScratch = Join-Path $env:TEMP ("catalogue-bd-{0}-{1}-{2}" -f `
+                ($discName -replace '[^\w\-\.]', '_'), $PID, [guid]::NewGuid().ToString('N').Substring(0, 8))
+New-Item -ItemType Directory -Force $runScratch | Out-Null
+
+# Record whether the SOURCE COPY WAS VERIFIED when this sweep ran. _fetch-one.ps1 appends a unit
+# to _fetch-done.txt only after matching file count AND bytes against the source, so presence there
+# is the one trustworthy "this disc is complete" signal - timestamps are not, because robocopy
+# preserves source mtimes. assert-accounted.ps1 refuses a disc whose catalogue records false.
+$script:SourceVerified = $false
+try {
+  $fd = @(Get-Content 'D:/video/_fetch-done.txt' -ErrorAction SilentlyContinue |
+          Where-Object { $_ -and $_.Trim() } | ForEach-Object { $_.Trim() })
+  $script:SourceVerified = ($fd -contains $discName)
+} catch { }
+if (-not $script:SourceVerified) {
+  Write-Warning "$discName is NOT in _fetch-done.txt - the copy is unverified and may still be in"
+  Write-Warning "progress. Enumerating now risks a SHORT title list and therefore wrong numbering."
 }
 
 $frameDir = Join-Path $OutDir "$discName-frames"
@@ -105,7 +154,7 @@ function Ensure-Title($id){
     $byId[$id] = [ordered]@{
       title=$id; duration=$null; sizeText=$null; source=$null; outName=$null
       width=$null; height=$null; fieldOrder=$null; frameRate=$null
-      probeFile=$null; probeScope=$null; audioMd5=$null; frames=@(); headStrip=$null; speechSample=$null; disposition=$null; streams=@()
+      probeFile=$null; probeScope=$null; audioMd5=$null; frames=@(); headStrip=$null; speechSample=$null; speechStatus=$null; speechFrom=$null; disposition=$null; streams=@()
     }
   }
 }
@@ -245,13 +294,34 @@ foreach($id in $ids){
     # A title card is optional; speech is not. Capture both here, once, so identification never
     # needs a second pass. Titles with no audio, or too short to say anything, are skipped.
     if($script:Whisper -and $durSec -ge 30){
-      $wav = Join-Path $env:TEMP ("cat-t{0:D3}.wav" -f $id)
+      # INSIDE $runScratch, never a bare TEMP name keyed on the title number - that is the exact
+      # path collision that let concurrent catalogues transcribe each other's audio.
+      $wav = Join-Path $runScratch ("t{0:D3}.wav" -f $id)
       $at  = [int]([math]::Min(60, [math]::Max(5, $durSec * 0.15)))
+      # Provenance, recorded whether or not the transcription succeeds - after-the-fact audit of
+      # a suspect speechSample starts from WHERE it was taken.
+      $t.speechFrom = ("probe={0}|offset={1}s|wav={2}" -f $probe, $at, $wav)
       & $ff -v error -ss $at -i $probe -t 45 -map '0:a:0?' -ac 1 -ar 16000 -y $wav 2>$null
       if(Test-Path -LiteralPath $wav){
-        $txt = & python $script:Whisper $wav 2>$null
-        if($txt){ $t.speechSample = (($txt -join ' ') -replace '\s+',' ').Trim() }
+        # Capture BOTH streams and split by type: stdout carries the transcriber's own positive
+        # markers ([no-speech] / [transcription-failed] / text - see transcribe-wav.py), stderr
+        # carries launcher failures (python missing) as ErrorRecords. Classifying `if($txt)` used
+        # to record a FAILURE as "this title has no speech" - the catalogued absence then read as
+        # evidence, which is the exact defect the disposition gate exists to stop.
+        $raw   = & python $script:Whisper $wav 2>&1
+        $sOut  = @($raw | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] })
+        $sErr  = @($raw | Where-Object { $_ -is  [System.Management.Automation.ErrorRecord] })
+        $sp    = Resolve-TranscribeOutput -OutputLines $sOut
+        $t.speechStatus = $sp.Status
+        if($sp.Status -eq 'ok'){ $t.speechSample = $sp.Text }
+        elseif($sp.Status -eq 'failed'){
+          $why = if($sErr){ "$($sErr[0])" } else { $sp.Detail }
+          Write-Warning ("t{0:D2}: speech sample FAILED - this is NOT 'no speech'; do not treat the gap as evidence. {1}" -f $id, $why)
+        }
         Remove-Item -LiteralPath $wav -Force -ErrorAction SilentlyContinue
+      } else {
+        $t.speechStatus = 'no-wav'
+        Write-Warning ("t{0:D2}: no wav extracted (title has no audio stream, or extraction failed) - speech evidence is MISSING, not empty" -f $id)
       }
     }
 
@@ -287,9 +357,13 @@ for($i=0; $i -lt $all.Count; $i += 16){
   if(Test-Path -LiteralPath $sheet){ Write-Output "  sheet: $sheet" }
 }
 
+# Per-run scratch is done with (speech wavs are deleted per-title; this catches anything a
+# failure left behind). The mutex releases itself when the process exits.
+Remove-Item -LiteralPath $runScratch -Recurse -Force -ErrorAction SilentlyContinue
+
 # ---- 5. WRITE THE ARTIFACT ----------------------------------------------------------------
 $cat = [ordered]@{
-  disc = $discName; discPath = $Disc; minLength = $MinLength
+  disc = $discName; discPath = $Disc; sourceVerified = $script:SourceVerified; minLength = $MinLength
   titleCount = $byId.Count
   titles = @($ids | ForEach-Object { $byId[$_] })
 }

@@ -89,7 +89,14 @@ foreach ($r in $rows) {
 if (-not $pick) { throw "no '$Lang' subtitle stream in $($media.Name) - streams: $($rows -join ' ; ')" }
 $absIndex = [int]($pick[0])
 
-$work = Join-Path $env:TEMP ("paddleocr_{0}" -f ([IO.Path]::GetFileNameWithoutExtension($media.Name) -replace '[^\w]','_'))
+# Unique per RUN, not just per media basename. Extras are routinely named identically across
+# works ("Trailer.mkv", "Making Of.mkv"), so a basename-keyed dir lets two concurrent runs
+# overwrite each other's sub.idx/cues and OCR the WRONG DISC's subtitles onto a file - the same
+# cross-contamination class as the catalogue speech-wav collision of 2026-08-23. PID guards
+# against live collisions, the GUID against a stale dir from a crashed run with a recycled PID.
+$work = Join-Path $env:TEMP ("paddleocr_{0}_{1}_{2}" -f `
+          ([IO.Path]::GetFileNameWithoutExtension($media.Name) -replace '[^\w]','_'), $PID,
+          [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Path $work -Force | Out-Null
 try {
   Write-Host "  extracting subtitle stream $absIndex ($Lang) ..."

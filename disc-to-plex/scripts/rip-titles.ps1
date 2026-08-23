@@ -123,5 +123,13 @@ foreach ($t in $Titles) {
     $bad++
   }
 }
-if ($bad -gt 0) { Write-Output "*** $bad title(s) need a look - see the notes above ***" }
+# The exit code must agree with the verification above. 'RIP DONE' printed over a nonzero $bad
+# with exit 0 is the "unconditional success message" defect: anything scripted on top of this
+# (a waiter grepping for RIP DONE, a && chain) read a short rip as a finished one. The literal
+# 'RIP DONE' stays in both branches for existing greps; the exit code carries the verdict.
+if ($bad -gt 0) {
+  Write-Output "*** $bad title(s) need a look - see the notes above ***"
+  Write-Output "RIP DONE - $bad title(s) UNVERIFIED"
+  exit 1
+}
 Write-Output 'RIP DONE'

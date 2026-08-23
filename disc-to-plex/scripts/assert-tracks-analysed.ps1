@@ -71,6 +71,19 @@ foreach ($it in $items) {
   foreach ($idx in @($it.audioTracks)) {
     $s = $byIdx[[int]$idx]
     if (-not $s) { $problems += "$(Split-Path $out -Leaf): a:$idx not in the analysis"; continue }
+    if ($s.role -eq 'analysis-failed') {
+      # The analysis RAN and could not measure this stream (extraction/whisper failure). That is
+      # an absence of evidence, not evidence - shipping it means shipping audio nobody has heard.
+      $problems += "$(Split-Path $out -Leaf): a:$idx analysis FAILED - no transcript could be " +
+                   "taken, so nothing about this stream is evidenced. Re-run analyze-tracks.py"
+    }
+    if ($s.role -eq 'silent?') {
+      # Near-silent, speechless audio is a phantom/menu artifact until someone proves otherwise.
+      # (A real score measures loud and gets role 'music', which IS claimable - a silent-film
+      # disc like Metropolis ships its orchestral tracks as 'zxx'.)
+      $problems += "$(Split-Path $out -Leaf): a:$idx measured NEAR-SILENT with no speech " +
+                   "($($s.audioLevelDb) dB) - probably a phantom track. Listen before shipping it"
+    }
     if ($s.role -eq 'redundant') {
       $problems += "$(Split-Path $out -Leaf): a:$idx is REDUNDANT with a:$($s.redundantWith) " +
                    "(lossy core or duplicate) - shipping it wastes space and invites a wrong label"
@@ -91,6 +104,20 @@ foreach ($it in $items) {
       $declared = "$($langs[$i])".Substring(0, [Math]::Min(2, "$($langs[$i])".Length))
       # commentary and audio description are ABOUT the film in the same language - not a mismatch
       if ($s.role -in @('commentary', 'audioDescription')) { continue }
+      # NEVER COMPARE AGAINST A LANGUAGE THE ANALYSIS ITSELF DOES NOT TRUST.
+      #
+      # A MUSIC track has no language, and whisper hallucinates one from a score: Metropolis's
+      # Huppertz score came back "la" (Latin) at langProb 0.52 with langReliable=false. Comparing a
+      # declaration against that made the track UNPASSABLE - for the score-only trailer NO value
+      # could satisfy this check, not even the analyzer's own proposal, because the only "matching"
+      # answer was the factually wrong 'la'. A gate that can only be satisfied by a false claim
+      # forces exactly the override it exists to prevent.
+      #
+      # So skip the comparison when the analysis says role 'music' or flags the language
+      # unreliable. This does NOT weaken the check that matters: a stream with RELIABLE speech in
+      # the wrong language is still refused, which is what caught Thunderball's Italian dub.
+      if ($s.role -eq 'music') { continue }
+      if ($s.PSObject.Properties.Name -contains 'langReliable' -and -not $s.langReliable) { continue }
       if ($spoken -ne $declared) {
         $problems += "$(Split-Path $out -Leaf): a:$($tracks[$i]) declared '$($langs[$i])' but " +
                      "whisper heard '$($s.spokenLang)'"
@@ -119,7 +146,10 @@ foreach ($it in $items) {
     foreach ($e in @($it.audioDescription)) {
       $di = if ($e -is [array]) { [int]$e[0] } else { [int]$e }
       $s = $byIdx[$di]
-      if ($s -and $s.role -notin @('audioDescription', 'commentary?', 'unknown')) {
+      # 'unknown' was on this allowed list speculatively - no producer has ever emitted it, so it
+      # was a fail-open hole: any role the analyzer never generates would have approved an AD
+      # claim. The list now names only roles analyze-tracks.py actually writes.
+      if ($s -and $s.role -notin @('audioDescription', 'commentary?')) {
         $problems += "$(Split-Path $out -Leaf): a:$di tagged as audio description but the " +
                      "analysis calls it '$($s.role)'"
       }

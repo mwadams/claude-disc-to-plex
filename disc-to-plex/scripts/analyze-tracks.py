@@ -29,7 +29,7 @@ USAGE
     python analyze-tracks.py "D:/video/_stage/x/Film_t00.mkv" [--offsets 1800 3600] [--model base]
 """
 
-import argparse, difflib, json, re, subprocess, sys, tempfile
+import argparse, difflib, json, re, subprocess, sys, tempfile, time
 
 # The transcripts are foreign-language by design. On Windows a redirected stdout defaults to
 # cp1252, so printing a Spanish or French sample raised UnicodeEncodeError and killed the run
@@ -127,8 +127,15 @@ def rms_db(src, filtergraph):
     r = run([FFMPEG, '-hide_banner', '-ss', str(rms_db.start), '-t', str(rms_db.dur), '-i', src,
              '-filter_complex', filtergraph, '-map', '[x]', '-f', 'null', '-'])
     m = re.findall(r'RMS level dB:\s*(-?[\d.]+|-?inf)', r.stderr)
-    if not m or m[-1].endswith('inf'):
+    if not m:
         return None
+    if m[-1].endswith('inf'):
+        # DIGITAL SILENCE IS A MEASUREMENT, NOT A FAILURE. Returning None here made a
+        # BIT-IDENTICAL duplicate track invisible: its difference signal is digitally silent,
+        # astats reports -inf, and the comparison was silently skipped - so the one pair that is
+        # most certainly the same content was the one pair never flagged. compare() distinguishes
+        # "the SOURCE is silent" (unjudgeable) from "the DIFFERENCE is silent" (identical).
+        return float('-inf')
     return float(m[-1])
 
 
@@ -143,32 +150,73 @@ def compare(src, i, j):
                     f'[p][q]amix=inputs=2:normalize=0,{AST}[x]')
     if a is None or d is None:
         return None
+    if a == float('-inf'):
+        return None          # the SOURCE segment is silent - nothing to judge either way
+    if d == float('-inf'):
+        return 999.0         # the DIFFERENCE is digital silence - the tracks are identical
     return a - d
 
 
 def transcribe(model, src, track, offsets, dur):
-    texts, langs = [], []
+    """Returns (lang, prob, texts, agreed, status).
+
+    status is 'ok' when at least one offset was extracted and transcribed, 'failed' otherwise.
+    A FAILED transcription must never present like "no speech on this stream": extraction
+    failures used to `continue` silently, so a stream ffmpeg could not read (or a whisper crash
+    under contention) came back looking exactly like a silent track - the same defect class as
+    an OCR failure recorded as "no usable text". The caller marks failed streams
+    role='analysis-failed', which the manifest gate refuses to accept claims about.
+    """
+    texts, langs, failures = [], [], []
     with tempfile.TemporaryDirectory() as td:
         for off in offsets:
             wav = Path(td) / f'a{track}_{off}.wav'
-            run([FFMPEG, '-y', '-hide_banner', '-v', 'error', '-ss', str(off), '-i', src,
-                 '-t', str(dur), '-map', f'0:a:{track}', '-ac', '1', '-ar', '16000', str(wav)])
+            r = run([FFMPEG, '-y', '-hide_banner', '-v', 'error', '-ss', str(off), '-i', src,
+                     '-t', str(dur), '-map', f'0:a:{track}', '-ac', '1', '-ar', '16000', str(wav)])
             if not wav.exists() or wav.stat().st_size < 1000:
+                failures.append('offset %ds: extraction produced no usable wav (%s)'
+                                % (off, (r.stderr or '').strip()[-120:] or 'no ffmpeg error text'))
                 continue
-            segs, info = model.transcribe(str(wav), beam_size=1)
-            texts.append(' '.join(s.text for s in segs).strip())
-            langs.append((info.language, round(info.language_probability, 2)))
+            try:
+                segs, info = model.transcribe(str(wav), beam_size=1)
+                text = ' '.join(s.text for s in segs).strip()
+                texts.append(text)
+                # AN EMPTY TRANSCRIPT CANNOT SUPPORT A LANGUAGE CLAIM. whisper reports a language
+                # for pure MUSIC - Metropolis (1927)'s orchestral score came back "la" (Latin) at
+                # 0.64 with a BLANK transcript, self-consistently across both offsets, so neither
+                # the confidence floor nor cross-offset agreement caught it. That bogus "la"
+                # became the primary language, which reclassified the disc's genuine English
+                # commentary (1.00) as a DUB and dropped it from the proposal. Only count a
+                # language vote from an offset that produced actual words.
+                if text:
+                    langs.append((info.language, round(info.language_probability, 2)))
+            except Exception as exc:
+                failures.append('offset %ds: whisper failed: %s: %s'
+                                % (off, type(exc).__name__, exc))
+    if texts and not any(t for t in texts):
+        # Every offset transcribed cleanly and every transcript is blank: an EARNED emptiness
+        # (the caller separates score from phantom silence by measuring the audio level).
+        status = 'no-speech'
+    elif texts or langs:
+        status = 'ok'
+    else:
+        status = 'failed'
+    if failures:
+        # loud, per-offset, even when the other offset succeeded - a half-measured stream is
+        # weaker evidence and the agreement flag below will already be False.
+        for f in failures:
+            print(f'  a:{track} TRANSCRIBE FAILURE - {f}')
     # TWO INDEPENDENT MEASUREMENTS MUST AGREE - the same rule the subtitle work uses for anchors.
     # A single confident-looking call is not evidence: sampled over an action scene, whisper called
     # a Portuguese track English at 0.86 ("I'll find you. Oh, no! Yeah!") because shouting and
     # effects carry no language at all. A confidence floor cannot catch that; disagreement can.
     if not langs:
-        return None, 0.0, texts, False
+        return None, 0.0, texts, False, status
     names = [l for l, _ in langs]
     lang = max(set(names), key=names.count)
     prob = max([p for l, p in langs if l == lang], default=0.0)
     agreed = len(set(names)) == 1 and len(names) > 1
-    return lang, prob, texts, agreed
+    return lang, prob, texts, agreed, status
 
 
 
@@ -215,29 +263,22 @@ def main():
         print('no audio streams'); return 1
     print(f'{len(streams)} audio stream(s), duration {dur_total:.0f}s, sampling at {offsets}\n')
 
-    from faster_whisper import WhisperModel
-    print(f'loading whisper "{a.model}"...', flush=True)
-    model = WhisperModel(a.model, device='cpu', compute_type='int8')
-
-    for s in streams:
-        lang, prob, texts, agreed = transcribe(model, src, s['a'], offsets, a.dur)
-        s['langAgreedAcrossOffsets'] = agreed
-        s['spokenLang'] = lang
-        s['langProb'] = prob
-        s['samples'] = texts
-        # Abstain when the detector is not confident: assert nothing rather than assert noise.
-        s['langReliable'] = bool(lang and prob >= LANG_CONFIDENCE_FLOOR and agreed)
-        s['tagMismatch'] = bool(s['langReliable'] and s['langTag']
-                                and not same_language(lang, s['langTag']))
-        print(f"  a:{s['a']} {s['codec']:9} {str(s['channels']):>2}ch tag={s['langTag']}"
-              f" spoken={lang}({prob})"
-              + ('  <<< TAG MISMATCH' if s['tagMismatch'] else '')
-              + ('  [not judged: %s]' % ('offsets disagree' if lang and not agreed
-                                                          else 'low confidence')
-                 if lang and not s['langReliable'] else ''))
-
-    # --- redundancy: which tracks are the same content? -------------------------------------
-    print('\npairwise subtraction (dB below signal; >%.0f = same content):' % REDUNDANT_DB)
+    # --- redundancy FIRST: which tracks are the same content? --------------------------------
+    #
+    # ORDER IS THE OPTIMISATION. Subtraction costs ~2s per candidate pair; whisper costs
+    # ~2 x 75s of decode+inference PER STREAM, and it is pure waste on a stream the subtraction
+    # is about to mark redundant - a lossy core's language is its parent's language, and the
+    # stream is being dropped regardless. So: group duplicates first, then transcribe only one
+    # representative of each group plus every unique stream. Measured on a synthetic 4-stream
+    # file (2 distinct contents, each with an identical sibling), same machine, back to back:
+    # 179.1s before (whisper 175.5s, all 4 streams) vs 67.0s after (whisper 64.8s, 2 streams),
+    # with identical redundancy verdicts and identical language calls on the surviving streams.
+    # The saving scales with the number of redundant streams - on the 12-stream features where
+    # this script is the bottleneck, cores and duplicates are most of the count.
+    # None of the checks that matter is weakened: lossy-core detection IS the subtraction
+    # (unchanged), dub/commentary/AD detection runs on every stream that could ship.
+    print('pairwise subtraction (dB below signal; >%.0f = same content):' % REDUNDANT_DB)
+    t_phase = time.monotonic()
     groups = []
     # ONLY COMPARE PAIRS THAT COULD ACTUALLY BE THE SAME CONTENT.
     #
@@ -261,20 +302,19 @@ def main():
     print('  %d candidate pair(s); %d skipped as impossible (channel count / language tag differ)'
           % (len(pairs), skipped))
     for i, j in pairs:
-        if True:
-            d = compare(src, i, j)
-            if d is None:
-                continue
-            same = d > REDUNDANT_DB
-            if same:
-                print(f'  a:{i} vs a:{j}  {d:6.1f}  SAME CONTENT')
-                for g in groups:
-                    if i in g or j in g:
-                        g.update({i, j}); break
-                else:
-                    groups.append({i, j})
-            elif d > 12:
-                print(f'  a:{i} vs a:{j}  {d:6.1f}  (close - inspect)')
+        d = compare(src, i, j)
+        if d is None:
+            continue
+        same = d > REDUNDANT_DB
+        if same:
+            print(f'  a:{i} vs a:{j}  {d:6.1f}  SAME CONTENT')
+            for g in groups:
+                if i in g or j in g:
+                    g.update({i, j}); break
+            else:
+                groups.append({i, j})
+        elif d > 12:
+            print(f'  a:{i} vs a:{j}  {d:6.1f}  (close - inspect)')
 
     def rank(k):
         s = streams[k]
@@ -289,21 +329,116 @@ def main():
             if k != keep:
                 streams[k]['redundantWith'] = keep
                 print(f'  -> a:{k} is redundant with a:{keep} (drop)')
+    print('  [subtraction phase: %.1fs]' % (time.monotonic() - t_phase))
+
+    # --- transcription: only streams that could ship ----------------------------------------
+    t_phase = time.monotonic()
+    from faster_whisper import WhisperModel
+    print(f'\nloading whisper "{a.model}"...', flush=True)
+    model = WhisperModel(a.model, device='cpu', compute_type='int8')
+
+    for s in streams:
+        # defaults, so every stream carries every key whatever path it takes below
+        s['langAgreedAcrossOffsets'] = False
+        s['spokenLang'] = None
+        s['langProb'] = 0.0
+        s['samples'] = []
+        s['langReliable'] = False
+        s['tagMismatch'] = False
+        s['audioLevelDb'] = None
+        if s['redundantWith'] is not None:
+            # Same content as its parent, and being dropped - transcribing it would repeat the
+            # parent's answer at full whisper cost. NOTE the honest limit: its language and tag
+            # are NOT independently verified; if it is claimed in a manifest anyway, the gate
+            # refuses it as redundant long before language matters.
+            s['transcribeStatus'] = 'skipped-redundant'
+            print(f"  a:{s['a']} {s['codec']:9} {str(s['channels']):>2}ch tag={s['langTag']}"
+                  f" [not transcribed: same content as a:{s['redundantWith']}]")
+            continue
+        lang, prob, texts, agreed, status = transcribe(model, src, s['a'], offsets, a.dur)
+        s['transcribeStatus'] = status
+        s['langAgreedAcrossOffsets'] = agreed
+        s['spokenLang'] = lang
+        s['langProb'] = prob
+        s['samples'] = texts
+        # Abstain when the detector is not confident: assert nothing rather than assert noise.
+        s['langReliable'] = bool(lang and prob >= LANG_CONFIDENCE_FLOOR and agreed)
+        s['tagMismatch'] = bool(s['langReliable'] and s['langTag']
+                                and not same_language(lang, s['langTag']))
+        if status == 'no-speech':
+            # Blank transcript at every offset. Separate a SCORE from a phantom/empty track by
+            # MEASURING the audio, not assuming: a silent-film disc (Metropolis) carries real
+            # orchestral tracks here, while a broken menu artifact carries near-silence.
+            s['audioLevelDb'] = rms_db(src, f"[0:a:{s['a']}]{DM},{AST}[x]")
+        print(f"  a:{s['a']} {s['codec']:9} {str(s['channels']):>2}ch tag={s['langTag']}"
+              f" spoken={lang}({prob})"
+              + ('  <<< TAG MISMATCH' if s['tagMismatch'] else '')
+              + ('  <<< TRANSCRIBE FAILED - no evidence for this stream' if status == 'failed' else '')
+              + ('  [no speech at any offset; level %s dB - music or silence, see roles]'
+                 % (('%.1f' % s['audioLevelDb']) if isinstance(s['audioLevelDb'], float)
+                    and s['audioLevelDb'] != float('-inf') else 'n/a')
+                 if status == 'no-speech' else '')
+              + ('  [not judged: %s]' % ('offsets disagree' if lang and not agreed
+                                                          else 'low confidence')
+                 if lang and not s['langReliable'] else ''))
+    print('  [whisper phase: %.1fs]' % (time.monotonic() - t_phase))
 
     # --- classify ----------------------------------------------------------------------------
+    # PASS 1: roles that need no speech reference. Doing these first is load-bearing: a stream
+    # with NO SPEECH must never become the reference the other streams are judged against.
+    # On Metropolis (1927) the orchestral score's blank transcript still carried whisper's bogus
+    # "la" language, became the primary, reclassified the genuine English commentary (1.00) as a
+    # DUB, and the proposal dropped everything but the stereo score.
+    MUSIC_FLOOR_DB = -50.0
+    for s in streams:
+        s['role'] = None
+        if s['redundantWith'] is not None:
+            s['role'] = 'redundant'
+        elif s.get('transcribeStatus') == 'failed':
+            # No transcript could be taken, so NOTHING about this stream is evidenced. This must
+            # be its own role, not 'commentary?': a failure classified as a plausible role is a
+            # verdict that was never earned, and the manifest gate refuses claims about it.
+            s['role'] = 'analysis-failed'
+        elif s.get('transcribeStatus') == 'no-speech':
+            lvl = s['audioLevelDb']
+            if lvl is None:
+                # the level measurement itself failed - that is a failure, not silence
+                s['role'] = 'analysis-failed'
+            elif lvl == float('-inf') or lvl < MUSIC_FLOOR_DB:
+                s['role'] = 'silent?'      # near-silent: phantom/menu artifact - inspect, do not ship
+            else:
+                s['role'] = 'music'        # real audio, no words: a score. A POSITIVE finding.
+
+    # The REFERENCE stream for dub/commentary/mix comparison: the first non-redundant stream
+    # that actually carries RELIABLE speech; failing that, the first with any speech at all.
+    # (Reliability preferred so one hallucinated word on a music track cannot outrank a clean
+    # commentary transcript.)
     primary = None
     for s in streams:
-        if s['redundantWith'] is None and s['spokenLang']:
+        if s['role'] is None and s['langReliable']:
             primary = s; break
+    if primary is None:
+        for s in streams:
+            if s['role'] is None and s['spokenLang']:
+                primary = s; break
     ptext = ' '.join(primary['samples']) if primary else ''
 
+    # SILENT FILM: the film's own audio (the first non-redundant stream) is a score. Any speech
+    # stream on such a disc is ABOUT the film - a commentary - not its primary audio, and must
+    # not be proposed as the default track a viewer lands on.
+    firstMain = next((s for s in streams if s['redundantWith'] is None), None)
+    silentFilm = bool(firstMain is not None and firstMain['role'] == 'music')
+
+    # PASS 2: speech streams, judged against the reference.
     for s in streams:
         text = ' '.join(s['samples'])
         sim = similarity(ptext, text)
         s['similarityToPrimary'] = round(sim, 2)
+        if s['role'] is not None:
+            continue
         primaryLang = primary['spokenLang'] if primary else 'en'
-        if s['redundantWith'] is not None:
-            s['role'] = 'redundant'
+        if silentFilm:
+            s['role'] = 'commentary' if len(COMMENTARY_HINTS.findall(text)) >= 2 else 'commentary?'
         elif s is primary:
             s['role'] = 'primary'
         elif s['langReliable'] and s['spokenLang'] != primaryLang:
@@ -332,10 +467,20 @@ def main():
 
     # --- proposed manifest fields -------------------------------------------------------------
     keep = [s['a'] for s in streams
-            if s['role'] in ('primary', 'commentary', 'audioDescription', 'alternateMix')]
+            if s['role'] in ('primary', 'commentary', 'audioDescription', 'alternateMix', 'music')]
+    # Map whisper's ISO 639-1 to the 639-2 code the manifest/mkv wants via the SAME table the
+    # tag comparison uses. The old `.replace('en', 'eng')[:3]` was a single-sample shortcut:
+    # right for English, and it silently left every other language as a 2-letter code
+    # ('fr', 'es') in the proposal.
+    # A music track's language is 'zxx' - ISO 639-2 for "no linguistic content" - which is both
+    # true and what stops anyone re-tagging a score with whatever whisper hallucinated for it.
+    def proposed_lang(k):
+        if streams[k]['role'] == 'music':
+            return 'zxx'
+        return ISO2TO3.get((streams[k]['spokenLang'] or '')[:2], 'und')
     proposal = {
         'audioTracks': keep,
-        'audioLangs': [(streams[k]['spokenLang'] or 'und').replace('en', 'eng')[:3] for k in keep],
+        'audioLangs': [proposed_lang(k) for k in keep],
     }
     for s in streams:
         if s['role'] == 'commentary':
@@ -345,6 +490,10 @@ def main():
 
     warnings = []
     for s in streams:
+        if s['role'] == 'analysis-failed':
+            warnings.append(f"a:{s['a']} could NOT be transcribed - there is NO evidence for this "
+                            f"stream. Re-run after the contention clears; do not claim it in a "
+                            f"manifest until it measures")
         if s['tagMismatch']:
             warnings.append(f"a:{s['a']} tag={s['langTag']} but SPOKEN {s['spokenLang']} - "
                             f"do not ship it under the disc's tag")
@@ -355,7 +504,19 @@ def main():
             warnings.append(f"a:{s['a']} is a DIFFERENT MIX of the same dialogue "
                             f"({s['channels']}ch) - usually the restored original. Confirm it is "
                             f"wanted, and give it a title; do NOT tag it as commentary")
-    if primary and primary['spokenLang'] != 'en':
+        if s['role'] == 'silent?':
+            warnings.append(f"a:{s['a']} carries NEAR-SILENT audio ({s['audioLevelDb']} dB) with no "
+                            f"speech - probably a phantom/menu artifact. Excluded from the "
+                            f"proposal; verify before shipping or dropping it")
+    if silentFilm:
+        warnings.append("FIRST AUDIO STREAM HAS NO SPEECH but real level - this looks like a "
+                        "SILENT FILM with a score. Music tracks proposed as 'zxx'; any speech "
+                        "stream was classified as commentary ABOUT the film, and no language "
+                        "warning is derived from the score tracks")
+    # "PRIMARY IS X" is only meaningful when the reference stream really is the film's primary
+    # audio. On a silent film the reference is a commentary, and on Metropolis this warning
+    # previously read "PRIMARY IS LA" off a blank transcript of the orchestral score.
+    if primary and primary['role'] == 'primary' and primary['spokenLang'] != 'en':
         warnings.append(f"PRIMARY IS {primary['spokenLang'].upper()}, not English - this is likely "
                         f"a foreign-language original; ship it as the original, not as 'eng'")
 

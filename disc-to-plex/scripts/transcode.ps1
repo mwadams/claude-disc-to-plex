@@ -164,6 +164,48 @@ function Preflight-BDStreams($items){
 }
 if(-not ($items | Where-Object { $_.allowRawStream -eq $true })){ Preflight-BDStreams $items }
 
+# ---------------------------------------------------------------------------------------------
+# PREFLIGHT: enough free space to hold what this manifest will WRITE.
+#
+# The rip track has been space-gated since it filled the disk once; the ENCODE track never was.
+# So a manifest could be claimed with 18 GB free, write a 14 GB feature, and run the volume to
+# zero mid-encode. ffmpeg does not fail cleanly out of space - it leaves a SHORT, UNFINALISED
+# mkv, and this pipeline's whole failure signature is a plausible-looking file that passes
+# structural checks. A truncated feature with a correct name is the most expensive thing we ship.
+#
+# Estimate from the SOURCE size rather than a fixed floor: a 200 MB gallery extra must not be
+# blocked by a floor sized for a feature. NVENC at CQ20 has never exceeded ~0.75x its source on
+# this library (Metropolis: 34.4 GB source -> 17.7 GB output, 0.51x), so 0.75x plus a 6 GB working
+# margin is comfortably conservative without being superstitious.
+#
+# Skipped items cost nothing - `out` already exists is how this batch resumes - so only count
+# what will actually be written.
+$pending = @($items | Where-Object { -not (Test-Path -LiteralPath $_.out) -or
+                                     (Get-Item -LiteralPath $_.out -EA SilentlyContinue).Length -lt 5MB })
+if($pending.Count){
+  $needBytes = 0
+  foreach($it in $pending){
+    $sp = "$($it.src)"
+    if(Test-Path -LiteralPath $sp -PathType Leaf){ $needBytes += (Get-Item -LiteralPath $sp).Length }
+    elseif(Test-Path -LiteralPath $sp){
+      $needBytes += (Get-ChildItem -LiteralPath $sp -Recurse -File -EA SilentlyContinue |
+                     Measure-Object -Property Length -Sum).Sum
+    }
+  }
+  $needGB = [math]::Round(($needBytes * 0.75) / 1GB, 1) + 6
+  $outDrive = ([IO.Path]::GetPathRoot($pending[0].out)).Substring(0,1)
+  $freeGB = [math]::Round([IO.DriveInfo]::new($outDrive).AvailableFreeSpace / 1GB, 1)
+  if($freeGB -lt $needGB){
+    Write-Output '*** PREFLIGHT ABORT: not enough free space for this manifest ***'
+    Write-Output ("  {0}: {1} GB free, need ~{2} GB for {3} pending item(s)" -f $outDrive, $freeGB, $needGB, $pending.Count)
+    Write-Output '  Release staging for a unit whose outputs are byte-verified on the NAS, or'
+    Write-Output '  wait for a publish to complete. Do NOT encode into the last few GB - ffmpeg'
+    Write-Output '  leaves a truncated, unfinalised mkv that looks finished.'
+    exit 2
+  }
+  Write-Output ("space preflight OK - {0} GB free, ~{1} GB needed for {2} pending item(s)" -f $freeGB, $needGB, $pending.Count)
+}
+
 # PREFLIGHT: kind "BD" on a STANDARD-DEFINITION source.
 #
 # "BD" means HD: no deinterlace, and the crop filter is configured for an HD frame. Point it at a
@@ -298,6 +340,7 @@ function Get-Crop($src){
 }
 
 $i=0
+$failCount=0
 foreach($it in $items){
   $i++
   Write-Output ("[{0}/{1}] {2}  ({3})" -f $i,$items.Count,(Split-Path $it.out -Leaf),$it.kind)
@@ -583,7 +626,7 @@ foreach($it in $items){
     }
   }
   if((Test-Path $it.out) -and ((Get-Item $it.out).Length -gt 1MB)){ Write-Output ("   OK {0:N2}GB in {1}s" -f ((Get-Item $it.out).Length/1GB),$secs) }
-  else { Write-Output "   !! FAILED ($secs s)" }
+  else { Write-Output "   !! FAILED ($secs s)"; $failCount++ }
   Remove-Item "$work\s$i.sup","$work\s${i}_fixed.sup" -ErrorAction SilentlyContinue
 }
 
@@ -653,4 +696,14 @@ if($audioFlags){
   Write-Output 'Then fix by REMUX (stream copy, no re-encode) - see gotchas.md "duplicate audio".'
 }
 
+# "MANIFEST DONE with failed items" is a real, documented failure mode: this line used to print
+# unconditionally AND the script always exited 0, so lane-runner filed a partly-failed manifest
+# under done\ and the only evidence was a FAILED line deep in the lane log. The literal string
+# "MANIFEST DONE" is preserved in both branches because waiters grep for it; the exit code now
+# tells the truth, which is what lane-runner actually routes on (failed manifests go to
+# _queue\failed, where they are visible and safely re-queueable - resume skips finished outputs).
+if($failCount -gt 0){
+  Write-Output ("MANIFEST DONE - {0} of {1} item(s) FAILED (see the !! FAILED lines above)" -f $failCount, $items.Count)
+  exit 1
+}
 Write-Output "MANIFEST DONE"
