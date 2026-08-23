@@ -49,6 +49,11 @@ $ff = $tp.ffmpeg
 $fp = Join-Path (Split-Path $ff) 'ffprobe.exe'
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $frameDir = Join-Path $OutDir "$discName-frames"
+
+# Speech capture is best-effort: if faster-whisper is not installed the sweep still runs, it just
+# records no speechSample. Identification then falls back to frames, which is where it used to be.
+$script:Whisper = Join-Path $PSScriptRoot 'transcribe-wav.py'
+if(-not (Test-Path -LiteralPath $script:Whisper)){ $script:Whisper = $null }
 New-Item -ItemType Directory -Force -Path $frameDir | Out-Null
 
 # ---- 1. ENUMERATE AT THE LOW FLOOR --------------------------------------------------------
@@ -82,7 +87,7 @@ function Ensure-Title($id){
     $byId[$id] = [ordered]@{
       title=$id; duration=$null; sizeText=$null; source=$null; outName=$null
       width=$null; height=$null; fieldOrder=$null; frameRate=$null
-      probeFile=$null; probeScope=$null; audioMd5=$null; frames=@(); headStrip=$null; disposition=$null; streams=@()
+      probeFile=$null; probeScope=$null; audioMd5=$null; frames=@(); headStrip=$null; speechSample=$null; disposition=$null; streams=@()
     }
   }
 }
@@ -210,6 +215,28 @@ foreach($id in $ids){
     # which would name the whole thing after its opening segment. Treat a head strip as
     # naming evidence only when probeScope is NOT 'first-clip', or when the runtime matches
     # what the card claims.
+    # ---- SPEECH SAMPLE: what the title SAYS ----------------------------------------------------
+    #
+    # Pictures alone kept failing to name things, and the fallback was always an ad-hoc
+    # transcription afterwards - the manual step this catalogue exists to remove.
+    #
+    #   t02 "Welcome to Japan, Mr. Bond" - the on-screen card was there but read as a film caption;
+    #        the promotional NARRATION settled it.
+    #   t03 / t04 - MGM documentaries whose title cards never appear in the first 35 s at all.
+    #
+    # A title card is optional; speech is not. Capture both here, once, so identification never
+    # needs a second pass. Titles with no audio, or too short to say anything, are skipped.
+    if($script:Whisper -and $durSec -ge 30){
+      $wav = Join-Path $env:TEMP ("cat-t{0:D3}.wav" -f $id)
+      $at  = [int]([math]::Min(60, [math]::Max(5, $durSec * 0.15)))
+      & $ff -v error -ss $at -i $probe -t 45 -map '0:a:0?' -ac 1 -ar 16000 -y $wav 2>$null
+      if(Test-Path -LiteralPath $wav){
+        $txt = & python $script:Whisper $wav 2>$null
+        if($txt){ $t.speechSample = (($txt -join ' ') -replace '\s+',' ').Trim() }
+        Remove-Item -LiteralPath $wav -Force -ErrorAction SilentlyContinue
+      }
+    }
+
     $head = Join-Path $frameDir ("t{0:D3}-head.png" -f $id)
     $headLen = if($durSec -gt 0 -and $durSec -lt 40){ $durSec } else { 40 }
     $hvf = "fps=1,scale=300:169:force_original_aspect_ratio=decrease," +

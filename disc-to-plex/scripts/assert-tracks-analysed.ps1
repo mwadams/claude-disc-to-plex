@@ -17,6 +17,8 @@ param(
   [switch]$WarnOnly     # report but do not block (use when retro-fitting an old manifest)
 )
 $ErrorActionPreference = 'Stop'
+$paths = Get-Content 'D:/video/.transcode-tools/tool-paths.json' -Raw | ConvertFrom-Json
+$ffprobe = Join-Path (Split-Path $paths.ffmpeg) 'ffprobe.exe'
 
 $items = Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json
 if ($items -isnot [array]) { $items = @($items) }
@@ -33,6 +35,28 @@ foreach ($it in $items) {
               $it.PSObject.Properties.Name -contains 'audioDescription'
   if (-not $hasClaim) { continue }
   $checked++
+
+  # EXEMPTION: a source with ONE audio stream, claimed as audioTracks [0] and nothing else.
+  #
+  # Every failure this gate exists to catch needs at least two streams to be possible: picking the
+  # lossy core over its lossless parent, tagging a dub as the commentary, shipping a duplicate. With
+  # a single stream there is no selection being asserted - "keep the only track" cannot be wrong.
+  # Requiring a whisper analysis for each of 37 short extras would buy nothing and would push people
+  # to bypass the gate, which is worse than a narrower gate.
+  #
+  # NOT exempt: the LANGUAGE claim can still be wrong on one stream (Sleep Dealer shipped as `eng`
+  # and is Spanish). That is now covered upstream instead - catalogue-disc.ps1 records a
+  # speechSample per title, so the language is evidenced for every title before a manifest exists.
+  $trivial = $false
+  if (-not ($it.PSObject.Properties.Name -contains 'commentary') -and
+      -not ($it.PSObject.Properties.Name -contains 'audioDescription')) {
+    $claimed = @($it.audioTracks)
+    if ($claimed.Count -eq 1 -and [int]$claimed[0] -eq 0) {
+      $n = @(& $ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$($it.src)" 2>$null).Count
+      if ($n -eq 1) { $trivial = $true }
+    }
+  }
+  if ($trivial) { continue }
 
   $ev = "$($it.src).tracks.json"
   if (-not (Test-Path -LiteralPath $ev)) {

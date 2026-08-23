@@ -172,3 +172,24 @@ series get completed as discs accumulate over time. Never clobber existing files
 only add what's missing. Pass Windows UNC targets (`\\NAS\share\…`) through **PowerShell, not a
 bash shell** — bash eats a backslash and the copy lands on a local drive (see gotchas.md, "Mangled
 UNC target"); `stage-and-clean.ps1` now aborts if it detects that corruption.
+
+## Gallery stills: ship ONE item, not N fragments
+
+A disc's photo/stills gallery is often authored as MANY short titles - one per still or per small
+group, 10-90 s each. Ship them as a **single** extra ("Photo Gallery", "Stills Gallery"), built by
+concatenating the parts with a sensible dwell between transitions. The manifest already supports
+this: `src` accepts a **`.txt` concat list**, so N titles produce one output.
+
+The library is consistent about this - `Diamonds Are Forever/Other/Photo Gallery.mkv` (57.6 MB),
+`The Princess Bride/Other/Photo Gallery.mkv` (155.3 MB), `The Life and Death of Colonel Blimp/Other/
+Stills Gallery.mkv` (65.1 MB), `Public Eye - Photo Gallery - Series One to Four` (152.3 MB).
+
+**Why this is written down.** On 2026-08-23 You Only Live Twice shipped `Gallery 01` … `Gallery 25`,
+25 separate 1-4 MB items. Nothing was *wrong* by the recorded rules: they are genuine extras, not
+boilerplate, so "keep every genuine extra" was followed correctly. The combining practice existed
+only as habit from earlier sessions and appeared nowhere in this skill, so reasoning from the
+written rules alone reproduced the fragmentation. A convention that lives only in someone's head is
+one context compaction away from being lost.
+
+Do NOT combine: galleries the disc already authors as one slideshow reel, and items with distinct
+identities (a trailer, a featurette) merely because they are short.

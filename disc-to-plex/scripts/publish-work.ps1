@@ -29,7 +29,7 @@ param(
 # NON-TERMINATING error, so Assert-TrackOwner was simply undefined, calling it wrote one more
 # error to the stream, and the script sailed on and published anyway (observed 2026-08-23 with
 # a mangled path). Verify the load, and abort if the function is not there.
-$guardLib = '$PSScriptRoot/lib-track-guard.ps1'
+$guardLib = "$PSScriptRoot/lib-track-guard.ps1"   # DOUBLE quotes: single quotes do not expand $PSScriptRoot
 if (-not (Test-Path -LiteralPath $guardLib)) { throw "track guard missing: $guardLib" }
 . $guardLib
 if (-not (Get-Command Assert-TrackOwner -ErrorAction SilentlyContinue)) {
