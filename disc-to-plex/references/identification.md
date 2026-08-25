@@ -405,3 +405,34 @@ that cost nothing and corroborated the runtime and the transcribed ending.
 stub VTS that `TT_SRPT` DECLARES, so it needs an explicit `exclude` disposition (given an
 out-of-band id so a re-sweep cannot collide). On Henry VIII the identical pads are menu PGCs, which
 `TT_SRPT` never declares — nothing to disposition. Same artefact, different bookkeeping.
+
+### DURATION DOES NOT IDENTIFY A PADDING PGC — measure the picture
+
+An earlier note here recorded ~0.48 s black PGCs as this authoring house's navigation padding. That
+is true but **not a test**, and using it as one would discard real content. BBC Shakespeare's
+**Julius Caesar** renders its scene-selection pages at **0.40 s each** — the same order of duration
+as the pads on its sibling discs — and they are genuine menu pages, running Act I sc i to Act V sc v
+with 18 thumbnails for 18 chapters.
+
+So a short PGC raises the question; only the PICTURE answers it. Render it and look.
+
+For a LONG suspicious PGC, measure rather than eyeball. **King Lear**'s `VIDEO_TS.VOB` is 194 MB
+against Henry VIII's 27 MB, and its VMGM PGC 5 declares **147.48 s** — the exact shape of a hidden
+menu-domain extra. Passing every frame through `signalstats` settled it:
+
+    3661 of 3687 frames at YMAX=16 (video black), chroma neutral, YAVG flat at 15.95
+
+The only 8 bright frames were two 4-frame bursts rendering as single magenta scanlines — MPEG
+decode artefacts, not content. It is 147 s of black CBR filler, and nothing ships. A 194 MB menu
+VOB is not evidence of an extra any more than a small one is evidence against; **CBR filler is
+large by construction.**
+
+### The scene index can tell you WHICH TEXT of a play you have
+
+King Lear's scene-selection index gives Act IV **six** scenes (I–VI) — the **Folio** text, which
+lacks the Quarto's IV.iii. Corroborated independently by the closing speech being **Edgar's**, the
+Folio attribution. Free provenance, from pages you are rendering anyway.
+
+Note also that its chapter table is LONGER than the index — 30 chapters against 26 jump points, so
+four marks are simply not exposed as menu buttons. That direction is harmless: **a chapter table
+longer than the index cannot hide content.** The dangerous direction is the reverse.
