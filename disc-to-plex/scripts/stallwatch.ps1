@@ -119,8 +119,25 @@ foreach ($u in $units) {
   }
 
   # Is there a manifest that mentions this unit, and has it been queued or completed?
-  $mentioned = @(Get-ChildItem "$Manifests/*.json" -ErrorAction SilentlyContinue |
-                 Where-Object { (Get-Content -LiteralPath $_.FullName -Raw) -match [regex]::Escape($name) })
+  #
+  # SEARCH THE QUEUE TOO, NOT JUST _manifests. `_gate-queue.ps1` MOVES a manifest out of
+  # `_manifests` and into `_queue` - so a unit whose manifest was queued has NO file left in
+  # `_manifests`, and searching there alone reported it as "needs MANIFEST". Observed on Julius
+  # Caesar and King Lear, both already encoded, with Julius Caesar's sidecar already written.
+  #
+  # That is the worst kind of false positive for this tool: it names finished work as waiting on
+  # the operator, and this monitor's whole value is that its output can be acted on without
+  # checking it first. The queue-state reporting below already knew how to describe a queued or
+  # completed manifest - it simply never ran, because the search returned nothing.
+  # MATCH THE STAGED PATH, NOT THE BARE NAME. A unit can be named `M` (Fritz Lang, 1931), and a
+  # bare substring match on one letter hits EVERY manifest containing an "m" - which reported M as
+  # having failed four unrelated manifests. Require the name to sit where a staged path puts it:
+  # after `_stage/` and followed by a separator or the closing quote.
+  $manifestDirs = @("$Manifests/*.json", "$Queue/*.json", "$Queue/running/*.json",
+                    "$Queue/done/*.json", "$Queue/failed/*.json")
+  $pathRx = '_stage[\\/]' + [regex]::Escape($name) + '(?=["\\/])'
+  $mentioned = @(Get-ChildItem $manifestDirs -ErrorAction SilentlyContinue |
+                 Where-Object { (Get-Content -LiteralPath $_.FullName -Raw) -match $pathRx })
   if ($mentioned.Count -eq 0) {
     $stalls += "{0,-28} needs MANIFEST     -> author one and drop it in _queue" -f $name
     continue

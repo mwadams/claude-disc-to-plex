@@ -491,6 +491,33 @@ def main():
     # This is a heuristic about AUDIO LAYOUT only. It says nothing about the film's identity, which
     # is settled from content elsewhere and by the Plex/TMDB match.
     cand = [s for s in streams if s['role'] is None and s['langReliable'] and s['spokenLang']]
+
+    # A STREAM THAT TALKS ABOUT THE FILM CANNOT BE THE FILM. Score the commentary hints BEFORE the
+    # election, not after it.
+    #
+    # The count-by-language heuristic below assumes the original language owns the most tracks
+    # because "the film, plus every commentary, are all in it". A FOREIGN-LANGUAGE FILM WITH
+    # ENGLISH COMMENTARIES FALSIFIES THAT. On Eureka's M (1931) the disc carries deu x1 (the film)
+    # against eng x2 (two English commentaries): English won the count, a COMMENTARY was elected
+    # primary, and Fritz Lang's German soundtrack was then labelled a `dub`. The proposal was
+    # `audioTracks [2,4]` - two commentaries and NO FILM.
+    #
+    # It could not self-correct downstream either: in PASS 2 the `elif s is primary` arm runs
+    # BEFORE the COMMENTARY_HINTS test, so whichever stream wins the election can never be
+    # reclassified. That is why the second commentary was caught by content and the first was not.
+    #
+    # Same lesson this file already records for the dub test: TEST THE CONTENT FIRST, then let
+    # structure break ties. Excluding hinted streams is safe in one direction only - a real feature
+    # soundtrack does not discuss its own screenplay, camera or edit - and it never removes every
+    # candidate, because that would leave nothing to elect.
+    hinted = [s for s in cand
+              if len(COMMENTARY_HINTS.findall(' '.join(s['samples']))) >= 2]
+    if hinted and len(hinted) < len(cand):
+        for s in hinted:
+            print(f"  a:{s['a']} ({s['spokenLang']}) talks ABOUT the film - "
+                  f"excluded from the primary election")
+        cand = [s for s in cand if s not in hinted]
+
     primary = None
     if cand:
         counts = {}
