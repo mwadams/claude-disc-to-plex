@@ -383,3 +383,25 @@ positively rules a shift out instead of merely failing to detect one. Beware tha
 credits disagree with the cards — Wikipedia credited two co-written Grange Hill episodes to the
 series creator alone, and named a co-writer the card omits. The card states what the programme
 says; the credit list is a secondary source.
+
+### The count works in BOTH directions — and a one-title disc is not necessarily under-enumerated
+
+The Grange Hill case was an *outlier high* (65 against siblings' 10–12). The same count also explains
+the opposite shape. BBC Shakespeare's **Henry VIII** enumerates as a **single title** with no VTS_02
+or VTS_03 at all — which looks like a short enumeration, the failure mode this pipeline most fears.
+
+It is not. That disc's boilerplate lives in the **menu domain**, inside a 27 MB `VIDEO_TS.VOB`.
+Rendering all 8 VMGM PGCs accounted for every one: 2×29 s root menu, 4× 0.48 s black padding,
+PGC 7 = the 23.20 s BBC Worldwide anti-piracy card, PGC 8 = the 10 s DD Home Entertainment ident.
+Its total of 18 menu PGCs is *fewer* than any sibling (Part One 49, Part Three 51, Part Two 54) —
+the opposite signature, and equally informative.
+
+So: **render, do not merely count.** A count raises the question; the rendered pages answer it. On
+Henry VIII the 9 scene-selection pages ran Act I "PROLOGUE" through Act V "SCENE v" with NEXT
+greyed out, which independently confirmed that the single title spans the entire play — a check
+that cost nothing and corroborated the runtime and the transcribed ending.
+
+**Where a padding PGC lives decides how you record it.** On Hamlet the 0.48 s black pad is a whole
+stub VTS that `TT_SRPT` DECLARES, so it needs an explicit `exclude` disposition (given an
+out-of-band id so a re-sweep cannot collide). On Henry VIII the identical pads are menu PGCs, which
+`TT_SRPT` never declares — nothing to disposition. Same artefact, different bookkeeping.
