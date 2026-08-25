@@ -436,3 +436,30 @@ Folio attribution. Free provenance, from pages you are rendering anyway.
 Note also that its chapter table is LONGER than the index — 30 chapters against 26 jump points, so
 four marks are simply not exposed as menu buttons. That direction is harmless: **a chapter table
 longer than the index cannot hide content.** The dangerous direction is the reverse.
+
+### The menu-PGC offset DIFFERS between VIDEO_TS.IFO and VTS_nn_0.IFO
+
+Two tables, two files, two offsets, and the wrong one yields plausible garbage rather than an error:
+
+| file | table | offset | the trap next door |
+|---|---|---|---|
+| `VTS_nn_0.IFO` | `VTSM_PGCI_UT` | **0xD0** | `0xC8` is `VTS_PTT_SRPT` |
+| `VIDEO_TS.IFO` | `VMGM_PGCI_UT` | **0xC8** | `0xC4` is `TT_SRPT` |
+
+Note that `0xC8` is correct in one file and wrong in the other. Reading `VIDEO_TS.IFO` at `0xD0`,
+or `VTS_nn_0.IFO` at `0xC8`, returns a number that looks like a menu-PGC count and is not.
+
+**And a LOW count still hides extras.** Nanny Series 1 counts just **2** menu PGCs per disc — an
+outlier low — yet Disc 1's single VTS menu PGC decodes to **nine distinct still pages**: a main
+menu, four scene indexes, a Special Features page, and printed-text pages for "Wendy Craig
+Filmography" and "A Brief History of the 1930s". One PGC is not one page. Those last two are real
+declared extras with **no linear playback** — menu-domain only, nothing to ship — and they must be
+written into the dispositions so their absence is never later read as a missed extra.
+
+The absence of a button is evidence too: Disc 2 has no Special Features button at all, which is
+exactly why it carries one fewer title than Disc 1. That explains the difference instead of merely
+observing it.
+
+Confirming the rule above from a third disc set: **every real menu page on these discs is 0.48 s** —
+the same duration this authoring house uses for black navigation padding. Duration identified
+nothing. Render.
