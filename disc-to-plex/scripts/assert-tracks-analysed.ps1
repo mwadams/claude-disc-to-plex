@@ -52,7 +52,30 @@ foreach ($it in $items) {
       -not ($it.PSObject.Properties.Name -contains 'audioDescription')) {
     $claimed = @($it.audioTracks)
     if ($claimed.Count -eq 1 -and [int]$claimed[0] -eq 0) {
-      $n = @(& $ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$($it.src)" 2>$null).Count
+      # PROBE A DVD THROUGH THE dvdvideo DEMUXER, NOT AS A FILE.
+      #
+      # For kind "DVD" the manifest's `src` is the FOLDER containing VIDEO_TS - that is the
+      # documented format. ffprobe cannot open a directory: it returns "Permission denied", the
+      # stream count comes back 0, the single-stream exemption cannot fire, and an ordinary DVD
+      # item claiming `audioTracks: [0]` is REFUSED for missing <src>.tracks.json - evidence that
+      # can never exist for a folder.
+      #
+      # The practical effect was worse than a spurious refusal: it pushed the manifest author to
+      # OMIT `audioTracks` entirely to dodge the gate (observed on the BBC Shakespeare batch,
+      # 2026-08-23). A guard that is cheaper to evade than to satisfy trains people to evade it,
+      # and the next omission will be one that mattered.
+      #
+      # transcode.ps1 reads these with `-f dvdvideo -title N`; probe them the same way.
+      $probeArgs = @('-v','error','-select_streams','a','-show_entries','stream=index','-of','csv=p=0')
+      if (Test-Path -LiteralPath "$($it.src)" -PathType Container) {
+        if ($null -eq $it.title) {
+          $problems += "$(Split-Path $out -Leaf): DVD src is a folder but no 'title' is set - required for kind DVD"
+          continue
+        }
+        $probeArgs += @('-f','dvdvideo','-title',"$($it.title)")
+      }
+      $probeArgs += @('-i',"$($it.src)")
+      $n = @(& $ffprobe @probeArgs 2>$null).Count
       if ($n -eq 1) { $trivial = $true }
     }
   }

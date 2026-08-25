@@ -287,6 +287,24 @@ track means rewriting a multi-GB mkv. `-Mode Mux` still exists — prefer the de
 The script gates its own output (cue-count floor, junk-fraction, English-content check) because
 `seconv` reports SUCCESS even when recognition has completely failed. Do not remove those gates.
 
+**Two systematic glyph errors are repaired before the gates run**, by `Repair-OcrGlyphs` in
+`lib-subtitles.ps1`: a capital `I` read as `|`, and the music note `♪` (U+266A), which Tesseract
+has no glyph for and reads as a capital `J` — so a sung cue ships as `J Fanfare`.
+
+The junk-fraction gate **cannot see the second one**: it counts lines under three characters or
+below 65% letters, and `J Fanfare` is mostly letters, so it scores as perfectly clean. A low junk
+percentage is therefore not evidence that music notes came through.
+
+Unlike the pipe, a lone `J` is not always wrong — initials exist. The discriminator is the full
+stop: an initial is written `J. Smith`, the mis-read note is a bare `J`, and OCR does not invent a
+period. All patterns are anchored to the ends of a line, so a `J` inside a word is never touched.
+`l`/`I` and `.`/`,` are deliberately left alone: they are genuinely ambiguous, and a wrong "fix"
+corrupts correct text, which is worse than a visible artefact.
+
+Sidecars written before these repairs existed are retro-fitted with `fix-srt-glyphs.ps1`, which
+shares the same function — two copies of the rules would drift, and the sweep would silently stop
+matching what new conversions produce.
+
 ### 6. Publish — immediately — then reclaim only when confirmed
 
 The user cannot confirm a unit is in Plex until it is *on* the NAS for Plex to scan, so holding the
@@ -407,7 +425,7 @@ Library-wide maintenance:
 | `audit-audio-tracks.ps1` | transcribe every audio track of every shipped film |
 | `survey-subtitles.ps1` | audit which items still carry bitmap-only subtitles |
 | `ocr-library-batch.ps1` | resumable OCR campaign over that audit |
-| `fix-srt-pipes.ps1` | repair the `\|`→`I` artefact in published sidecars |
+| `fix-srt-glyphs.ps1` | retro-fit the OCR glyph repairs (`\|`→`I`, `J`→`♪`) to existing sidecars |
 | `inventory-mp4s.ps1` | inventory every mp4 with copy date; flag broken stubs |
 
 ## References

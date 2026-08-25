@@ -193,8 +193,25 @@ def transcribe(model, src, track, offsets, dur):
             except Exception as exc:
                 failures.append('offset %ds: whisper failed: %s: %s'
                                 % (off, type(exc).__name__, exc))
-    if texts and not any(t for t in texts):
-        # Every offset transcribed cleanly and every transcript is blank: an EARNED emptiness
+    def _has_words(t):
+        # WHISPER ON MUSIC DOES NOT RETURN AN EMPTY STRING - IT RETURNS JUNK.
+        #
+        # The blank test below is right in principle and too literal in practice. On City Girl
+        # (1930, silent) whisper transcribed the orchestral score as "1.0% 2.0% 2.0% ..." - not
+        # empty, so status became 'ok', the score never became `music`, `silentFilm` stayed False,
+        # and primary election then picked the only reliably-spoken stream: THE COMMENTARY. The
+        # film's own score came out `commentary?` and the commentary came out `primary` - exactly
+        # inverted, and the manifest that described the disc correctly was refused by the gate.
+        #
+        # A transcript with no alphabetic run of two or more characters carries no words in any
+        # language whisper reports. Percentages, digits, stray punctuation and lone letters are
+        # not speech. (Two chars, not one: "I" and "a" are words but never appear alone across a
+        # whole sample, whereas OCR-ish noise is full of single characters.)
+        import re as _re
+        return bool(_re.search(r'[^\W\d_]{2,}', t or '', _re.UNICODE))
+
+    if texts and not any(_has_words(t) for t in texts):
+        # Every offset transcribed cleanly and none produced WORDS: an EARNED emptiness
         # (the caller separates score from phantom silence by measuring the audio level).
         status = 'no-speech'
     elif texts or langs:
@@ -283,7 +300,26 @@ def main():
 
     streams = probe_streams(src)
     if not streams:
-        print('no audio streams'); return 1
+        # NO AUDIO IS A FINDING, NOT A FAILURE.
+        #
+        # This returned 1, and the analyse loop treats a non-zero exit as "unexplained failure -
+        # record nothing, retry next pass". For a STILLS GALLERY, which by definition carries no
+        # audio, that is an infinite retry: five Back to the Future galleries were re-analysed
+        # every pass forever, starving the real work behind them. Exactly the shape the rip loop
+        # hit on the same titles, and the same shape as the OCR loop's exhausted-vs-retry lesson:
+        # a permanent condition must be recorded as settled, or it is retried until someone looks.
+        #
+        # Write the evidence file so the loop counts this as analysed, with an empty stream list
+        # and a proposal that ships no audio - which is the correct manifest for a gallery.
+        out = a.out or (src + '.tracks.json')
+        payload = {'src': src, 'duration': dur_total, 'offsets': offsets, 'streams': [],
+                   'proposal': {'audioTracks': [], 'audioLangs': []},
+                   'warnings': ['no audio streams on this title - nothing to analyse. Normal for a '
+                                'stills gallery or a silent extra; ship it with audioTracks: [].']}
+        with open(out, 'w', encoding='utf-8') as fh:
+            json.dump(payload, fh, indent=2, ensure_ascii=False)
+        print('no audio streams - recorded as a positive finding (audioTracks: [])')
+        return 0
     print(f'{len(streams)} audio stream(s), duration {dur_total:.0f}s, sampling at {offsets}\n')
 
     # --- redundancy FIRST: which tracks are the same content? --------------------------------
@@ -436,10 +472,40 @@ def main():
     # that actually carries RELIABLE speech; failing that, the first with any speech at all.
     # (Reliability preferred so one hallucinated word on a music track cannot outrank a clean
     # commentary transcript.)
+    # ELECT BY THE MOST-REPRESENTED LANGUAGE, NOT BY STREAM ORDER.
+    #
+    # This used to take the FIRST stream carrying reliable speech. On a foreign-market pressing
+    # that is the local dub: the Japanese Universal Blu-ray of Back to the Future puts jpn at a:0,
+    # so the reference for "is this a dub?" became Japanese, every English track differed from it,
+    # and BOTH genuine English commentaries were classified away. Worse, the Japanese dub matched
+    # the reference language, reached the commentary test, and came back `commentary?` - which the
+    # gate accepts. The disc could have shipped a dub labelled "Audio Commentary" while refusing
+    # the real ones.
+    #
+    # A disc's ORIGINAL language is the one it has most tracks in: the film, plus every commentary,
+    # plus any alternate mix, are all in it, while each dub appears once. Back to the Future's
+    # Japanese pressing carries eng x3 (film + two commentaries) against jpn x2 (5.1 and 2.0 dubs)
+    # - so English wins, which is correct. Ties break toward the most channels, since the feature
+    # mix is the fullest one on the disc.
+    #
+    # This is a heuristic about AUDIO LAYOUT only. It says nothing about the film's identity, which
+    # is settled from content elsewhere and by the Plex/TMDB match.
+    cand = [s for s in streams if s['role'] is None and s['langReliable'] and s['spokenLang']]
     primary = None
-    for s in streams:
-        if s['role'] is None and s['langReliable']:
-            primary = s; break
+    if cand:
+        counts = {}
+        for s in cand:
+            counts[s['spokenLang']] = counts.get(s['spokenLang'], 0) + 1
+        best = max(counts.values())
+        top = [l for l, n in counts.items() if n == best]
+        if len(top) > 1:
+            # tie: prefer the language owning the highest channel count on the disc
+            top.sort(key=lambda l: -max((s['channels'] or 0) for s in cand if s['spokenLang'] == l))
+        winner = top[0]
+        inLang = [s for s in cand if s['spokenLang'] == winner]
+        primary = max(inLang, key=lambda s: (s['channels'] or 0, -s['a']))
+        print(f"primary reference: a:{primary['a']} ({winner}) - "
+              f"{best} of {len(cand)} speech track(s) are {winner}")
     if primary is None:
         for s in streams:
             if s['role'] is None and s['spokenLang']:
@@ -464,6 +530,27 @@ def main():
             s['role'] = 'commentary' if len(COMMENTARY_HINTS.findall(text)) >= 2 else 'commentary?'
         elif s is primary:
             s['role'] = 'primary'
+        # COMMENTARY AND AD ARE TESTED BEFORE THE LANGUAGE-BASED DUB TEST.
+        #
+        # They used to come after, and on a foreign pressing that made a genuine commentary
+        # UNDETECTABLE. `primary` is elected as the first stream carrying reliable speech, which on
+        # a JAPANESE Back to the Future Blu-ray is the Japanese dub - so every English track
+        # differed from the "primary" language and was labelled `dub` by language alone, before
+        # COMMENTARY_HINTS was ever consulted. Both of that disc's real commentaries were refused
+        # by assert-tracks-analysed.ps1, and no re-run at any offset or model size could change it.
+        #
+        # The inverse was the dangerous half: a:6, the Japanese DUB, shared the elected primary's
+        # language, skipped the dub branch, reached this test with a garbled transcript scoring
+        # sim < 0.5, and came out `commentary?` - which the gate ACCEPTS. The evidence file would
+        # have waved through a manifest labelling a dub "Audio Commentary" while refusing the two
+        # real ones. That is the Thunderball failure with the sign flipped.
+        #
+        # Testing content first is safe: COMMENTARY_HINTS and AD_HINTS are English phrases, so a
+        # foreign-language dub scores no hits and still falls through to the dub branch below.
+        elif len(COMMENTARY_HINTS.findall(text)) >= 2 and sim < 0.5:
+            s['role'] = 'commentary'
+        elif len(AD_HINTS.findall(text)) >= 3 and sim >= 0.35:
+            s['role'] = 'audioDescription'
         elif s['langReliable'] and s['spokenLang'] != primaryLang:
             s['role'] = 'dub'
         elif not s['langReliable'] and s['langTag'] and not same_language(primaryLang, s['langTag']):
@@ -471,10 +558,6 @@ def main():
             # a foreign track and nothing contradicts it. Trust the tag ONLY in this direction -
             # it demotes a track out of the English set, it never promotes one into it.
             s['role'] = 'dub (per tag, speech not confirmed)'
-        elif len(COMMENTARY_HINTS.findall(text)) >= 2 and sim < 0.5:
-            s['role'] = 'commentary'
-        elif len(AD_HINTS.findall(text)) >= 3 and sim >= 0.35:
-            s['role'] = 'audioDescription'
         elif sim >= 0.5:
             # Same dialogue, not a bit-for-bit match: a genuinely different mix of the same audio -
             # typically the restored original mono alongside a 5.1 remix. Keep it, do not tag it

@@ -193,3 +193,40 @@ one context compaction away from being lost.
 
 Do NOT combine: galleries the disc already authors as one slideshow reel, and items with distinct
 identities (a trailer, a featurette) merely because they are short.
+
+## TV numbering: PROVE the scheme with one file before numbering a set
+
+Plex's own metadata provider can disagree with the numbering its EPISODE MATCHER uses, and the
+provider is the more visible source - so it is the easy way to get a whole box set wrong.
+
+**BBC Television Shakespeare, 2026-08-23.** Every accessible source said ONE season of 37 episodes:
+`watch.plex.tv/show/bbc-television-shakespeare` ("37 Episodes"), the provider API
+(`metadata.provider.plex.tv/library/metadata/<season>/children` → `totalSize 37`, a single season
+of index 1), and that list even named the right plays at the right flat positions - All's Well 15,
+Antony 18, Midsummer 21. Wikipedia's broadcast order agreed. The DISCS' OWN `mymovies.xml` agreed
+("Shakespeare Collection 15/18/21"). Four independent sources, all consistent, all useless: files
+named `S01E15` etc. landed as `local://` items titled "Episode 15", and
+`/library/metadata/<rk>/matches` returned ZERO candidates.
+
+TVDB divides the same series into **7 seasons**, and the server matches on that:
+`S03E03`, `S03E06`, `S04E03` matched instantly, with correct titles and `plex://episode/...` guids.
+
+The first three episodes already in the library (Romeo & Juliet, Richard II, As You Like It) were
+S01E01-03 under BOTH schemes, so they matched and proved nothing. **A set's early episodes often
+cannot discriminate between numbering schemes - the first file that CAN is the one to test.**
+
+### The rule
+
+Before numbering a multi-disc set, publish ONE episode whose position differs between the candidate
+schemes, scan, and read back its guid:
+
+    plex://episode/...   -> matched; the scheme is right
+    local://<ratingKey>  -> NOT matched; the scheme is wrong, whatever the metadata says
+
+Do that BEFORE the rest of the set is encoded. Fixing it afterwards means republishing every file
+under new names and handing the user a delete list for the originals, because a wrong name cannot
+be deleted from the NAS by this pipeline.
+
+`leafCount` on the server's season counts only what is PRESENT locally, so it never reveals the
+scheme. And do not trust a matched SHOW to imply matched EPISODES: the show matched correctly here
+the whole time.

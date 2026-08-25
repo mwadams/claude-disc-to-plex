@@ -270,3 +270,53 @@ function Resolve-TranscribeOutput {
   }
   return [pscustomobject]@{ Status = 'ok'; Text = $joined; Detail = '' }
 }
+
+function Repair-OcrGlyphs {
+  # Repair the two systematic Tesseract glyph errors on disc subtitles, in ONE definition used by
+  # both the live OCR pass (ocr-subtitles.ps1) and the retroactive sweep (fix-srt-glyphs.ps1).
+  # Duplicating them would rot: the two copies would drift and the sweep would stop matching what
+  # new conversions produce.
+  #
+  # Returns a hashtable: @{ Text = <repaired text>; Pipes = n; Notes = n }. The caller decides
+  # whether to write, so this function has no side effects and is trivially testable.
+  #
+  # PIPE -> I. "Ol! | was here before you!". Safe in one direction only: a pipe is essentially
+  # never legitimate in dialogue, while I is one of the commonest characters in English.
+  #
+  # J -> MUSIC NOTE (U+266A). Tesseract has no glyph for it and reads it as a capital J, so a sung
+  # cue ships as "J Fanfare". The OCR junk gate cannot see this - it counts lines under three
+  # characters or below 65% letters, and "J Fanfare" is mostly letters, so it scores as clean.
+  #
+  # Unlike the pipe, a lone J is NOT always wrong: initials exist. The discriminator is the FULL
+  # STOP - an initial is written "J. Smith", the mis-read note is a bare J, and OCR does not invent
+  # a period. All three patterns are anchored to the ends of a line, so a J inside a word is never
+  # touched. Doubled JJ is matched because some discs set the note at both ends.
+  #
+  # Deliberately NOT attempted: l/I and ./, are genuinely ambiguous, and a wrong "fix" corrupts
+  # correct text, which is worse than leaving a visible artefact.
+  param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+
+  $note  = [string][char]0x266A
+  $pipes = 0
+  $notes = 0
+  $out   = New-Object System.Collections.Generic.List[string]
+
+  foreach ($line in ($Text -split "`r?`n")) {
+    # never touch the index or the timing lines
+    if ($line -match '^\d+$' -or $line -match '-->') { $out.Add($line); continue }
+
+    $l = $line
+    $p = ([regex]::Matches($l, '\|')).Count
+    if ($p -gt 0) { $pipes += $p; $l = $l -replace '\|', 'I' }
+
+    # '^J{1,2}$' first - a line that is ONLY J needs no surrounding space, and it is the one form
+    # the junk gate does see, being under three characters.
+    foreach ($rx in @('^J{1,2}$', '^J{1,2}(?!\.)(?=\s)', '(?<=\s)J{1,2}$')) {
+      $h = ([regex]::Matches($l, $rx)).Count
+      if ($h -gt 0) { $notes += $h; $l = [regex]::Replace($l, $rx, $note) }
+    }
+    $out.Add($l)
+  }
+
+  return @{ Text = ($out -join "`r`n"); Pipes = $pipes; Notes = $notes }
+}

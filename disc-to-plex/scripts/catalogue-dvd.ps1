@@ -336,8 +336,32 @@ if ($all.Count -gt 0) {
 Remove-Item -LiteralPath $runScratch -Recurse -Force -ErrorAction SilentlyContinue
 
 # ---- 4. CATALOGUE ------------------------------------------------------------------------------
+# WAS THE COPY VERIFIED WHEN THIS RAN?
+#
+# catalogue-disc.ps1 stamps `sourceVerified` for Blu-rays, and assert-accounted.ps1 refuses a
+# catalogue swept from an unverified copy - because a short enumeration shifts TITLE NUMBERING and
+# makes every disposition point at the wrong title. That is not a theoretical risk: it produced a
+# 26-title catalogue of a 51-title disc on 2026-08-23.
+#
+# This script never stamped it. The gate tolerates an ABSENT field as "an older catalogue", so the
+# guard was silently INERT FOR EVERY DVD - and this library's remaining batch is mostly DVDs (the
+# BBC Shakespeare set, The Bill, The Saint). A guard that covers half the discs and says nothing
+# about the other half is worse than one that is known to be missing.
+#
+# _fetch-one.ps1 appends a unit to _fetch-done.txt only after matching file COUNT and BYTES against
+# the source, so presence there is the verification.
+$dvdSourceVerified = $false
+$fdList = @(Get-Content 'D:/video/_fetch-done.txt' -ErrorAction SilentlyContinue |
+            Where-Object { $_ -and $_.Trim() } | ForEach-Object { $_.Trim() })
+$dvdSourceVerified = ($fdList -contains $discName)
+if (-not $dvdSourceVerified) {
+  Write-Warning "$discName is NOT in _fetch-done.txt - the copy is unverified and may still be"
+  Write-Warning "copying. Title numbering from a short enumeration makes every disposition wrong."
+}
+
 $cat = [pscustomobject]@{
   disc = $discName; discPath = $Disc; discType = 'DVD'; minLength = $MinLength
+  sourceVerified = $dvdSourceVerified
   # NOT "+1": the offset is not a constant (Witness was +1, The Malta Story was +2 with no
   # dvdvideo title 1 at all). Each title's dvdvideoTitle field records its own duration-matched
   # mapping; a null there means no dvdvideo title matched and no evidence could be captured.

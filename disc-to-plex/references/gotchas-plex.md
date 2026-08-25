@@ -125,3 +125,30 @@ PUT /library/metadata/<rk>?type=4&title.value=<urlencoded>&title.locked=1
 Then read the season back and eyeball all of it against your own mapping. Do not skip this because
 some titles already look right — matching titles are coincidence, not confirmation.
 
+
+## A Season 00 item can be matched to a REAL special - and look right
+
+The known hazard is that Plex relabels Season 00 items from its own specials list by index. What is
+easy to miss is that the result is not always an obvious placeholder.
+
+Goodnight Sweetheart, 2026-08-25. Two interview featurettes were published as S00E01 and S00E02:
+
+    S00E01  unmatched  "Episode 1"                <- obviously wrong, guard catches it
+    S00E02  MATCHED    "Many Happy Returns"       <- WRONG, but looks completely right
+
+"Many Happy Returns" is a genuine Goodnight Sweetheart special. Plex matched our Christopher
+Ettridge INTERVIEW to it purely by index position, gave it a real title, a real summary and a real
+poster. Nothing about the item announces a fault: it is matched, it has metadata, it sorts correctly.
+
+**So "the Season 00 item is matched" is not evidence that it is right - it is the more dangerous
+state.** An unset title advertises the problem; a wrongly-matched one hides it.
+
+`audit-season00-titles.ps1` flags shows whose Season 00 titles are unlocked, and
+`fix-plex-extras.ps1` sets+locks the title from the FILENAME, clears the inherited summary and
+uploads a real frame as the poster. Run it after publishing ANY Season 00 item, whether or not the
+item appears matched:
+
+    pwsh -File fix-plex-extras.ps1 -Show "<show>" -MediaDir "<...>\Season 00"
+
+It takes the season number from the files in MediaDir, so point it at the SEASON folder, not the
+show root - the show root fails with "No SxxEyy-named .mkv files in MediaDir".

@@ -95,3 +95,36 @@ and the one track that differs, the commentary, ends up unlabelled among them.
 Treat it as a **prompt to check, never proof** — confirm with `identify-audio.py` before dropping
 anything, then fix by **remux** (stream copy, no re-encode, minutes not hours).
 
+
+## A DVD's IFO "commentary" flag is a TITLE-level lie - measure every episode
+
+On a multi-episode DVD title, the IFO can flag audio stream 0x81 as `(comment)`. ffmpeg reports
+that faithfully, so **every chapter range decoded from that title comes out labelled a commentary** -
+including the ones where the second stream is bit-for-bit identical to the programme audio.
+
+Goodnight Sweetheart, Series 1-6 (11 discs, 2026-08-25). Of **36 episodes carrying a second audio
+stream, only 10 were genuine commentaries.** The other 26 were exact duplicates of a:0. The flag
+belongs to the TITLE; the answer is per-EPISODE, and the flag is wrong far more often than right.
+
+Two discs (Series 2 Disk 2, Series 4 Disk 2) had **no second stream at all** - verified at
+`-probesize 500M`, only 0x80 present. The set's advertised commentaries do not extend to the second
+disk of those series. Both are second disks; every FIRST disk in series 2-6 carries the stream.
+
+### The test
+
+Whole-stream MD5 of the exact chapter range, one demux, two outputs:
+
+    ffmpeg -f dvdvideo -title 2 -chapter_start N -chapter_end M -i "<disc>" -map 0:a:0 -f md5 -
+    ffmpeg -f dvdvideo -title 2 -chapter_start N -chapter_end M -i "<disc>" -map 0:a:1 -f md5 -
+
+Identical -> a duplicate, do NOT ship and do NOT claim `commentary`. Different -> transcribe it and
+confirm it is people DISCUSSING the show rather than an alternate mix, then name the speakers from
+what you hear.
+
+**Spot-sampling is not enough for an "identical" verdict**, because that verdict is what causes a
+track to be dropped. Confirm those with the whole stream. Validate the method in both directions
+first - it should return DIFF on a disc known to carry real commentaries.
+
+The same shape appears wherever one DVD title holds many episodes: a per-title flag cannot describe
+a per-episode fact, and the pipeline's `.tracks.json` evidence has the same limitation - it is
+per-SOURCE, so for chapter-split episodes the MD5 table is the evidence, not the tracks.json.

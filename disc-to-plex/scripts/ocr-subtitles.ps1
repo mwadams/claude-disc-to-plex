@@ -80,6 +80,17 @@ if (-not (Get-Command Assert-TrackOwner -ErrorAction SilentlyContinue)) {
 }
 Assert-TrackOwner -Track OCR -Manual:$Manual
 
+# Repair-OcrGlyphs lives here, shared with the retroactive sweep fix-srt-glyphs.ps1. Verify the
+# load the same way as the guard above: a dot-source of a bad path raises a NON-TERMINATING error,
+# so the function would simply be undefined, the call would add one more error to the stream, and
+# the script would publish UNREPAIRED text while reporting success.
+$subsLib = "$PSScriptRoot/lib-subtitles.ps1"   # DOUBLE quotes so $PSScriptRoot expands
+if (-not (Test-Path -LiteralPath $subsLib)) { throw "subtitle library missing: $subsLib" }
+. $subsLib
+if (-not (Get-Command Repair-OcrGlyphs -ErrorAction SilentlyContinue)) {
+  throw 'lib-subtitles.ps1 failed to load - refusing to run without the OCR glyph repairs'
+}
+
 
 $ErrorActionPreference = 'Stop'
 $paths = Get-Content (Join-Path $ToolsDir 'tool-paths.json') -Raw | ConvertFrom-Json
@@ -498,22 +509,20 @@ foreach ($f in $targets) {
 
     # ---- SYSTEMATIC OCR REPAIR (before the gates, so they judge the shipped text)
     #
-    # The single commonest error on these discs is a capital I read as a pipe: "Ol! | was here
-    # before you!". The substitution is safe in one direction only - a pipe is essentially never
-    # legitimate in dialogue, whereas I is one of the commonest characters in English - so this is
-    # a rare case where a blanket replacement is right.
+    # Two systematic Tesseract glyph errors are repaired here: a capital I read as a pipe
+    # ("Ol! | was here before you!"), and the music note U+266A read as a capital J
+    # ("J Fanfare"). The reasoning for each substitution, and for the ones deliberately NOT
+    # attempted, lives with the function in lib-subtitles.ps1.
     #
-    # Deliberately NOT doing the same for l/I or ./, : those are genuinely ambiguous and a wrong
-    # "fix" would corrupt correct text, which is worse than leaving a visible artefact.
-    $text = Get-Content $srt -Raw
-    $pipes = ([regex]::Matches($text, '\|')).Count
-    if ($pipes -gt 0) {
-      # only inside cue text - never touch the index or the --> timing lines
-      $fixed = ($text -split "`r?`n" | ForEach-Object {
-        if ($_ -match '^\d+$' -or $_ -match '-->') { $_ } else { $_ -replace '\|', 'I' }
-      }) -join "`r`n"
-      Set-Content -LiteralPath $srt -Value $fixed -Encoding UTF8
-      Write-Host ("  repaired {0} pipe->I substitution(s)" -f $pipes)
+    # It is defined THERE rather than inline because the retroactive sweep (fix-srt-glyphs.ps1)
+    # applies exactly the same repairs to already-published sidecars. Two copies would drift, and
+    # the sweep would silently stop matching what new conversions produce.
+    $before = Get-Content $srt -Raw
+    $rep    = Repair-OcrGlyphs -Text $before
+    if ($rep.Pipes -gt 0 -or $rep.Notes -gt 0) {
+      Set-Content -LiteralPath $srt -Value $rep.Text -Encoding UTF8
+      if ($rep.Pipes -gt 0) { Write-Host ("  repaired {0} pipe->I substitution(s)" -f $rep.Pipes) }
+      if ($rep.Notes -gt 0) { Write-Host ("  repaired {0} music-note substitution(s)" -f $rep.Notes) }
     }
 
     # ---- QUALITY GATES. A bad OCR is worse than blocky subtitles, and seconv reports success

@@ -71,7 +71,27 @@ $fp = Join-Path (Split-Path $ff) 'ffprobe.exe'    # our ffprobe (has dvdvideo de
 # the first lane's .sup mid-run and ffmpeg dies with "Error opening input file ... _fixed.sup"
 # about a second in. Keyed by PID so lanes cannot collide.
 $work = Join-Path $ToolsDir ("work\pid$PID"); New-Item -ItemType Directory -Force $work | Out-Null
-$items = Get-Content $Manifest -Raw | ConvertFrom-Json
+# A MISSING OR EMPTY MANIFEST MUST NOT REPORT SUCCESS.
+#
+# This was `$items = Get-Content $Manifest -Raw | ConvertFrom-Json` with nothing checking it. Given
+# a path that does not exist, Get-Content raised a NON-TERMINATING error, $items came back empty,
+# the encode loop ran zero times, and the script printed "MANIFEST DONE" and exited 0. lane-runner
+# treats that as a completed encode and moves the manifest to _queue/done - so a typo in a path
+# would silently mark work finished that was never attempted.
+#
+# Observed 2026-08-23 while testing something else, which is the only reason it was noticed at all.
+# Same family as the gate that errored and let a manifest through: a step that cannot fail loudly
+# will eventually fail silently.
+if(-not (Test-Path -LiteralPath $Manifest)){
+  Write-Output "*** MANIFEST NOT FOUND: $Manifest ***"
+  exit 2
+}
+$items = Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json
+if($null -eq $items -or @($items).Count -eq 0){
+  Write-Output "*** MANIFEST IS EMPTY OR NOT VALID JSON: $Manifest ***"
+  Write-Output "    A manifest with no items is never intentional - refusing rather than reporting DONE."
+  exit 2
+}
 
 # ---------------------------------------------------------------------------------------------
 # PREFLIGHT: a BD item reading a RAW .m2ts is only safe if no playlist extends that stream.
@@ -242,6 +262,61 @@ if($sdKind){
   exit 2
 }
 
+# ---------------------------------------------------------------------------------------------
+# PREFLIGHT: an SD source whose DECLARED aspect is neither 4:3 nor 16:9.
+#
+# Get-DAR preserves whatever the source declares, which is correct - until the source declares
+# nothing. A MakeMKV rip of an SD extra often carries sample_aspect_ratio 1:1, so the computed
+# display aspect is simply width/height: 720x480 -> 3:2. Encoding that faithfully ships a
+# horizontally STRETCHED picture, and nothing downstream notices, because the file is valid,
+# the duration is right and the checksum matches. The user spotted it by eye on 2026-08-24.
+#
+# 4:3 IS NOT ASSUMED. On the very disc that exposed this, SIX of the seven SD extras declared a
+# proper NTSC anamorphic 109:90 (DAR ~1.82, i.e. 16:9) and only ONE was broken - so silently
+# forcing 4:3 would have squashed six correct files. This project has hard-coded 4:3 before and
+# paid for it.
+#
+# So: refuse, name the items, and require the author to LOOK at a frame and state `dar`.
+# Real SD material is 4:3 (1.333) or 16:9 (1.778); anything else is a missing flag, not a format.
+$badDar = @()
+foreach($it in $items){
+  if("$($it.kind)" -notin @('DVD','MKV')){ continue }
+  # NOT `Has $it 'dar'` - this preflight runs at line ~284 and Has is not defined until ~316.
+  # PowerShell resolves functions at CALL time, so the call threw and every item fell through the
+  # `continue`, making the guard fire even on items that DID declare an aspect. The other
+  # preflights use direct property access for the same reason.
+  if($it.PSObject.Properties.Name -contains 'dar' -and "$($it.dar)" -ne ''){ continue }
+  $sp = "$($it.src)"
+  if(-not (Test-Path -LiteralPath $sp -PathType Leaf)){ continue }   # DVD folders: read via the demuxer elsewhere
+  $g = (& $fp -v error -select_streams v:0 -show_entries stream=width,height,display_aspect_ratio -of csv=p=0 $sp 2>$null) -split ','
+  if($g.Count -lt 3){ continue }
+  $w=[int]$g[0]; $h=[int]$g[1]; $darTxt="$($g[2])".Trim()
+  if($h -gt 576){ continue }                        # HD: the BD path handles it
+  $parts = $darTxt -split ':'
+  if($parts.Count -ne 2 -or [double]$parts[1] -eq 0){ continue }
+  $ratio = [double]$parts[0] / [double]$parts[1]
+  $is43  = [Math]::Abs($ratio - (4.0/3.0)) -le 0.05
+  $is169 = [Math]::Abs($ratio - (16.0/9.0)) -le 0.06
+  if(-not ($is43 -or $is169)){
+    $badDar += [pscustomobject]@{ Out=Split-Path $it.out -Leaf; Res="${w}x${h}"; Declared=$darTxt; Ratio=[Math]::Round($ratio,3) }
+  }
+}
+if($badDar){
+  Write-Output ''
+  Write-Output '*** PREFLIGHT ABORT: SD source declares an aspect that is neither 4:3 nor 16:9 ***'
+  $badDar | Format-Table -AutoSize | Out-String | Write-Output
+  Write-Output 'That is a MISSING aspect flag, not a real format - the rip carries sample_aspect_ratio 1:1'
+  Write-Output 'so the DAR is just width/height. Encoding it ships a stretched picture that passes every'
+  Write-Output 'other check: valid file, correct duration, matching bytes.'
+  Write-Output ''
+  Write-Output 'LOOK AT A FRAME, then state the aspect explicitly on those items, e.g. "dar": "4:3":'
+  Write-Output '  ffmpeg -ss 380 -i "<src>" -vf "yadif,scale=640:480" -frames:v 1 f43.png   # 4:3'
+  Write-Output '  ffmpeg -ss 380 -i "<src>" -vf "yadif,scale=854:480" -frames:v 1 f169.png  # 16:9'
+  Write-Output 'Faces are the giveaway. Do NOT assume 4:3 - on Back to the Future six of seven SD extras'
+  Write-Output 'were genuinely 16:9 and only one was broken.'
+  exit 2
+}
+
 function Has($o,$n){ $o.PSObject.Properties.Name -contains $n -and $null -ne $o.$n -and "$($o.$n)" -ne '' }
 function InSpec($it,[switch]$Hwaccel){   # ffmpeg/ffprobe input args (demuxer + -i) for this item
   # -hwaccel cuda decodes on the GPU and hands frames back in system memory, so the crop/bwdif
@@ -345,7 +420,23 @@ foreach($it in $items){
   $i++
   Write-Output ("[{0}/{1}] {2}  ({3})" -f $i,$items.Count,(Split-Path $it.out -Leaf),$it.kind)
   New-Item -ItemType Directory -Force (Split-Path $it.out) | Out-Null
-  if((Test-Path $it.out) -and ((Get-Item $it.out).Length -gt 5MB)){ Write-Output "   skip (exists)"; continue }
+  # RESUME ONLY ON A FINALISED FILE. "exists and over 5 MB" is not "finished".
+  #
+  # An encode that dies part-way - a killed process, a crash, a reboot, a full volume - leaves a
+  # large mkv with NO duration in its header. Skipping on size alone then treats that truncated
+  # file as complete: it is never re-encoded, and publish-work.ps1 is the only thing standing
+  # between it and the NAS. On 2026-08-24 a 158 MB unfinalised "Michael J. Fox Interview.mkv"
+  # was produced exactly this way and would have been skipped as done on the next pass.
+  #
+  # A finalised Matroska reports a duration; a truncated one reports N/A. That is the check.
+  # (Same defect, same fix, as _rip-loop.ps1's "a file existing is not a completed rip".)
+  if((Test-Path $it.out) -and ((Get-Item $it.out).Length -gt 5MB)){
+    $od = "$(& $fp -v error -show_entries format=duration -of csv=p=0 $it.out 2>$null)".Trim()
+    $odv = 0.0; [void][double]::TryParse($od, [ref]$odv)
+    if($odv -gt 0){ Write-Output "   skip (exists)"; continue }
+    Write-Output "   existing output is UNFINALISED (no duration) - re-encoding it"
+    Remove-Item -LiteralPath $it.out -Force -ErrorAction SilentlyContinue
+  }
 
   $inspec = InSpec $it                       # probes: software decode, they only read headers
   $encspec = InSpec $it -Hwaccel             # the encode: GPU decode where the source allows it
@@ -455,6 +546,30 @@ foreach($it in $items){
 
   # --- video filter + optional PGS subtitle repositioning (BD crop) ---
   $subInput = $null; $crop = $null
+
+  # STILLS GALLERY: re-time, do not copy.
+  #
+  # A Blu-ray gallery is a handful of full-resolution frames that the PLAYER holds on screen for
+  # several seconds each. The video stream is therefore a fraction of the playlist's duration -
+  # Back to the Future t13 is 26 frames spanning 1.08 seconds against a declared 125s. Encoded
+  # as-is it ships an "extra" that flashes past in a second and looks broken.
+  #
+  # `declared duration / frame count` recovers the author's display time exactly. Measured across
+  # that disc's five galleries: 4.8, 4.9, 4.9, 4.9, 4.9 seconds per still. Set `stillsHold` to it;
+  # _rip-loop.ps1 prints the value when it identifies a gallery.
+  #
+  #   setpts=N*HOLD/TB   spaces every frame HOLD seconds apart
+  #   fps=24             fills the gaps so the result is a normal CFR video Plex can seek
+  #
+  # Applied INSTEAD of crop/deinterlace: a gallery is progressive full-frame artwork, and
+  # cropdetect on a black-bordered still would eat the picture.
+  if($it.stillsHold){
+    $hold = [double]$it.stillsHold
+    if($hold -le 0){ throw "stillsHold must be > 0 on $($it.out)" }
+    $vf = "setpts=N*$hold/TB,fps=24"
+    Write-Output ("   STILLS GALLERY - holding each frame {0:N1}s (setpts+fps)" -f $hold)
+  }
+  if(-not $it.stillsHold){
   if($it.kind -in @('DVD','MKV')){ $vf = 'bwdif=mode=send_frame' }   # SD interlaced source (DVD demuxer OR a MakeMKV-ripped .mkv): deinterlace only; aspect set via -aspect below (preserve source DAR)
   else {
     if($it.crop -eq 'auto'){ $crop = Get-Crop $it.src; $vf = "crop=$crop"; Write-Output "   crop=$crop (auto)" }
@@ -521,6 +636,8 @@ foreach($it in $items){
     $a += @('-copyts','-start_at_zero')
   }
 
+  }   # end: not a stills gallery - the ffmpeg ARG ASSEMBLY below runs for both paths
+
   # --- stream maps ---
   $a += @('-map','0:v:0')
   $aacIdx = 0
@@ -534,7 +651,22 @@ foreach($it in $items){
   # --- video codec ---
   if($vf){ $a += @('-vf',$vf) }
   $a += @('-c:v','h264_nvenc','-preset','medium','-rc','vbr','-cq','20','-b:v','0','-pix_fmt','yuv420p')
-  if($it.kind -in @('DVD','MKV')){ $a += @('-aspect',(Get-DAR $inspec)) } else { $a += @('-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-color_range','tv') }
+  # `dar` OVERRIDES THE SOURCE'S DECLARED ASPECT - because the source can be wrong.
+  #
+  # Get-DAR preserves what the source declares, which is right when the source declares anything
+  # meaningful. A MakeMKV rip of an SD extra often does NOT: Back to the Future's 720x480 extras
+  # come back sample_aspect_ratio 1:1, so the computed DAR is 720/480 = 3:2, and encoding that
+  # faithfully ships a horizontally STRETCHED picture. Verified by eye against a talking-head
+  # frame - at 4:3 the face is correctly proportioned, at 3:2 it is visibly wide.
+  #
+  # 4:3 is NOT assumed here: this project has SD extras that are genuinely 16:9, and hard-coding
+  # 4:3 has caused its own damage. The manifest author states `dar` per item, from LOOKING at a
+  # frame. Absent the field, behaviour is unchanged.
+  if($it.kind -in @('DVD','MKV')){
+    $dar = if(Has $it 'dar'){ "$($it.dar)" } else { Get-DAR $inspec }
+    if(Has $it 'dar'){ Write-Output "   DAR $dar (explicit; source declares $(Get-DAR $inspec))" }
+    $a += @('-aspect',$dar)
+  } else { $a += @('-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-color_range','tv') }
 
   # --- audio codecs ---
   # Audio-Lang reads the SOURCE tag and falls back to 'eng' when a stream is untagged. Blu-ray

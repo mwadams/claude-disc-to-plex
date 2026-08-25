@@ -310,3 +310,26 @@ frames, dialogue, or commentary that names the episode.
 
 If the show itself is matched to the wrong thing, `GET /library/metadata/<ratingKey>/matches?manual=1`
 is the API behind the UI's "Fix Match" dialog — candidates with guids and scores.
+
+## Blu-ray BD-J menus: the JAR carries the extras list
+
+`BDMV/JAR/00000.jar` on a BD-J disc contains the menu classes, and their **button asset ids** name
+the extras the menu offers. On Back to the Future Part II the classes enumerated the pages
+directly: 7 deleted scenes plus a play-all, 5 galleries, 2 archival items, 8 Behind-the-Scenes
+buttons. The deleted-scene ids were `oldtb, dads, pizza, jennifer, oldcar, burnedout, marty`.
+
+This answers questions the streams cannot: which titles the disc considers extras, how they group,
+and which play-all owns which components - without ripping anything.
+
+**Validate it before leaning on it.** Those seven ids were matched one-for-one against the seven
+on-screen white-on-black scene cards read from the rips. Only after that agreement was the
+technique used for anything not otherwise evidenced. An id is a HINT about authoring, not a
+reading of content.
+
+**Expect ids without streams.** That disc's Behind-the-Scenes page had 8 buttons over 7 streams:
+the 8th, `photo`, cross-links to the galleries page. A button count is not a title count.
+
+**Ids are not titles.** They are short slugs (`makingTril`, `time`, `hoverboard`) and the visible
+labels are rendered from font glyphs, not stored as text - so a menu asset id can tell you a title
+EXISTS and roughly what it covers, but it cannot give you the name to ship. Where the name matters
+and no card states it, mark the item uncertain rather than expanding a slug into a plausible title.
