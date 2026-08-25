@@ -139,7 +139,39 @@ foreach ($u in $units) {
   $mentioned = @(Get-ChildItem $manifestDirs -ErrorAction SilentlyContinue |
                  Where-Object { (Get-Content -LiteralPath $_.FullName -Raw) -match $pathRx })
   if ($mentioned.Count -eq 0) {
-    $stalls += "{0,-28} needs MANIFEST     -> author one and drop it in _queue" -f $name
+    # A RIP FOLDER THAT NO MANIFEST READS IS REDUNDANT, NOT UNFINISHED.
+    #
+    # On Blu-ray the manifest reads the rip, so an unreferenced rip really is work waiting. On DVD
+    # the manifest usually reads the DISC directly (`src` = the folder, plus a title number) - yet
+    # dispositioning a title as `extra` makes _rip-loop.ps1 rip it anyway, producing an
+    # intermediate nothing ever opens. Nanny S1 D1's picture gallery did exactly that: 1 file
+    # ripped, and the manifest reads title 6 off the disc.
+    #
+    # Reporting that as "needs MANIFEST" sends the operator to author a manifest for a folder that
+    # should simply be released with its disc. Say which it is.
+    if ($isRip) {
+      $moving += "{0,-28} redundant rip - no manifest reads it; release it with its disc" -f $name
+      continue
+    }
+
+    # AND THE MIRROR CASE: a Blu-ray DISC whose manifest reads its RIP, not the disc. `M` reported
+    # "needs MANIFEST" while `m.json` sat in _manifests pointing at `_stage/m-rip` - the disc is
+    # not waiting on anyone, the rip is carrying it. The rip folder is the unit name with every
+    # non-alphanumeric character dropped, which is how _rip-loop.ps1 names it (and how
+    # _release-completed.ps1 finds it again).
+    $slug = ($name -replace '[^A-Za-z0-9]', '').ToLowerInvariant()
+    $viaRip = @(Get-ChildItem $manifestDirs -ErrorAction SilentlyContinue | Where-Object {
+      $raw = Get-Content -LiteralPath $_.FullName -Raw
+      foreach ($sfx in @('-rip', '-x', '-main', '-mkv')) {
+        if ($raw -match ('_stage[\\/]' + [regex]::Escape($slug + $sfx) + '(?=["\\/])')) { return $true }
+      }
+      $false
+    })
+    if ($viaRip.Count -gt 0) {
+      $moving += "{0,-28} its RIP carries the manifest ({1})" -f $name, (($viaRip.Name) -join ', ')
+    } else {
+      $stalls += "{0,-28} needs MANIFEST     -> author one and drop it in _queue" -f $name
+    }
     continue
   }
   # A MANIFEST FILE EXISTING IS NOT THE SAME AS IT BEING QUEUED.
