@@ -269,3 +269,22 @@ So identify the play from its TEXT — match the opening and closing speeches to
 treat the part card as a label whose grammar is ambiguous. `transcode.ps1`'s DVD path takes exactly
 one 1-based title and has no concat form, so two titles means two files; stacking is how they
 become one episode.
+
+## An EDITION belongs inside the film's folder, not in one of its own
+
+Plex reads `{edition-...}` as a variant of the film it sits beside. Put it in the film's folder:
+
+```
+Movies/M (1931)/M (1931).mkv
+Movies/M (1931)/M (1931) {edition-English-Language Version}.mkv      <- correct
+Movies/M (1931)/Interviews/Zum Beispiel Fritz Lang (1968).mkv
+```
+
+Giving the edition its own work folder — `Movies/M (1931) {edition-English-Language Version}/…` —
+makes Plex index **a second, separate movie**. It happened on 2026-08-26: the manifest's `out` put
+it there, `transcode.ps1` created the folder as instructed, and the publish loop treated it as its
+own work and shipped it before anyone looked. The local side is a one-line move; the published copy
+has to be handed to the user, because only they can clear the published library.
+
+**Check the `out` DIRECTORIES when authoring a manifest, not just the filenames.** Every filename
+here was correct — only the folder was wrong, and a filename-level review sails straight past that.
