@@ -593,6 +593,42 @@ def main():
         else:
             s['role'] = 'commentary?'
 
+    # CONFIRM EVERY `dub` WITH MORE EVIDENCE, BECAUSE `dub` MEANS DISCARD.
+    #
+    # Two 30-second windows (35% and 60% of runtime) decide every role here. That is ample for a
+    # KEEP decision - a wrong keep is visible in the library. It is not ample for a DROP: a
+    # commentary that happens not to say "the film", "the director" or "the scene" in either window
+    # scores under the two-hint threshold, differs in language from the primary, and is silently
+    # written off as a foreign dub.
+    #
+    # That is exactly what happened to Eureka's M (1931). Its first commentary sampled as
+    # "...rendered cinematically in Uli Lomo's film of the early 70s..." - which reads as
+    # commentary to a human but trips no hint, because the regex wants "the film", not "Lomo's
+    # film". It was labelled `dub` and dropped, while the second commentary - which did say the
+    # magic words - was kept.
+    #
+    # So re-sample the dubs, and only the dubs, at three fresh offsets. The cost is bounded (dubs
+    # are few) and it is spent exactly where a mistake destroys content rather than merely
+    # embarrassing us. A real foreign dub gains nothing from more English samples and stays a dub.
+    suspects = [s for s in streams if s['role'] == 'dub']
+    if suspects:
+        extra = [int(dur_total * f) for f in (0.15, 0.5, 0.8)]
+        print(f'\nconfirming {len(suspects)} `dub` classification(s) at offsets {extra} - '
+              f'a drop needs more evidence than a keep:')
+        for s in suspects:
+            lang2, prob2, texts2, agreed2, status2 = transcribe(model, src, s['a'], extra, a.dur)
+            merged = ' '.join(s['samples'] + list(texts2))
+            hits = len(COMMENTARY_HINTS.findall(merged))
+            if hits >= 2:
+                s['role'] = 'commentary'
+                s['samples'] = s['samples'] + list(texts2)
+                s['reclassifiedOnResample'] = True
+                print(f"  a:{s['a']} -> COMMENTARY after all ({hits} hint(s) across "
+                      f"{len(s['samples'])} samples) - it was about to be dropped")
+            else:
+                print(f"  a:{s['a']} stays `dub` ({hits} hint(s) across "
+                      f"{len(s['samples']) + len(texts2)} samples)")
+
     print('\nroles:')
     for s in streams:
         print(f"  a:{s['a']} {s['role']:17} sim={s['similarityToPrimary']:.2f}"
