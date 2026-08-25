@@ -333,3 +333,53 @@ the 8th, `photo`, cross-links to the galleries page. A button count is not a tit
 labels are rendered from font glyphs, not stored as text - so a menu asset id can tell you a title
 EXISTS and roughly what it covers, but it cannot give you the name to ship. Where the name matters
 and no card states it, mark the item uncertain rather than expanding a slug into a plausible title.
+
+## DVD menu domain: count the menu PGCs to find an extra that has no title
+
+A packaging list can name an extra that no title on the disc holds, because on DVD an extra can
+live entirely in the **menu domain** — built from menu PGCs, with the interactivity *as* the
+content. It has no linear playback, the demuxer never exposes it, and no amount of title
+enumeration will find it. Left unexplained it reads forever as a missed extra.
+
+The Grange Hill "Series 3 & 4" box declares a **Grange Hill Quiz** that appears on none of its six
+discs by title. Counting menu PGCs found it immediately:
+
+| disc | menu PGCs |
+|---|---|
+| S3 D2 | 12 |
+| S3 D3 | 10 |
+| S4 D1 | 12 |
+| S4 D2 | 12 |
+| **S4 D3** | **65** |
+
+The 53 extra PGCs render as one subject page, **40 multiple-choice question stills** (A–D + Exit),
+**6 "YOU ACHIEVED GRADE" cards A–F**, and 6 non-rendering navigation PGCs — matching the sleeve's
+"Grange Hill boffin or dunce?" exactly. The demuxer exposes 8 titles on that disc and refuses a
+ninth, so nothing ships; the finding is that there is correctly nothing to ship.
+
+**Read `VTSM_PGCI_UT` at offset `0xD0` of `VTS_nn_0.IFO`.** Offset `0xC8` is `VTS_PTT_SRPT` and
+yields garbage — an easy off-by-one that produces plausible nonsense rather than an obvious error.
+
+**Menu VOB SIZE tells you nothing.** `VTS_02_0.VOB` runs 185–197 MB on every disc in that box,
+quiz or not. A big menu VOB is not evidence of a hidden extra, and a small one is not evidence
+against.
+
+**A packaging claim is a lead, not an answer — and neither is a first reading of it.** The same
+investigation first concluded from the back cover ("Take the quiz to find out! / www.grangehill.com")
+that the quiz was a *website*, and wrote that into two dispositions files. The PGC count overturned
+it and both were corrected and re-gated. Read the disc, not the box.
+
+## Episode numbers printed on screen — check for them before doing harder work
+
+Some series caption the episode number in the lower third of the opening titles. Grange Hill
+Series 4 does, at roughly 33–38 s, just after the "GRANGE HILL / BY <writer>" card — legible on
+every head strip, and decisive on its own. **Series 3 of the same show, in the same box, does not.**
+So check each series rather than concluding from one that the show either has them or does not.
+
+Where they exist they beat every indirect method. Where they do not, the writer card is a real test
+rather than a tautology: a clean writer-block sequence (e.g. two Sandy Welch cards at positions 3
+and 5, two Margaret Simpson cards bracketed by Alan Janes) is broken by any one-slot shift, so it
+positively rules a shift out instead of merely failing to detect one. Beware that published writer
+credits disagree with the cards — Wikipedia credited two co-written Grange Hill episodes to the
+series creator alone, and named a co-writer the card omits. The card states what the programme
+says; the credit list is a secondary source.
