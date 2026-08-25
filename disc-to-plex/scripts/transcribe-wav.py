@@ -28,7 +28,28 @@ def main():
         return 0
     try:
         from faster_whisper import WhisperModel
-        model = WhisperModel('base', device='cpu', compute_type='int8')
+        # cpu_threads=1 IS THE FAST SETTING. This is not a typo and not a throttle.
+        #
+        # Without it, ctranslate2 spreads this tiny int8 model across every logical core and
+        # thrashes on synchronisation: the worker sits at ~4% of ONE core with 29 threads, blocked
+        # rather than computing. That is what made a catalogue sweep take 2h15m for eight titles,
+        # and 43 minutes for a single 90-second sample.
+        #
+        # Measured A/B on a 90 s sample, all five arms back to back under representative pipeline
+        # load (two encode lanes, the OCR loop, a live sweep) - 2026-08-25:
+        #
+        #     default (all 20 cores)   load 15.0s   transcribe 246.9s
+        #     cpu_threads=1            load  3.9s   transcribe  54.1s   <- 4.6x faster
+        #     cpu_threads=2            load  4.0s   transcribe 131.5s
+        #     cpu_threads=4            load  4.0s   transcribe 131.3s
+        #     cpu_threads=8            load  3.9s   transcribe 202.0s
+        #
+        # Monotonically worse with more threads, and EVERY arm returned identical text (1116 chars,
+        # language en) - so there is no accuracy cost to weigh. The default is simply the worst
+        # available setting on a many-core box.
+        #
+        # If you ever raise this, re-measure. Do not raise it because a bigger number looks faster.
+        model = WhisperModel('base', device='cpu', compute_type='int8', cpu_threads=1)
         segs, info = model.transcribe(sys.argv[1], beam_size=1)
         text = ' '.join(s.text for s in segs).strip()
         if text:
