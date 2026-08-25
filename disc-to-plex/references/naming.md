@@ -230,3 +230,42 @@ be deleted from the NAS by this pipeline.
 `leafCount` on the server's season counts only what is PRESENT locally, so it never reveals the
 scheme. And do not trust a matched SHOW to imply matched EPISODES: the show matched correctly here
 the whole time.
+
+## One episode split across TWO files — stack it, don't invent an episode number
+
+The inverse of the combined-episode case above. A disc sometimes carries a single episode as two
+titles, because the programme was authored in two parts. **BBC Television Shakespeare's Henry VI
+Part One** is one 188-minute episode (`S05E03`) held as two titles of 89:14 and 97:50.
+
+Name them as Plex stack parts under ONE episode number:
+
+```
+BBC Television Shakespeare - S05E03 - The First Part of Henry the Sixt - pt1.mkv
+BBC Television Shakespeare - S05E03 - The First Part of Henry the Sixt - pt2.mkv
+```
+
+**Verified on this server, not assumed** — after publishing, the episode read back as a single
+matched item with `plex://episode/...` and **two parts**:
+
+```
+S05E03  The First Part of Henry the Sixt   MATCHED   parts=2
+```
+
+Check `parts` explicitly. Two files landing as two episodes, or as one episode with a missing
+sibling, both look plausible in a folder listing and are only visible in the read-back. It is a
+rename to fix, not a re-encode — but only if you look.
+
+**Do NOT give the second half its own episode number.** That would shift every later episode in the
+season by one, which is the same off-by-one this file warns about from the other direction.
+
+### The disc's own part card can name the wrong PLAY
+
+Henry VI Part One's second title carries the card **"The Second Part of / Henry The Sixt / Part I"**
+— which reads as *2 Henry VI* and is not. It means "the second part of the programme *Henry the
+Sixt Part I*". The content settled it: title 3 runs I.i to the end of III.i, title 4 picks up at
+III.ii ("the gates of Rouen") and ends at V.v, and the two sum to 187.1 min against a canonical 188.
+
+So identify the play from its TEXT — match the opening and closing speeches to act and scene — and
+treat the part card as a label whose grammar is ambiguous. `transcode.ps1`'s DVD path takes exactly
+one 1-based title and has no concat form, so two titles means two files; stacking is how they
+become one episode.
