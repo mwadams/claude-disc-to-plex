@@ -648,3 +648,44 @@ one on disc five — and `mymovies.xml`'s per-disc tables corroborate with match
 So before treating a declared extra as missing, check whether the packaging says which disc holds
 it. Record that in the dispositions, so a later reader does not re-open the question or conclude the
 rip dropped something.
+
+### Placing an episode inside a 900-episode series: fetch EVERY row and search it
+
+*Crown Court – A Place to Stay* had to be placed in a Granada series that ran 1972–1984. Guessing a
+season was not an option, and no search endpoint answers "which episode is called X".
+
+What worked: fetch **all 894 episode rows** from the provider tree, verify the fetch is complete by
+checking the season `leafCount`s sum to the total, then search the rows. `"A Place To Stay"` occurred
+**exactly once** — `S1977E55/56/57` — and the only near-misses (*Meeting Place*, S1978E04–06) were
+visibly different. A single exact hit in a complete set is a much stronger result than a search
+engine's top match.
+
+**Seasons in that tree are indexed BY YEAR**, so the files are `S1977E55`–`S1977E57` and the folder
+is `Season 1977`. Do not normalise a four-digit season to something that looks more like a season
+number — the server matches what the provider publishes.
+
+Corroborate from the programme itself before committing. Here the announcer says *"the case is now
+in its second day"* on part 2 and *"in its third day"* on part 3; part 1 closes *"join us again
+tomorrow"*; part 2 re-asks the exact question part 1 ended on; part 3 ends with the verdict and
+*"next week… another case"*. Three consecutive weekday broadcasts are **three ordinary consecutive
+episodes**, not a stacked multi-part item — stacking is for ONE episode split across files.
+
+### A title that opens on the WRONG STUDIO IDENT is not that series
+
+Nine Strangers discs held 33 episode-length titles against a canon of 32. The odd one out announced
+itself: it opens on the **London Weekend Television** ident where every genuine Strangers title in
+the box opens on **GRANADA**, cards `NEW SCOTLAND YARD` at 25 s, is absent from the disc's EPISODES
+menu, and its speech names characters from a different police series.
+
+The ident is a cheap, early discriminator on a box set from a single production house — check it
+before reconciling counts, and treat a mismatch as identification rather than as an anomaly to
+explain away.
+
+### Whisper misfires are re-measured, not asserted
+
+Three titles in that set returned junk on the first pass — a hallucinated Japanese, a `nn` CJK
+label, and a flat `no-speech` — and all three re-measured as English at 0.97–0.99. Meanwhile a
+Russian call at 0.99 was **correct**, because the episode is *The Moscow Subway Murders*.
+
+So a surprising language is a prompt to re-sample, not a finding, and re-sampling is cheap. The
+episode title will often tell you which way it should go.
