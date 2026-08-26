@@ -558,3 +558,23 @@ across discs, and emphatically not dismissed as duplicate boilerplate.
 
 Check the captions before assuming repetition, and hash decoded frames if you need to prove
 sameness rather than infer it.
+
+### The strongest completeness proof: every VOB SECTOR claimed by a declared PGC
+
+Chapter tables and cell sums prove a TITLE is intact. They say nothing about whether the disc holds
+content no title points at. For that, account for the bytes.
+
+On *Out of the Clouds* (1955) the cells of the declared PGCs covered VTS_01 sectors 0–2004456 =
+**4,105,127,936 B**, which is exactly `VTS_01_1..4.VOB`, and VTS_02 sectors 0–8841 =
+**18,108,416 B**, exactly `VTS_02_1.VOB`. Nothing was left over, so nothing is hidden — no
+unreferenced title, no orphaned cell chain, no surprise extra.
+
+That is a far stronger statement than "the titles I found look complete", and it is cheap: the cell
+sector ranges are already in the IFO you are reading for the chapter check, and the VOB sizes are
+on disk.
+
+Use it when a disc's runtime disagrees with the reference works, which is exactly when the question
+"is the rip short, or is the MASTER short?" has to be answered. On that disc the answer was the
+master: 76 min against a documented 89-minute UK version and an 80-minute US cut, with the sleeve
+and `mymovies.xml` both declaring 76. **A length mismatch is a prompt to investigate, not a
+diagnosis** — and sector coverage is what turns the prompt into an answer.
