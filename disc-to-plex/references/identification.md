@@ -614,3 +614,37 @@ subtitles land 2–7.5% off against a film-rate transfer.)
 proportion is a real question — and answer it with sector coverage plus continuous text, as that
 disc did: I.i.1 through V.v's last line, all 24 chapters opening where the index says, cell sums
 exact on every title. There was no 9.5-minute hole for content to hide in.
+
+### Settle a doubtful tNN→dvdvideoTitle mapping by RE-EXTRACTING the frames and hashing them
+
+Size is a useful tiebreak when durations are close. **Re-extraction is proof.**
+
+The catalogue stores frames and a speech sample against each `tNN`. If the mapping is right, pulling
+the same timestamps out of the mapped `dvdvideoTitle` with the same filter chain reproduces those
+frames **byte for byte**. On Strangers D1 all eight catalogue frames (t01–t04 at 30 s and 95 s)
+hashed identically to freshly extracted ones — which does not merely suggest the mapping is right,
+it demonstrates that every piece of evidence in the catalogue belongs to the title it is filed
+under.
+
+That is the exact failure this guards against: on `Out D1` a swapped mapping meant `t001`'s frames
+and speech sample were dvdvideo title 3's content, filed against t01, with
+`mappingAmbiguous: false`.
+
+Two cheap corroborations came free on the same disc:
+
+- **The frames are often self-labelling.** t03 at 30 s reads `SILVER LINING`; t04 at 30 s reads
+  `and WILLIAM RUSSELL / REGINALD MARSH / in`. A frame that names its own episode settles the
+  mapping and the identification in one step.
+- **Swap arithmetic that is NOT a tie is itself evidence.** Greedy cost 2+4+5 s; swapping t02/t03
+  cost 14 against 6, t03/t04 cost 29 against 9. Where the alternatives are that much worse, the
+  pairing is genuinely determined — as opposed to `Out D1`, where the swap tied exactly.
+
+### An extra declared on the packaging may belong to a DIFFERENT DISC
+
+Strangers D1 carries no extras, and that is a finding rather than an absence. The back cover names
+three special features **and names their discs** — one on disc two, a three-part item on disc four,
+one on disc five — and `mymovies.xml`'s per-disc tables corroborate with matching runtimes.
+
+So before treating a declared extra as missing, check whether the packaging says which disc holds
+it. Record that in the dispositions, so a later reader does not re-open the question or conclude the
+rip dropped something.
