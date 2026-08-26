@@ -81,3 +81,44 @@ Prefer adding to this list over adding to the prose.
 | Resynced tracks keep the SOURCE name, not the library label | `plex_subtitle_resync.py` | a wrong-show sub disguised as correct |
 | Anchor pinned to its search bound → treat as failed, not agreed | `plex_subtitle_resync.py` | confident shifts built on no measurement |
 
+
+## `mappingAmbiguous: false` was not proof — greedy assignment can pick a losing permutation
+
+`catalogue-dvd.ps1` maps MakeMKV titles onto dvdvideo titles by duration, taking the per-title
+minimum one title at a time. That is **not an optimal assignment**, and until 2026-08-26 the
+ambiguity flag only caught EXACT ties on a single title — never the case where a different pairing
+gives the same TOTAL error.
+
+`Out D1`: MakeMKV 0:50:31 and 0:50:30 against dvdvideo titles of 3035 s and 3032 s.
+
+| pairing | deltas | total |
+|---|---|---|
+| chosen  `t01→3, t02→2` | 1 + 5 | **6** |
+| swapped `t01→2, t02→3` | 4 + 2 | **6** |
+
+Identical. At each individual step the minimum was unique, so nothing flagged — and the catalogue
+recorded the **wrong** pairing with `mappingAmbiguous: false`. Its `t001` frames and speech sample
+were dvdvideo title 3's content, filed against t01.
+
+A subagent caught it by falling back to MakeMKV's per-title **size** (2.13 / 1.88 / 2.06 GiB), which
+is not close. Had it trusted the flag, two episodes would have shipped swapped — structurally
+perfect, content wrong.
+
+Now fixed: after the greedy pass, every PAIR is tested for whether exchanging their assignments
+leaves the total error equal or lower. If it does, both are marked ambiguous, which makes
+`assert-accounted.ps1` refuse `card:`/`frame:`/`speech:` citations against them and forces
+corroboration from a rip, a size, or the disc's own menu.
+
+**When durations are within a few seconds of each other, SIZE is the tiebreak** — MakeMKV reports it
+per title and equal-length episodes are rarely equal-weight.
+
+### A second bug, introduced while fixing the first
+
+The swap check originally logged with `Write-Output` — inside a function that RETURNS a value.
+PowerShell appends it to the return, so the caller received an array of `[log strings + hashtable]`
+and indexed strings by integer, getting a silent blank for every field. Use `Write-Host` for
+progress inside a value-returning function.
+
+It survived the first smoke test because the CONTROL case (well-separated durations) never reached
+the logging line and so still worked. **A test that only exercises the path you did not change
+proves nothing about the path you did.**

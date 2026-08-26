@@ -177,6 +177,53 @@ function Resolve-DvdTitleMapping {
     }
     $result[$id] = $entry
   }
+
+  # PAIRWISE SWAP CHECK - the greedy pass above is NOT an optimal assignment.
+  #
+  # Taking the per-title minimum, one title at a time, can pick a permutation that is no better
+  # than its swap - and then report it as unambiguous, because at each individual step the minimum
+  # was unique. The tie tests above only see EXACT ties on one title; they cannot see that the
+  # TOTAL error is identical under a different pairing.
+  #
+  # Observed on `Out D1` (2026-08-26). MakeMKV 0:50:31 and 0:50:30 against dvdvideo titles of
+  # 3035 s and 3032 s:
+  #
+  #     chosen : t01->3 (delta 1) + t02->2 (delta 5)  = 6
+  #     swapped: t01->2 (delta 4) + t02->3 (delta 2)  = 6      <- identical
+  #
+  # The catalogue recorded the swapped-from-truth pairing with mappingAmbiguous=false, so its
+  # frames and speech sample for t01 were actually dvdvideo title 3's content. A subagent caught it
+  # only by falling back to MakeMKV's per-title SIZE (2.13 / 1.88 / 2.06 GiB), which is not close.
+  # Had it trusted the flag, two episodes would have shipped swapped - structurally perfect,
+  # content wrong, which is this project's most expensive failure shape.
+  #
+  # So: for every pair, ask whether exchanging their assignments leaves the total error equal or
+  # lower. If it does, duration cannot separate them and BOTH are positional - flag them, which
+  # makes assert-accounted refuse card:/frame:/speech: citations against them and forces
+  # corroboration from a rip, a size, or the disc's own menu.
+  $assigned = @($result.Keys | Where-Object { $null -ne $result[$_].dvdvideoTitle } | Sort-Object)
+  foreach ($i in $assigned) {
+    foreach ($j in $assigned) {
+      if ($j -le $i) { continue }
+      $ti = $result[$i].dvdvideoTitle; $tj = $result[$j].dvdvideoTitle
+      $cur = [math]::Abs($DvdSeconds[$ti] - $MkvSeconds[$i]) + [math]::Abs($DvdSeconds[$tj] - $MkvSeconds[$j])
+      $swp = [math]::Abs($DvdSeconds[$tj] - $MkvSeconds[$i]) + [math]::Abs($DvdSeconds[$ti] - $MkvSeconds[$j])
+      if ($swp -le $cur) {
+        foreach ($k in @($i, $j)) {
+          $result[$k].mappingAmbiguous = $true
+          if ($result[$k].mappingTieSize -lt 2) { $result[$k].mappingTieSize = 2 }
+        }
+        $why = if ($swp -lt $cur) { "STRICTLY BETTER ($swp vs $cur)" } else { "equal ($swp)" }
+        # Write-HOST, never Write-Output. This function RETURNS a value, and Write-Output inside it
+        # appends to that return - the caller then receives an array of [log strings + hashtable]
+        # and indexes strings by integer, getting silent blanks for every field. Caught immediately
+        # here only because the control case (well-separated durations) never reached this line and
+        # so still worked, which is exactly how a bug like this survives a smoke test.
+        Write-Host ("    t{0:00}/t{1:00} -> dvdvideo {2}/{3}: swapping them is {4} - duration cannot separate these two, marking BOTH ambiguous" -f `
+                    $i, $j, $ti, $tj, $why)
+      }
+    }
+  }
   return $result
 }
 
