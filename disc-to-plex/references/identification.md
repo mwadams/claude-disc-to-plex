@@ -526,3 +526,35 @@ Scene ii was not filmed by the BBC for this production"**, the other giving the 
 proclamation in full. They ship nothing — but they explain why that disc's Act II index has four
 entries where the play has five scenes. An index that looks wrong may be documented inside the menu
 domain; render it before treating the gap as a fault.
+
+### The DISC'S OWN EPISODE MENU is often the best numbering evidence on a box set
+
+For *The Mind of Mr J.G. Reeder* the operator's brief asserted a 6+10 season split, which would have
+put the boundary INSIDE disc 2. The discs refuted it. Their EPISODES menus, rendered from the menu
+domain, read a continuous numbered list:
+
+    D1  1. THE TREASURE HUNT   2. THE STEALER OF MARBLE  3. THE GREEN MAMBA   4. SHEER MELODRAMA
+    D2  5. THE STRANGE CASE    6. THE POETICAL POLICEMAN 7. THE TROUPE        8. THE INVESTORS
+    D3  9. THE DUKE           10. MAN WITH A STRANGE TATTOO …
+
+Four per disc, 1–16, matching TVDB's 8+8 — so the boundary falls cleanly between discs 2 and 3 and
+no disc straddles. TVmaze agreed; **TMDB's 8+9 was the outlier, and TMDB is not the tree this server
+matches with.**
+
+The menu is worth rendering early for this reason alone: it is the authoring house's own statement
+of what is on the disc and in what order, it is free once you are already counting menu PGCs, and it
+is independent of every external database.
+
+**Corollary: treat a season split asserted in a brief as a hypothesis, not a fact.** Where the split
+decides which season an episode lands in, prove it from the discs and the provider before numbering
+anything — a wrong split produces a uniform shift that looks plausible all the way down.
+
+### Galleries: one per disc, captioned by episode — not repeats of each other
+
+Four short silent titles across a four-disc set (1:39, 0:45, 1:10, 0:55) turned out to be four
+DIFFERENT stills galleries, each captioned with the episodes its stills belong to, and each already
+authored as a single reel. They ship as four separate Season 00 items — one per disc, not combined
+across discs, and emphatically not dismissed as duplicate boilerplate.
+
+Check the captions before assuming repetition, and hash decoded frames if you need to prove
+sameness rather than infer it.
