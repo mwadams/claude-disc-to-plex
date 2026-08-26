@@ -118,8 +118,26 @@ foreach ($t in $Titles) {
   # Flag it for a look rather than calling it a failure.
   $delta = [math]::Abs($secs - $want)
   if ($delta -le 3) { Write-Output ("  t{0:D2}  {1,6}s  ok" -f $t, $secs) }
+  elseif ($secs -gt $want) {
+    # LONGER THAN DECLARED CANNOT BE TRUNCATION. Saying "truncated rip" here sends the reader
+    # hunting for missing content that is provably not missing, and trains them to skim the
+    # warning - which matters, because the SHORT direction below is real.
+    #
+    # The two enumerators genuinely disagree about long titles: libdvdnav counts the full cell
+    # chain, MakeMKV trims. `catalogue-dvd.ps1` already allows 0.5% of runtime for this when
+    # matching titles. Out of the Clouds ripped 4576s against 4570s declared - 6s over, 0.13% -
+    # and ffprobe put the true duration at 4576.480, so the RIP was right and the DECLARATION was
+    # short.
+    #
+    # Still reported, never silently passed: an over-length rip can also be a looping playlist
+    # whose declared duration counts repeats (Live and Let Die t01: 120s declared, 1s of content).
+    # But it is a different question from truncation, so it gets a different sentence.
+    $pct = if ($want -gt 0) { 100.0 * $delta / $want } else { 0 }
+    Write-Output ("  t{0:D2}  {1,6}s  vs {2,6}s declared  <-- LONGER by {3}s ({4:N2}%) - NOT truncation. Usually MakeMKV trimming a long title; check for a looping playlist if the gap is large" -f $t, $secs, $want, $delta, $pct)
+    $bad++
+  }
   else {
-    Write-Output ("  t{0:D2}  {1,6}s  vs {2,6}s declared  <-- CHECK: truncated rip, or a looping playlist whose declared duration counts repeats" -f $t, $secs, $want)
+    Write-Output ("  t{0:D2}  {1,6}s  vs {2,6}s declared  <-- SHORT by {3}s - CHECK: truncated rip, or a looping playlist whose declared duration counts repeats" -f $t, $secs, $want, $delta)
     $bad++
   }
 }

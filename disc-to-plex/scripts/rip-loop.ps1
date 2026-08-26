@@ -177,9 +177,22 @@ while ($true) {
             $have += $k
             Write-Output ("    {0} t{1:00}: STILLS REEL - {2} frames, no audio, declared {3}s. Complete. Encode must hold each still {4:N1}s." -f `
                           $disc, $k, $frames, $want, ($want / $frames))
-          } else {
-            Write-Output ("    {0} t{1:00}: existing rip is {2:N0}s but the disc says {3}s - INCOMPLETE, will re-rip" -f `
+          } elseif ($got -gt $want) {
+            # LONGER THAN DECLARED IS NOT INCOMPLETE - and re-ripping it is pure waste.
+            #
+            # The two enumerators disagree about long titles: libdvdnav counts the full cell chain,
+            # MakeMKV trims. Out of the Clouds ripped 4576s against 4570s declared and ffprobe put
+            # the truth at 4576.480 - the RIP was right and the DECLARATION was short. Goodnight
+            # Sweetheart S6D1 t02 hit the same thing at 1302s vs 1291s and was re-ripped on every
+            # pass, logging "INCOMPLETE" each time for a title that was complete.
+            #
+            # Accept it and say why. A truncated rip is SHORTER; that branch is below and unchanged.
+            $have += $k
+            Write-Output ("    {0} t{1:00}: rip is {2:N0}s vs {3}s declared - LONGER, so not truncated (MakeMKV trims long titles). Accepted." -f `
                           $disc, $k, $got, $want)
+          } else {
+            Write-Output ("    {0} t{1:00}: existing rip is {2:N0}s but the disc says {3}s - SHORT by {4:N0}s, INCOMPLETE, will re-rip" -f `
+                          $disc, $k, $got, $want, ($want - $got))
           }
         }
       } elseif ($got -gt 0 -and -not $want) {
