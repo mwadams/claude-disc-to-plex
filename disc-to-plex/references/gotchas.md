@@ -122,3 +122,35 @@ progress inside a value-returning function.
 It survived the first smoke test because the CONTROL case (well-separated durations) never reached
 the logging line and so still worked. **A test that only exercises the path you did not change
 proves nothing about the path you did.**
+
+## `ffprobe -read_intervals` takes ABSOLUTE timestamps — and silently clamps
+
+Blu-ray `.m2ts` clips routinely start at a large PTS base. Sherlock's carry **~36599 s**. Asking
+for `-read_intervals 600%+120,2400%+120,4200%+120` therefore requests three intervals that are all
+*before the stream begins*, and ffprobe does not error — it **clamps each to the start** and returns
+**the same first 120 seconds three times**.
+
+The damage is that the result looks right. Counting subtitle packets that way gave
+`157 / 157 / 157` and `237 / 237 / 237`: a plausibly steady rate, three "samples" agreeing, and
+entirely one sample repeated. The same shape would defeat any spot-check that samples a file at
+several offsets — audio language, scene content, bitrate.
+
+**Read `start_time` from the container first and offset every interval by it**, or use `-ss` on the
+input, which is relative. And treat identical values across supposedly independent samples as a
+symptom, not as corroboration.
+
+## The commentary word-list is the weak link, not the measurement
+
+On Sherlock's *The Great Game*, an ad-hoc `identify-audio.py` pass labelled the commentary track
+**"dialogue"** at two of three offsets, because those windows happened to contain none of its stock
+hint phrases — while the content was plainly production talk (*"this is actually based on a true
+case… it happened in France"*).
+
+`analyze-tracks.py` classified the same stream correctly, because it does not rely on the phrase
+list alone: it measures **similarity against the primary** (0.14 here) and re-samples any `dub`
+verdict at three further offsets before letting it stand.
+
+So when the two disagree, believe the measurement. And do not use the hint list on its own to
+decide a track's role — it is a tiebreak, not a test. This is the same lesson as the M fix, where a
+commentary was nearly dropped because its sampled minute said "Uli Lomo's film" rather than "the
+film".

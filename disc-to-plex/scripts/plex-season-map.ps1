@@ -50,8 +50,42 @@ $h = @{ 'X-Plex-Token'=$tok; 'Accept'='application/json' }
 
 # --- find the show in the library and take its guid -----------------------------------------
 $shows = @((Invoke-RestMethod "$base/library/sections/$Section/all?type=2" -Headers $h).MediaContainer.Metadata)
-$s = $shows | Where-Object { $_.title -like "*$Show*" } | Select-Object -First 1
-if(-not $s){ throw "No show matching '$Show' in section $Section." }
+$hits = @($shows | Where-Object { $_.title -like "*$Show*" })
+if(-not $hits){ throw "No show matching '$Show' in section $Section." }
+
+# REFUSE A SUBSTRING MATCH THAT IS NOT THE SHOW YOU ASKED FOR.
+#
+# This took the FIRST substring hit and reported on it with no warning. Asked for "Sherlock" while
+# the 2010 series was not yet in the library, it silently answered about `Sherlock Holmes (1964)` -
+# a different programme, with a different season tree - and an agent numbering from that answer
+# would have been numbering against the wrong show entirely.
+#
+# The failure is silent by construction: the output names the show it chose, but it names it in the
+# same confident format as a correct answer, and a caller reading only the CANONICAL EPISODES block
+# never sees which title it came from.
+#
+# So: an exact (case-insensitive) title match wins outright. Otherwise, if exactly one show contains
+# the string, use it but SAY SO. If several do, refuse and list them - picking one is exactly the
+# guess that caused the problem.
+$exact = @($hits | Where-Object { $_.title -and $_.title.Trim().ToLowerInvariant() -eq $Show.Trim().ToLowerInvariant() })
+if ($exact.Count -ge 1) {
+  $s = $exact[0]
+} elseif ($hits.Count -eq 1) {
+  $s = $hits[0]
+  Write-Warning ("'{0}' is not an exact title match for '{1}' - it is the only show in section {2} containing that string. Confirm this is the programme you mean." -f $s.title, $Show, $Section)
+} else {
+  $list = ($hits | ForEach-Object { "  {0} ({1})  rk={2}" -f $_.title, $_.year, $_.ratingKey }) -join "`n"
+  throw ("'{0}' matches {1} shows in section {2} and none is an exact title match. REFUSING to guess - re-run with the full title:`n{3}" -f `
+         $Show, $hits.Count, $Section, $list)
+}
+
+# AND THE CASE THIS SCRIPT CANNOT ANSWER AT ALL: a show that is not in the library yet. It searches
+# only what the section already holds, so for a NEW show every answer it can give is about some
+# other programme. Say that plainly rather than letting a near-miss stand in.
+if (-not $exact.Count) {
+  Write-Warning ("If the show you want is NOT YET IN THE LIBRARY, this script cannot find it - it " +
+                 "searches the section, not the provider. Query the provider directly for a new show.")
+}
 if($s.guid -notmatch 'plex://show/([0-9a-f]+)'){ throw "Show '$($s.title)' has guid '$($s.guid)' - not a plex:// guid, so the provider cannot be queried. Fix the match first." }
 $showId = $Matches[1]
 "SHOW: $($s.title) ($($s.year))  ratingKey=$($s.ratingKey)  guid=$($s.guid)"
