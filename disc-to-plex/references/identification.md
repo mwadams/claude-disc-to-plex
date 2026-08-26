@@ -578,3 +578,39 @@ Use it when a disc's runtime disagrees with the reference works, which is exactl
 master: 76 min against a documented 89-minute UK version and an 80-minute US cut, with the sleeve
 and `mymovies.xml` both declaring 76. **A length mismatch is a prompt to investigate, not a
 diagnosis** — and sector coverage is what turns the prompt into an answer.
+
+### A part card may carry the BROADCAST part number, not the file part number
+
+*The Tragedy of Richard III* spans two discs, and disc 2's head card reads **"Part Three"**. Both
+numbers are correct and they count different things: the programme was broadcast in THREE parts,
+and **disc 1 holds Parts One and Two** — an "Interval" card and a "…/ Part Two" card sit exactly at
+disc 1's chapter-7 mark, with a second "Interval" closing the disc.
+
+So a card saying "Part Three" on the second of two discs is not a contradiction and not evidence of
+a missing disc. Ship it as **two** stack parts under one episode number, because that is how the
+FILES divide; the broadcast structure is not the file structure.
+
+Finding the interior cards is what settles it, and they are not where a sweep would look. Pass every
+frame through `signalstats` at ~1 frame per 2 s and render each run with high YAVG: on that disc the
+only bright stretches were the two interval/part cards, a misty exterior, and the credit roll. A
+fixed-offset card sweep finds none of them.
+
+**The scene indexes corroborate the join independently.** Disc 1's index ran Act I i → Act IV ii with
+NEXT greyed on its last page; disc 2's **resumed at Act IV iii with BACK greyed**. The two butt
+together exactly at the disc boundary — the authoring house's own statement of where the split
+falls, owing nothing to any transcript.
+
+### A runtime ~4% short of the reference is PAL SPEEDUP, not missing content
+
+Richard III measured **229.5 min** against **239** declared by BOTH TVDB and the disc's own
+`mymovies.xml` — a 9.5-minute gap where every sibling on the set agreed within a minute.
+
+That ratio is the giveaway: `229.5 × 25/24 = 239.1`. A PAL transfer plays 24 fps material at 25,
+running **4.17% shorter** in wall-clock while losing nothing. The published runtime is the
+film-rate figure. (`plex-subtitles` records the same relationship from the other direction: PAL
+subtitles land 2–7.5% off against a film-rate transfer.)
+
+**Check the ratio before hunting for a hole.** 4% short = PAL speedup, expected. Any other
+proportion is a real question — and answer it with sector coverage plus continuous text, as that
+disc did: I.i.1 through V.v's last line, all 24 chapters opening where the index says, cell sums
+exact on every title. There was no 9.5-minute hole for content to hide in.
