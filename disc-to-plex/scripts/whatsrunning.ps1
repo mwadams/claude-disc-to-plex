@@ -61,10 +61,26 @@ if ($procs.Count -eq 0) {
     $out = if ($m.Count) { $m[$m.Count - 1].Groups[1].Value } else { $null }
     $started = $p.CreationDate.ToString('HH:mm:ss')
 
-    if (-not $out) {
-      # No output file at all: a probe or a frame extraction, not an encode. Identification work
-      # does this constantly and it is expected - do not report it as anything else.
-      Write-Output ("  pid {0,-6} {1}  READ-ONLY (no .mkv output) - probe/frame extraction" -f $p.ProcessId, $started)
+    # A REAL OUTPUT GOES INTO THE LIBRARY. Anything else is an input being read.
+    #
+    # This took the LAST .mkv on the command line as the output, which is right for an encode and
+    # WRONG for a probe: `ffmpeg -ss 1981 -t 30 -i _stage/sunrise-rip/title_t00.mkv` writes nothing,
+    # and the only .mkv present is the SOURCE. The tool then announced
+    # "*** NO MANIFEST CLAIMS THIS OUTPUT ***" over an agent's ordinary identification read - the
+    # exact false alarm this script exists to prevent, since the whole point of it is that I once
+    # killed legitimate encodes on a wrong reading of what was running.
+    #
+    # Same rule as the lane counters: judge by what a process WRITES, and the library roots are the
+    # only place a real output lands.
+    $libRoots = @('d:\video\movies', 'd:\video\television shows')
+    $isLibraryOut = $false
+    if ($out) {
+      $norm = ($out -replace '/', '\').ToLowerInvariant()
+      $isLibraryOut = [bool]($libRoots | Where-Object { $norm.StartsWith($_) })
+    }
+    if (-not $isLibraryOut) {
+      $what = if ($out) { "reading $(Split-Path $out -Leaf)" } else { 'no .mkv output' }
+      Write-Output ("  pid {0,-6} {1}  READ-ONLY ({2}) - probe/frame extraction" -f $p.ProcessId, $started, $what)
       continue
     }
     $key = ($out -replace '/', '\').ToLowerInvariant()
