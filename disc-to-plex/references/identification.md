@@ -493,3 +493,36 @@ perfectly intact.
 Prove the rate rather than assuming it: it is the one at which the IFO times equal ffprobe's
 measured durations exactly. On that disc 25 fps gave delta 0.00 on all five PGCs; 29.97 gave a
 consistent shortfall.
+
+### The rate bits can be WRONG, not merely unread — agreement with ffprobe is the authority
+
+The note above says to check the playback-time frame byte's rate bits. Othello goes further: **its
+bits say `01` (29.97) and the disc is 25 fps.** They are not a field someone forgot to read — they
+are incorrect on the disc itself.
+
+Decoded at the rate the bits claim, the times look plausible and every title shows a small uniform
+NEGATIVE cell-sum delta (−0.663 s, −0.166 s) — the exact signature of multi-cell truncation. At
+25 fps all five PGC times equal ffprobe to four decimals and every cell sum matches its PGC exactly,
+delta 0.000.
+
+So treat the bits as a hint and **the agreement with ffprobe as the proof**. The right rate is the
+one where IFO arithmetic reconciles; if neither rate reconciles, that is when to suspect the disc.
+
+### A part can carry NO title card at all
+
+Othello's third part opens mid-scene (already at IV.iii) and carries **no card whatsoever**. A
+sweep looking for a card would return nothing and leave that part unnamed — and, worse, invite
+naming it by position among its siblings.
+
+Identify it the same way as any other title: from the TEXT. Transcribe the opening and check that
+it continues exactly where the previous part stopped. On this disc each part began on the line
+after the previous part's last line, with no gap and no overlap, which is what actually proves a
+multi-part authoring rather than three separate works.
+
+### Menu text pages can explain an anomaly in the disc's own index
+
+Othello's menu carries two printed-text pages with no linear playback: one stating that **"Act II
+Scene ii was not filmed by the BBC for this production"**, the other giving the Herald's
+proclamation in full. They ship nothing — but they explain why that disc's Act II index has four
+entries where the play has five scenes. An index that looks wrong may be documented inside the menu
+domain; render it before treating the gap as a fault.
