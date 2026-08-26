@@ -62,8 +62,7 @@ multiple editions, Plex stops detecting that movie's **local extras** (`Behind T
 **Fix: give each edition its own top-level movie folder** (siblings under `Movies/`), with the
 `{edition-<Name>}` tag in the **folder** name and the file named to match. The primary (untagged) folder
 holds the feature **and** the extras subfolders; every additional edition is a sibling folder that
-contains only its one `.mkv`. Plex still groups them as editions of the same film (matched on title +
-year), and the extras keep working:
+contains only its one `.mkv`. The extras keep working:
 
 ```
 Movies/
@@ -75,6 +74,12 @@ Movies/
   Who Dares Wins (1982) {edition-Director's Commentary}/           # each extra edition = its own sibling folder
     Who Dares Wins (1982) {edition-Director's Commentary}.mkv
 ```
+
+**But they do NOT merge into one library item.** This section used to claim Plex still groups them
+as editions of the same film, matched on title + year. It does not: `Who Dares Wins (1982)` is
+**two** items on this server, rk=24195 (no edition, 4 local extras) and rk=24196 (editionTitle
+`Director's Commentary`). That is the price of this layout — see the conditional rule further down
+before choosing it.
 
 So: emit the extra edition to `Movies/<Title (Year)> {edition-<Name>}/<Title (Year)> {edition-<Name>}.mkv`,
 never as a second file inside the main folder. (The commentary itself is still tagged inside its file with
@@ -270,21 +275,39 @@ treat the part card as a label whose grammar is ambiguous. `transcode.ps1`'s DVD
 one 1-based title and has no concat form, so two titles means two files; stacking is how they
 become one episode.
 
-## An EDITION belongs inside the film's folder, not in one of its own
+## Editions: BOTH layouts cost you something — pick by whether the film has local extras
 
-Plex reads `{edition-...}` as a variant of the film it sits beside. Put it in the film's folder:
+There is no free option here, and on 2026-08-26 I asserted there was. Measured on this server:
 
-```
-Movies/M (1931)/M (1931).mkv
-Movies/M (1931)/M (1931) {edition-English-Language Version}.mkv      <- correct
-Movies/M (1931)/Interviews/Zum Beispiel Fritz Lang (1968).mkv
-```
+| layout | library items | local extras indexed |
+|---|---|---|
+| edition in its **own** top-level folder (`Who Dares Wins (1982)` + `… {edition-Director's Commentary}`) | **2 separate movies** | **4 of 4** ✓ |
+| edition **inside** the film's folder (`M (1931)/`) | 1 | **0 of 1** ✗ |
 
-Giving the edition its own work folder — `Movies/M (1931) {edition-English-Language Version}/…` —
-makes Plex index **a second, separate movie**. It happened on 2026-08-26: the manifest's `out` put
-it there, `transcode.ps1` created the folder as instructed, and the publish loop treated it as its
-own work and shipped it before anyone looked. The local side is a one-line move; the published copy
-has to be handed to the user, because only they can clear the published library.
+M's `Interviews/Zum Beispiel Fritz Lang (1968).mkv` is present on the NAS and Plex indexes **no
+local extras at all** for that item — only an online trailer. That is the bug the section above
+describes, reproducing.
 
-**Check the `out` DIRECTORIES when authoring a manifest, not just the filenames.** Every filename
-here was correct — only the folder was wrong, and a filename-level review sails straight past that.
+**So the rule is conditional:**
+
+- **Film has local extras** → give the edition its **own top-level folder**. You get a second
+  library entry, which is ugly but *visible* and correctable. The alternative silently deletes the
+  extras from the UI while the files sit on disk looking fine.
+- **Film has no local extras** → same folder is fine and gives you one clean item.
+
+Prefer the failure the user can SEE. A duplicate entry gets reported in a day; missing extras get
+noticed months later, if ever.
+
+**Do not repeat the 2026-08-26 mistake:** an agent laid M out correctly (edition in its own folder)
+and I "fixed" it into the film's folder on the strength of the tidier-looking result, without
+checking either claim against the server. That is what cost M its extra. The earlier section had
+recorded the real behaviour already.
+
+**Count `includeExtras` carefully when testing this.** `/library/metadata/<rk>?includeExtras=1`
+returns Plex's **online** trailers alongside local ones, so a bare count reads 1 for an item with
+zero local extras and makes the bug invisible. An extra is local only if its `Media/Part` has a
+`file` attribute — check for that, not for a non-zero count. Counting naively is what made me read
+M as healthy on the first pass.
+
+**Check the `out` DIRECTORIES when authoring a manifest, not just the filenames.** A filename-level
+review sails straight past a wrong folder — every filename in the M manifest was correct.

@@ -128,3 +128,36 @@ first - it should return DIFF on a disc known to carry real commentaries.
 The same shape appears wherever one DVD title holds many episodes: a per-title flag cannot describe
 a per-episode fact, and the pipeline's `.tracks.json` evidence has the same limitation - it is
 per-SOURCE, so for chapter-split episodes the MD5 table is the evidence, not the tracks.json.
+
+## A lossy CORE and a COMMENTARY score the same on any correlation test (2026-08-27)
+
+`analyze-tracks.py`'s pairwise subtraction is sample-aligned and gain-naive, so it cannot see a
+TrueHD track beside its own AC-3 core: they differ by a ~13 ms decoder delay plus a dialnorm gain
+offset, the residual sits *above* the signal, and the pair reads as independent content. Both ship.
+That is a fail-OPEN on the exact class the check was built for — Thunderball's `a:1` was a lossy
+core, and on Sunrise (1927) the analyzer proposed keeping all five streams, two of which were cores.
+
+Correcting for lag and gain does recover the delay (−13.2 ms, matching the decoder). **But it does
+not separate a core from a commentary.** Measured on Sunrise t00, 30 s @ 1800 s:
+
+| pair | naive | aligned | what it actually is |
+|---|---|---|---|
+| a:0 vs a:1 | −3.5 dB | **16.5 dB** | genuine lossy core |
+| a:2 vs a:3 | −3.4 dB | **21.3 dB** | genuine lossy core |
+| a:0 vs a:2 | −6.5 dB | 0.0 dB | two different scores — correctly rejected |
+| a:0 vs a:4 | −9.0 dB | **15.9 dB** | **the COMMENTARY** |
+
+The commentary lands level with a real core because it carries the film's score *underneath* the
+speech, so the shared music bed correlates. **There is no threshold that catches the cores and
+spares the commentary.** A raw correlation coefficient looks more decisive (0.99 vs 0.02 on the
+pairs someone happens to test) but has the same blind spot — it is the same statistic renormalised.
+
+So the check is **report-only** (`CORE_SUSPECT_DB`), and must stay that way. Shipping a redundant
+core wastes a few GB; dropping a commentary destroys content the disc carried and nobody notices
+until a viewer goes looking for it. Confirm any reported pair with `identify-audio.py` — a core is
+the same audio, a commentary has someone talking over it, and transcription tells them apart in one
+pass.
+
+**General form of this trap:** a similarity measure between two tracks answers "do these share
+content", never "is one of them redundant". Any track mixed OVER the programme audio — commentary,
+audio description, an isolated-score-plus-narration — shares content by construction.

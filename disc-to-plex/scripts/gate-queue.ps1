@@ -15,6 +15,20 @@ param(
   [int]$PollSec = 30
 )
 
+# LAYOUT CHECKS FIRST - fail fast, before waiting on a copy.
+#
+# The byte-completeness wait below asks "is the SOURCE ready?". It says nothing about whether the
+# manifest's OUTPUT paths are sane, and a layout fault is only cheap to fix here: once the encode
+# has run and published, correcting it needs a re-encode plus a NAS deletion only the user can do.
+$editionGuard = 'D:/video/.claude/skills/disc-to-plex/scripts/assert-edition-layout.ps1'
+if (Test-Path -LiteralPath $editionGuard) {
+  & pwsh -NoProfile -File $editionGuard -Manifest $Manifest
+  if ($LASTEXITCODE -ne 0) {
+    Write-Output ("gate REFUSED: {0} - edition layout would lose this film's local extras. Not queued." -f (Split-Path $Manifest -Leaf))
+    exit 2
+  }
+}
+
 while ($true) {
   $s = Get-ChildItem -LiteralPath $SourceDir -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum
   $t = Get-ChildItem -LiteralPath $StageDir  -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum

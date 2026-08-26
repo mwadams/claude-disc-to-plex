@@ -30,6 +30,10 @@ USAGE
 """
 
 import argparse, difflib, json, re, subprocess, sys, tempfile, time
+try:
+    import numpy as np
+except ImportError:                    # the lossy-core check needs it; absence must be LOUD, not silent
+    np = None
 
 # The transcripts are foreign-language by design. On Windows a redirected stdout defaults to
 # cp1252, so printing a Spanish or French sample raised UnicodeEncodeError and killed the run
@@ -89,6 +93,22 @@ LANG_CONFIDENCE_FLOOR = 0.55
 LOSSLESS = {'dts-hd', 'truehd', 'flac', 'pcm_s16le', 'pcm_s24le', 'mlp', 'alac'}
 # how far below the signal the difference must sit before two tracks are "the same content"
 REDUNDANT_DB = 25.0
+
+# Report-only floor for the delay/gain-corrected lossy-core check. See compare_aligned().
+#
+# THIS MUST NOT BECOME A DROP THRESHOLD. Measured on Sunrise (1927) t00, 30 s @ 1800 s:
+#
+#   a:0 vs a:1   naive -3.5 dB -> 16.5 dB aligned (lag -13.2 ms)   GENUINE LOSSY CORE
+#   a:2 vs a:3   naive -3.4 dB -> 21.3 dB aligned (lag -13.2 ms)   GENUINE LOSSY CORE
+#   a:0 vs a:2   naive -6.5 dB ->  0.0 dB aligned                  different scores, rejected
+#   a:0 vs a:4   naive -9.0 dB -> 15.9 dB aligned                  *** THE COMMENTARY ***
+#
+# The commentary sits level with a real core because it carries the film's score underneath the
+# speech, so the shared music bed correlates. Any cutoff that catches a:0/a:1 also catches a:0/a:4,
+# and silently dropping a commentary is a far worse outcome than shipping a redundant core - it is
+# the failure this project has paid for repeatedly. So this check RAISES A REPORT for a human or an
+# agent to resolve with identify-audio.py, and changes nothing about what ships.
+CORE_SUSPECT_DB = 12.0
 
 
 def run(cmd):
@@ -155,6 +175,88 @@ def compare(src, i, j):
     if d == float('-inf'):
         return 999.0         # the DIFFERENCE is digital silence - the tracks are identical
     return a - d
+
+
+def _is_lossless(s):
+    return any(x in (s['codec'] + s['profile']).lower() for x in LOSSLESS)
+
+
+def core_candidate(a, b):
+    """A lossless track beside a lossy one - the shape a lossy CORE always has."""
+    return _is_lossless(a) != _is_lossless(b)
+
+
+def _pcm(src, i):
+    """Decode the comparison window of a:i to mono float32 @48k."""
+    r = subprocess.run([FFMPEG, '-hide_banner', '-v', 'error',
+                        '-ss', str(rms_db.start), '-t', str(rms_db.dur), '-i', src,
+                        '-map', f'0:a:{i}', '-ac', '1', '-ar', '48000', '-f', 'f32le', '-'],
+                       capture_output=True)
+    if r.returncode != 0 or not r.stdout:
+        return None
+    return np.frombuffer(r.stdout, dtype='<f4').astype(np.float64)
+
+
+def compare_aligned(src, i, j, max_lag_ms=200.0):
+    """Residual dB below signal AFTER correcting decoder delay and level.
+
+    WHY THIS EXISTS - compare() above is sample-aligned and gain-naive, and that is a fail-OPEN
+    on the exact class the check was built for. A TrueHD track and its own AC-3 core differ by a
+    ~12.8 ms decoder delay plus a dialnorm gain offset, so inverting and mixing them leaves a
+    residual barely below the signal: the pair reads as INDEPENDENT CONTENT and both tracks ship.
+    Thunderball's a:1 was a lossy core; on Sunrise (1927) the analyzer proposed keeping all five
+    streams with redundantWith=None throughout, and two of those five were cores.
+
+    Correcting for lag and gain separates the cases unambiguously - measured on Sunrise:
+        a:0 vs a:1  r = 0.9922      a:2 vs a:3  r = 0.9901     (cores)
+        a:0 vs a:2  r = 0.018                                   (two genuinely different scores)
+
+    Returns (dB, lag_ms, gain_dB), or None when it cannot measure.
+    """
+    x = _pcm(src, i)
+    y = _pcm(src, j)
+    if x is None or y is None:
+        return None
+    n = min(len(x), len(y))
+    if n < 48000:                      # under a second of overlap - not worth a verdict
+        return None
+    x, y = x[:n], y[:n]
+    if not np.any(x) or not np.any(y):
+        return None
+
+    # FFT cross-correlation, searched only within a plausible decoder-delay window. A wider
+    # search invites a spurious peak on periodic material (music beds especially).
+    nfft = 1 << int(np.ceil(np.log2(2 * n)))
+    cc = np.fft.irfft(np.fft.rfft(x, nfft) * np.conj(np.fft.rfft(y, nfft)), nfft)
+    max_lag = int(48000 * max_lag_ms / 1000.0)
+    if max_lag < 1 or 2 * max_lag + 1 > len(cc):
+        return None
+    cand = np.concatenate([cc[:max_lag + 1], cc[-max_lag:]])
+    idx = int(np.argmax(np.abs(cand)))
+    lag = idx if idx <= max_lag else idx - (2 * max_lag + 1)
+
+    if lag > 0:
+        xs, ys = x[lag:], y[:n - lag]
+    elif lag < 0:
+        xs, ys = x[:n + lag], y[-lag:]
+    else:
+        xs, ys = x, y
+    if len(xs) < 48000:
+        return None
+
+    # Least-squares gain: the scale of ys that best explains xs. This is the dialnorm difference.
+    denom = float(np.dot(ys, ys))
+    if denom <= 0:
+        return None
+    g = float(np.dot(xs, ys) / denom)
+    resid = xs - g * ys
+    ps, pr = float(np.dot(xs, xs)), float(np.dot(resid, resid))
+    if ps <= 0:
+        return None
+    if pr <= 0:
+        return (999.0, lag / 48.0, 0.0)
+    gain_db = 20 * np.log10(abs(g)) if g else -99.0
+    return (10 * np.log10(ps / pr), lag / 48.0, gain_db)
 
 
 def transcribe(model, src, track, offsets, dur):
@@ -339,6 +441,7 @@ def main():
     print('pairwise subtraction (dB below signal; >%.0f = same content):' % REDUNDANT_DB)
     t_phase = time.monotonic()
     groups = []
+    core_suspects = []
     # ONLY COMPARE PAIRS THAT COULD ACTUALLY BE THE SAME CONTENT.
     #
     # This was every pair: 12 streams on When Harry Met Sally = 66 subtractions, each decoding two
@@ -365,6 +468,19 @@ def main():
         if d is None:
             continue
         same = d > REDUNDANT_DB
+        # ESCALATE A "NOT THE SAME" VERDICT ON A LOSSLESS/LOSSY PAIR.
+        # The naive subtraction cannot see through a decoder delay, so its NEGATIVE answer on
+        # exactly this shape is untrustworthy. Only this shape is escalated: it keeps the phase
+        # cost off the many-stream discs the pair-filter above was written to speed up.
+        if not same and core_candidate(streams[i], streams[j]):
+            r = compare_aligned(src, i, j) if np is not None else None
+            if np is None:
+                print(f'  a:{i} vs a:{j}  {d:6.1f}  *** lossless/lossy pair but numpy is MISSING - '
+                      f'the lossy-core check did not run; treat this verdict as unproven ***')
+            if r is not None:
+                d2, lag_ms, gain_db = r
+                if d2 > CORE_SUSPECT_DB:
+                    core_suspects.append((i, j, d, d2, lag_ms, gain_db))
         if same:
             print(f'  a:{i} vs a:{j}  {d:6.1f}  SAME CONTENT')
             for g in groups:
@@ -388,6 +504,14 @@ def main():
             if k != keep:
                 streams[k]['redundantWith'] = keep
                 print(f'  -> a:{k} is redundant with a:{keep} (drop)')
+    if core_suspects:
+        print('  POSSIBLE LOSSY CORE(S) - the naive subtraction cannot see these, and this check')
+        print('  does NOT drop them. Confirm with identify-audio.py before changing any manifest:')
+        for (i, j, d, d2, lag_ms, gain_db) in core_suspects:
+            print(f'    a:{i} vs a:{j}  {d:.1f} dB naive -> {d2:.1f} dB after alignment '
+                  f'(lag {lag_ms:+.1f} ms, gain {gain_db:+.1f} dB)')
+        print('    NB a COMMENTARY over the same score scores here too (Sunrise a:0 vs a:4 = 15.9 dB).')
+        print('    A commentary must never be dropped as a duplicate - transcribe before deciding.')
     print('  [subtraction phase: %.1fs]' % (time.monotonic() - t_phase))
 
     # --- transcription: only streams that could ship ----------------------------------------

@@ -26,6 +26,22 @@ if (-not $mutex.WaitOne(0)) {
   exit 0
 }
 
+# LOG FOR YOURSELF - never depend on how you were launched.
+#
+# This loop ran from 2026-08-25 11:09 started as `pwsh -File _publish-loop.ps1` with NO redirection,
+# so every line it printed went to a console nobody was attached to and was lost. The newest file in
+# _logs was then two days old, and on 2026-08-27 I read that stale log as the live one and announced
+# the loop was jammed retrying Goodnight Sweetheart - a work that had in fact published cleanly and
+# been reclaimed days earlier. It was idling correctly the whole time.
+#
+# A loop that cannot be observed gets misdiagnosed, and the misdiagnosis is what leads to killing
+# healthy pipeline processes. Transcript, not redirection, so it holds however it is started - and
+# it captures a terminating error too, which a `> log` from the launcher would also have lost.
+$logDir = 'D:\video\_logs'
+if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path $logDir | Out-Null }
+try { Start-Transcript -Path (Join-Path $logDir '_publish-loop.log') -Append | Out-Null } catch { }
+Write-Output ("=== publish loop up {0} ===" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
+
 while ($true) {
   $published = 0
   foreach ($kind in @('Movies', 'Television Shows')) {
@@ -72,8 +88,23 @@ while ($true) {
       $args = @('-File', 'D:\video\_publish.ps1', '-Work', $w.Name, '-Kind', $kind)
       if ($stale) { $args += '-Overwrite'; "{0,-46} wrong-size copy on NAS -> republishing with -Overwrite" -f $w.Name }
       $out = & pwsh @args 2>&1
-      $line = $out | Select-String 'verified|REFUSING' | Select-Object -First 1
-      if ($line) { "{0,-46} {1}" -f $w.Name, (($line -join ' ') -replace '\s+', ' ') }
+      # MATCH THE MESSAGE, NOT THE SOURCE LINE THAT RAISED IT.
+      #
+      # When _publish.ps1 throws, PowerShell renders the error with the offending SOURCE LINE
+      # attached, and that source line contains the word REFUSING because it is the throw itself.
+      # A bare match therefore logged `53 | . eq 'N/A') { throw "REFUSING: $($f.Name) has no dur .`
+      # - the code, truncated, with the filename still an unexpanded variable - instead of the
+      # actual reason. Every refusal in this log read like that, so the log could not answer the
+      # one question it exists to answer: WHICH file, and WHY.
+      #
+      # PowerShell prefixes those source echoes with `<line number> | `, so drop them and keep the
+      # rendered message.
+      $line = $out |
+              Where-Object { "$_" -notmatch '^\s*\d+\s*\|' } |
+              Select-String 'verified|REFUSING' | Select-Object -First 1
+      # `-replace '^\s*\|\s*'` drops the leading pipe of PowerShell's error continuation line, which
+      # survives the source-line filter above because it carries no line number.
+      if ($line) { "{0,-46} {1}" -f $w.Name, ((($line -join ' ') -replace '\s+', ' ') -replace '^\s*\|\s*', '') }
       elseif ($LASTEXITCODE -ne 0) {
         # A publish that CRASHES (guard failed to load, robocopy exit >= 8, a throw before the
         # verify) prints neither 'verified' nor 'REFUSING', and this loop used to say NOTHING -
