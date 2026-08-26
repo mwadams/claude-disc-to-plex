@@ -72,6 +72,26 @@ foreach ($u in $Units) {
     continue
   }
 
+  # A DISC CAN HAVE MORE THAN ONE CONSUMER. Refuse while any manifest still needs it.
+  #
+  # Both gates above ask "is this disc's own work finished?" - accounted for, and confirmed in Plex.
+  # Neither asks whether something ELSE is still going to read it. On 2026-08-26 the user asked for
+  # two programmes carried as Strangers extras to ALSO be filed as episodes of their own series, so
+  # `Strangers D2` gained a second manifest (`new-scotland-yard-s04e05.json`, title 5) long after
+  # `strangers-d2.json` had encoded. Releasing on the strength of the first would have deleted the
+  # staging out from under an encode that had not run.
+  #
+  # Match the STAGED PATH, not the bare name: a unit can be called `M`, and a substring match on one
+  # letter hits every manifest containing an "m".
+  $pathRx = '_stage[\\/]' + [regex]::Escape($unit) + '(?=["\\/])'
+  $pending = @(Get-ChildItem "D:/video/_queue/*.json", "D:/video/_queue/running/*.json" -ErrorAction SilentlyContinue |
+               Where-Object { (Get-Content -LiteralPath $_.FullName -Raw -ErrorAction SilentlyContinue) -match $pathRx })
+  if ($pending.Count -gt 0) {
+    Write-Output ("REFUSE  {0} - {1} manifest(s) still queued or running against it: {2}" -f `
+                  $unit, $pending.Count, (($pending.Name) -join ', '))
+    continue
+  }
+
   # Derived artefacts: the analysis sidecar and the rip intermediate. The rip folder is named from
   # the unit with every non-alphanumeric character dropped, which is how _rip-loop.ps1 names it.
   $slug     = ($unit -replace '[^A-Za-z0-9]', '').ToLowerInvariant()
