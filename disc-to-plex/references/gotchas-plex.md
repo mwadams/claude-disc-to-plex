@@ -196,3 +196,44 @@ Ask the server for candidates first — `GET /library/metadata/<rk>/matches?manu
 show collapses the two entries into one carrying every season. It is a metadata-only operation and
 the media is untouched. Re-run `fix-plex-extras.ps1` afterwards, because a merged `Season 00` comes
 back with its titles unset ("Episode 1").
+
+## Stored title overrides survive a forced refresh — and a NEW item is how you spot them
+
+A show can be correctly bound at every level and still display filenames as episode titles. On
+2026-08-26 `Nanny` showed `Nanny - s01e01`, `Nanny - s01e02` … across all three seasons, while:
+
+- every episode carried a **distinct, real `plex://episode/...` guid** — 11 of 11 in season 1;
+- the `title` field reported **no lock**;
+- `PUT /library/metadata/<showRk>/refresh?force=1` changed nothing;
+- the provider had the correct titles all along (`Innocent Party`, `Now Look What You've Done`, …).
+
+They were **stored title overrides written by an older import**, which Plex treats as user data and
+will not overwrite from the agent — with or without a visible lock flag.
+
+### The tell: one episode was right
+
+`S01E04 "The Magic Island"` displayed correctly while its nine siblings did not. That episode's item
+had been **created by this pipeline's own file**, because its slot was empty (an existing
+`Nanny - s01e014.mp4` has a three-digit token and indexes as episode 14, leaving E04 vacant). A
+freshly created item takes the agent's title; a pre-existing one keeps its stored override.
+
+**So when some episodes show real titles and others show filenames, split them by which items are
+NEW.** If the correct ones are exactly the ones you just added, the fault is inherited, not
+something the current run caused.
+
+### The fix
+
+Read the canonical list from the provider and write the titles explicitly:
+
+```
+GET  plex-season-map.ps1 -Show <name> -Season <n>          # canonical titles
+PUT  /library/metadata/<epRk>?type=4&id=<epRk>
+         &title.value=<canonical>&title.locked=1
+```
+
+Lock them: the whole problem is that Plex is preferring a stored value, so setting one without
+locking invites the same ambiguity back. Cross-check the provider list against the discs' own title
+cards before writing — on Nanny the two agreed exactly, which is what made it safe to apply in bulk.
+
+Leave any episode with no canonical counterpart alone. Nanny's `E14` has no episode 14 to match; it
+is the misnamed file itself, and leaving it untitled keeps it visible as the thing to clear.
