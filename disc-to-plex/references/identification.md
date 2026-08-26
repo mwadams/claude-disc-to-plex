@@ -463,3 +463,33 @@ observing it.
 Confirming the rule above from a third disc set: **every real menu page on these discs is 0.48 s** —
 the same duration this authoring house uses for black navigation padding. Duration identified
 nothing. Render.
+
+### The title card is NOT at a fixed offset — a fixed-window sweep reads as "no card"
+
+On Nanny Series 1 Disc 3, two episodes card at **40 s** and the third at **71 s**, because that one
+opens on a long near-black thunderstorm before the titles resolve. A sweep that stops at 60 s finds
+nothing on it and reports "no card" — which reads as a disc problem rather than as a sampling
+problem, and invites identification by position instead.
+
+Sweep a RANGE and OCR one binarised frame per second (38 s to 458 s worked here) rather than
+probing a remembered offset. The offset that worked on the last disc, or on the last episode of the
+same disc, is not a property of the series.
+
+Related: do not assume the writer credit is stable either. This box's episodes are mostly Brady &
+Bingham, but Disc 3 carries **Maggie Wadey** and **Carey Harrison** — a writer new to the box on two
+of its three episodes. A writer-block sequence is strong evidence of ORDER (see above), and no
+evidence at all about who else may appear.
+
+### IFO playback times: check the frame byte's RATE BITS before trusting a duration
+
+The BCD playback-time field ends in a frame byte whose top two bits give the frame rate: `11` = 25
+fps, `01` = 29.97. Nanny Disc 3 carries `01`.
+
+Decoding at the wrong rate does not fail loudly. It yields **plausible, slightly short durations**
+and a uniform NEGATIVE cell-sum delta across every title — which looks exactly like multi-cell
+truncation, the fault this pipeline most fears, and would send you re-ripping a disc that is
+perfectly intact.
+
+Prove the rate rather than assuming it: it is the one at which the IFO times equal ffprobe's
+measured durations exactly. On that disc 25 fps gave delta 0.00 on all five PGCs; 29.97 gave a
+consistent shortfall.
