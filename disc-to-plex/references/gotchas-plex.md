@@ -152,3 +152,47 @@ item appears matched:
 
 It takes the season number from the files in MediaDir, so point it at the SEASON folder, not the
 show root - the show root fails with "No SxxEyy-named .mkv files in MediaDir".
+
+## Adding episodes to an EXISTING show can split it into TWO shows
+
+Publishing new files into a show folder that Plex already carries does not always extend that show.
+On 2026-08-26, adding a `Season 00` and seven `Season 01` files to an existing `Nanny` folder made
+Plex create a **second show item over the same folder** and bind it to a different programme:
+
+| Plex show | seasons | files |
+|---|---|---|
+| `Nanny` (1981) | 2, 3 | the pre-existing `.mp4`s — correct |
+| **`The Nanny` (1993)** | 0, 1 | the newly published files — **the wrong programme entirely** |
+
+One folder on disk, two shows in the library, and the new content bound to a 1993 American sitcom
+instead of the 1981 BBC series. Nothing on disk was at fault: the folder name, the season folders
+and every filename matched the existing convention exactly.
+
+**A per-episode read-back does not catch this.** Every new episode reported `plex://episode/...`
+and looked perfectly bound — because it *was* bound, to the wrong show. The fault is only visible
+one level up.
+
+### Check at SHOW level after publishing into an existing show
+
+Query the section by title and confirm there is exactly ONE item, holding all the seasons you
+expect:
+
+```
+GET /library/sections/<key>/all?type=2&title=<Show>
+    -> for each result: GET /library/metadata/<rk>/children     (seasons)
+```
+
+Two results for one folder is the signature. So is a show whose season list has holes that the
+disk does not have.
+
+### The fix is a re-match, and it MERGES the two entries
+
+```
+PUT /library/metadata/<wrongRk>/match?guid=<correct guid>&name=<Show>&year=<year>
+```
+
+Ask the server for candidates first — `GET /library/metadata/<rk>/matches?manual=1&title=…&year=…`
+— and take the guid from there rather than typing one. Re-matching the stray item to the correct
+show collapses the two entries into one carrying every season. It is a metadata-only operation and
+the media is untouched. Re-run `fix-plex-extras.ps1` afterwards, because a merged `Season 00` comes
+back with its titles unset ("Episode 1").
