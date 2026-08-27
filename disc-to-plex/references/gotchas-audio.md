@@ -161,3 +161,37 @@ pass.
 **General form of this trap:** a similarity measure between two tracks answers "do these share
 content", never "is one of them redundant". Any track mixed OVER the programme audio — commentary,
 audio description, an isolated-score-plus-narration — shares content by construction.
+
+## analyze-tracks.py's ROLE ELECTION IS UNRELIABLE — read the samples, never the proposal (2026-08-27)
+
+Twice in one day, on two different discs, and in OPPOSITE directions:
+
+| disc | a:0 | a:1 | analyser said | its proposal would have shipped |
+|---|---|---|---|---|
+| The Dirty Dozen (1967) | English original | French dub | a:0 `commentary`, a:1 `primary` | the film's English dialogue **tagged as a commentary**, French as the main audio |
+| The Edge of the World (1937) | the film | the commentary | a:0 `commentary?`, a:1 `primary` | `audioTracks [1]` — **the commentary AS the soundtrack**, film audio dropped entirely |
+
+**Root cause on the 1937 disc, which is the general case:** whisper scored the noisy optical track at
+`langProb 0.49`, under the reliability floor, so `langReliable=false` removed it from the primary
+election — and the commentary, being clean modern studio speech at 0.90, won unopposed. *A low
+language confidence on an old or damaged soundtrack is a property of the RECORDING, not evidence
+that it is not the film.* Any election that gates on transcription confidence will prefer a
+commentary or a modern dub over an archival original, which is exactly backwards.
+
+**So: the `role` field and the `proposal` are a starting point, never an answer.** Read the
+`samples` text. It is unambiguous in seconds - film dialogue is characters talking to each other
+("Good lad, Andrew. I ordered you to help"), commentary is someone talking *about* the film
+("this is the point at which the film really joins another quite important current in 30s
+filmmaking ... Emeric Pressburger, who still had not met Michael Powell at this point").
+
+**When the election is wrong, correct the EVIDENCE, don't work around it.** Set `role` on the
+affected streams, keep the original in `roleAnalyser`, put the reasoning in `roleCorrectedBy`, and
+move the old proposal to `proposalAnalyser`. `assert-tracks-analysed.ps1` then passes the truthful
+manifest. The alternative that suggests itself - shipping the commentary as an `{edition-...}` -
+looks reasonable but is worse: on a film WITH local extras the edition must go in its own top-level
+folder (see naming.md), so a commentary track becomes a second movie in the library.
+
+Worth noting the guard behaved correctly throughout in both cases: it refused the unevidenced claim
+on the Dirty Dozen, and refused the truthful manifest on Edge of the World *because the evidence it
+was checking against was wrong*. The gate is only ever as good as the analysis behind it - which is
+the argument for reading the samples yourself rather than trusting a role label.
