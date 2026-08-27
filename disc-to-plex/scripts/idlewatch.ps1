@@ -161,9 +161,42 @@ if ($queued -eq 0 -and $busyLanes -lt 2) {
     if ($sp) { $srcRoot = $sp.DefaultValue.SafeGetValue() }
   } catch { }
 
+  # A staged folder is only AWAITING A MANIFEST if the judgement step has not been taken for it.
+  # Two independent signatures say it HAS been, and BOTH are needed because they cover different
+  # folders:
+  #   (a) a dispositions file - written by the author step, named for the DISC folder, and the
+  #       thing `assert-accounted.ps1` gates on. A disc folder is never a manifest `src` (the
+  #       manifest reads the MakeMKV rip), so nothing else identifies a disc as decided.
+  #   (b) a manifest naming the folder as a `src` - this is what covers the `*-rip` folders, which
+  #       have no dispositions file of their own.
+  # Neither existed here, so on 2026-08-28 four folders whose work had been authored, encoded and
+  # published - The Edge of the World, The Guardians D4, The Innocents, theedgeoftheworld-rip -
+  # were named as "awaiting a manifest" on every poll. The in-flight ffmpeg test below only ever
+  # catches the ONE item a lane is reading this second; it cannot see a finished unit. A monitor
+  # that cries wolf is not consulted on the day it is right.
+  # RESIDUAL RISK, accepted and deliberate: a unit whose dispositions were written but whose
+  # manifest was then abandoned is hidden by (a). Catching an abandoned unit is `_stallwatch.ps1`'s
+  # job; this check is about whether a DECISION is outstanding, and that decision was taken.
+  $decided = @{}
+  foreach ($dp in Get-ChildItem 'D:/video/_catalogue' -Filter '*.dispositions.txt' -ErrorAction SilentlyContinue) {
+    $decided[($dp.Name -replace '\.dispositions\.txt$', '')] = $true
+  }
+  # Normalise separators once, so the membership test needs only the forward-slash form. A literal
+  # "_stage\$n\" in a PowerShell double-quoted string is a backslash-escape hazard for no gain.
+  $manifestText = (@(
+      Get-ChildItem 'D:/video/_manifests'     -File -Filter '*.json' -ErrorAction SilentlyContinue
+      Get-ChildItem 'D:/video/_queue'         -File -Filter '*.json' -ErrorAction SilentlyContinue
+      Get-ChildItem 'D:/video/_queue/running' -File -Filter '*.json' -ErrorAction SilentlyContinue
+    ) | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw -ErrorAction SilentlyContinue }
+  ) -join "`n"
+  $manifestText = $manifestText.Replace('\', '/')
+
   $staged = @()
   foreach ($d in Get-ChildItem 'D:\video\_stage' -Directory -ErrorAction SilentlyContinue) {
     $n = $d.Name
+    # Cheap, decisive, and ahead of the slow E: byte-count read below.
+    if ($decided.ContainsKey($n)) { continue }
+    if ($manifestText.Contains("_stage/$n/")) { continue }
     # A unit with a .HOLD file is DELIBERATELY parked by the user (the Mumins discs, awaiting a
     # missing disc). It is not awaiting a manifest and never will be until the hold is lifted, so
     # naming it every 90 seconds is a permanent false alarm - and this monitor's whole value is
