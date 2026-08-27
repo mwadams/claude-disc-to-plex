@@ -689,3 +689,33 @@ Russian call at 0.99 was **correct**, because the episode is *The Moscow Subway 
 
 So a surprising language is a prompt to re-sample, not a finding, and re-sampling is cheap. The
 episode title will often tell you which way it should go.
+
+## When the box has no synopses, the PROVIDER usually does (2026-08-27)
+
+`mymovies.xml` is the first place to look for an episode list, but its `<Description>` is whatever
+the publisher chose to write, and it varies wildly even within one show:
+
+- The Bill Series 1 — full plot summaries per episode. Ideal.
+- The Bill Series 2 — marketing copy only ("An oasis of sanity or just a branch office of bedlam?").
+  Several episodes had to be matched on a single distinguishing detail.
+- The Bill Series 4 Volume One — **no `<Description>` element at all**.
+
+The Plex provider carries a `summary` on each episode, and it is often far better than the box:
+
+```powershell
+[xml]$s = (Invoke-WebRequest "https://metadata.provider.plex.tv/library/metadata/<showId>/children?episodeOrder=<ord>&X-Plex-Token=$tok" -UseBasicParsing).Content
+$season = @($s.MediaContainer.Directory | Where-Object { $_.index -eq N })[0]
+[xml]$e = (Invoke-WebRequest "https://metadata.provider.plex.tv/library/metadata/$($season.ratingKey)/children?X-Plex-Token=$tok" -UseBasicParsing).Content
+@($e.MediaContainer.Video) | ForEach-Object { "E{0:d2} {1}`n   {2}" -f [int]$_.index, $_.title, $_.summary }
+```
+
+For The Bill S04 these name characters and incidents - "P.C. Pete Ramsey arrives at Sun Hill, nearly
+running P.C. Taffy Edwards over with his Porsche and parking in the Chief Super's spot" - which is
+exactly the sort of detail a transcript can confirm. The box gave nothing at all.
+
+It is also the RIGHT authority: it is the same metadata the scanner will match against, so an
+episode identified from the provider's summary is identified against the numbering that will
+actually be used.
+
+**Order of preference for episode synopses:** provider `summary` → `mymovies.xml` `<Description>` →
+the sleeve. Check the provider FIRST when the box looks thin; it costs one request.
