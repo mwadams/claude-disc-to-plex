@@ -59,7 +59,10 @@ if ($procs.Count -eq 0) {
     # ffmpeg's output is the last path-looking argument; accept quoted or bare.
     $m = [regex]::Matches($c, '"?([A-Za-z]:[^"]*?\.mkv)"?')
     $out = if ($m.Count) { $m[$m.Count - 1].Groups[1].Value } else { $null }
-    $started = $p.CreationDate.ToString('HH:mm:ss')
+    # LABEL THIS. Bare "00:06:41" beside a process reads as elapsed/CPU time, and a start time that
+    # is (correctly) identical on every poll then looks like a WEDGED encode. Misread three times
+    # in a row on 2026-08-28 before the growing output file settled it. The prefix costs nothing.
+    $started = 'started ' + $p.CreationDate.ToString('HH:mm:ss')
 
     # A REAL OUTPUT GOES INTO THE LIBRARY. Anything else is an input being read.
     #

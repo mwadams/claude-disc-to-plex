@@ -219,7 +219,12 @@ if ($queued -eq 0 -and $busyLanes -lt 2) {
   if ($staged.Count) {
     $msgs += "QUEUE EMPTY, $busyLanes/2 lanes busy - staged and awaiting a manifest: $($staged -join ', ')"
   } else {
-    $msgs += "QUEUE EMPTY, $busyLanes/2 lanes busy - and NOTHING staged; the source track is the constraint"
+    # "NOTHING staged" was literally false the moment the decided/.HOLD filters above started
+    # doing their job: folders ARE staged, they just have no decision outstanding. Say what is
+    # actually being claimed, or the next reader checks _stage, sees eight folders, and stops
+    # trusting the line that follows the semicolon.
+    $held = @(Get-ChildItem 'D:/video/_stage' -Directory -ErrorAction SilentlyContinue).Count
+    $msgs += "QUEUE EMPTY, $busyLanes/2 lanes busy - nothing staged AWAITING A DECISION ($held staged folder(s), all decided or held); the source track is the constraint"
   }
 }
 
