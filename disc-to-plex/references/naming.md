@@ -288,6 +288,18 @@ M's `Interviews/Zum Beispiel Fritz Lang (1968).mkv` is present on the NAS and Pl
 local extras at all** for that item — only an online trailer. That is the bug the section above
 describes, reproducing.
 
+**Confirmed prospectively on Sunrise (1927), 2026-08-27** — a clean case, unlike M and Who Dares
+Wins which both had a duplicate copy muddying them. One film, one edition, four local extras, laid
+out the way this section prescribes:
+
+    rk=32815  'Sunrise' (1927)  edition=''               matched   local extras indexed: 4 of 4
+    rk=32820  'Sunrise' (1927)  edition='Czech Version'  matched   local extras indexed: 0
+
+Both items **match to the provider**, and Plex does read `{edition-...}` as an edition — it
+populates `editionTitle` correctly. It simply files it as a separate library item rather than
+folding it into the film. So the cost of this layout is exactly one extra row in the movie list, and
+the benefit is that the four extras exist at all.
+
 **So the rule is conditional:**
 
 - **Film has local extras** → give the edition its **own top-level folder**. You get a second

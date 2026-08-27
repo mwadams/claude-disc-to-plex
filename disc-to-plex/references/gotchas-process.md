@@ -109,3 +109,53 @@ remembered rule — but make it precise, or it gets ignored. The first version o
 compared lengths only, so it flagged every extra against the feature playlist; useless noise. It
 became useful once it proved containment.
 
+
+## A loop must log for ITSELF, not rely on how it was launched (2026-08-27)
+
+Two of the seven pipeline loops — publish and OCR — had been running for days started as
+`pwsh -NoProfile -File _<name>-loop.ps1` with **no redirection**. Every line they printed went to a
+console nobody was attached to. There was no `_ocr-loop.log` at all, and `_publish-loop.log` was two
+days old.
+
+**The cost is not the missing log, it is what you conclude from the stale one.** On 2026-08-27 I
+read a two-day-old `_publish-loop.log` as current, saw it repeating
+`Goodnight Sweetheart (1993)  verified 51/52, 1 MISMATCHED`, and announced the publish loop was
+jammed. It was idling correctly — Goodnight Sweetheart had published cleanly and been reclaimed days
+earlier, and the only works pending were two correctly refused because a file was still encoding.
+An invisible loop gets misdiagnosed, and a misdiagnosis is what leads to killing healthy pipeline
+processes — which this project has already paid for once.
+
+**So every loop opens its own transcript immediately after taking its mutex:**
+
+```powershell
+$logDir = 'D:\video\_logs'
+if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path $logDir | Out-Null }
+try { Start-Transcript -Path (Join-Path $logDir '_<name>-loop.log') -Append | Out-Null } catch { }
+Write-Output ("=== <name> loop up {0} ===" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
+```
+
+Transcript, not a launcher redirect: it survives however the loop is started, and it captures a
+terminating error, which `> log` from the caller does not. The `up` banner is what tells you the log
+you are reading belongs to the process now running — the absence of a recent banner is exactly the
+signal that was missing.
+
+**Corollary — check a log's mtime before believing it.** `stat`/`LastWriteTime` costs nothing, and
+"the newest file in `_logs` is two days old while the loop holds its mutex" is a complete diagnosis
+on its own: the loop is alive and its output is going nowhere.
+
+### The related fault in the same place: matching the message and getting the SOURCE LINE
+
+`_publish-loop.ps1` picked its log line with `$out | Select-String 'verified|REFUSING'`. When
+`_publish.ps1` throws, PowerShell renders the error with the offending **source line** attached —
+and that line contains the word `REFUSING`, because it is the `throw` itself. So every refusal
+logged as:
+
+```
+Goodnight Sweetheart (1993)     53 | . eq 'N/A') { throw "REFUSING: $($f.Name) has no duration - it is a par .
+```
+
+— the code, truncated, with the filename still an unexpanded `$($f.Name)`. The log could not answer
+the one question it exists to answer: *which* file, and *why*. Filter out PowerShell's source echoes
+(`^\s*\d+\s*\|`) and its continuation pipe (`^\s*\|\s*`) before matching. Same defect family as
+grepping a tool's output for anticipated strings: the filter matched something *shaped* like the
+answer.

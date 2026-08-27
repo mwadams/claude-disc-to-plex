@@ -22,6 +22,24 @@ if (-not $mutex.WaitOne(0)) {
   exit 0
 }
 
+# LOG FOR YOURSELF - never depend on how you were launched.
+#
+# This loop ran from 2026-08-23 09:22 started as `pwsh -File _ocr-loop.ps1` with NO redirection, so
+# everything it printed went to a console nobody was attached to. The newest ocr-loop*.log in _logs
+# was then six hours stale, and there was no _ocr-loop.log at all - so "is OCR working?" could not
+# be answered from disk, only guessed at from whether sidecars appeared.
+#
+# The same launch fault hit the publish loop, and there it led to a stale log being read as live
+# and a healthy loop being declared jammed. A loop that cannot be observed gets misdiagnosed, and
+# the misdiagnosis is what leads to killing pipeline processes that were working correctly.
+#
+# Transcript rather than a launcher redirect, so it holds however the loop is started, and so a
+# terminating error lands in the file too.
+$logDir = 'D:\video\_logs'
+if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path $logDir | Out-Null }
+try { Start-Transcript -Path (Join-Path $logDir '_ocr-loop.log') -Append | Out-Null } catch { }
+Write-Output ("=== ocr loop up {0} ===" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
+
 $paths   = Get-Content 'D:\video\.transcode-tools\tool-paths.json' -Raw | ConvertFrom-Json
 $ffprobe = Join-Path (Split-Path $paths.ffmpeg) 'ffprobe.exe'
 # Load VERIFIED: a failed dot-source leaves the predicates undefined, each call errors without
