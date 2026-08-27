@@ -719,3 +719,21 @@ actually be used.
 
 **Order of preference for episode synopses:** provider `summary` → `mymovies.xml` `<Description>` →
 the sleeve. Check the provider FIRST when the box looks thin; it costs one request.
+
+## Read the catalogue's titleCount before choosing what to sample (2026-08-27)
+
+On The Bill S4 Volume One, disc 1 held six episodes. I transcribed disc 2's titles 2-7 on that
+basis and missed dvdvideo title 8 entirely - **disc 2 has seven**. The disc would have shipped one
+episode short, and the gap would only have surfaced later as a hole in the season.
+
+The catalogue had said `titles: 8` in the very output I was reading. I sampled from the previous
+disc's shape instead of from the disc in front of me.
+
+**Discs within one box do NOT hold a fixed number of episodes.** Volume One is 6 + 7 = 13. Any
+arithmetic like "8 discs x 6 = 48 episodes" is a coincidence of averages, not a layout rule - it
+happened to match the season total here, which made the wrong assumption look confirmed.
+
+So: enumerate what to sample FROM `titleCount` in that disc's own catalogue json, every time.
+`assert-accounted.ps1` does catch this at the gate - every catalogued title needs a disposition, so
+an unsampled title cannot pass - but by then the transcription pass has already been run and has to
+be run again for the missed title. Reading one number first is cheaper.
