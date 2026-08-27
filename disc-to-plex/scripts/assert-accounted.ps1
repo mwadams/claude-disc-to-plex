@@ -239,7 +239,25 @@ foreach($id in ($disp.Keys | Sort-Object)){
       if(-not $arg -or $arg.Length -lt 8){
         $evFalse += ("t{0:D2}  speech citation needs the actual quote (>=8 chars): '{1}'" -f $id, $ev)
       } else {
-        $sample = Normalize-Quote "$(if($title){ $title.speechSample })"
+        # SEARCH THE DEEPER SAMPLES TOO, NOT JUST THE CATALOGUE'S ONE SNIPPET.
+        #
+        # The catalogue transcribes ONE window per title (90 s in), which is enough for a show that
+        # states its own name but useless for one that never does. The Bill captions no episode
+        # titles at all - its head strip is only the Thames ident and the series titles - so every
+        # episode there has to be matched on plot detail, and the distinguishing line ("It's a toy!
+        # It's a bloody toy!", "you suspect Domen is the nonce") is minutes deep, nowhere near 90 s.
+        #
+        # Refusing those quotes was correct while the transcripts were not recorded: an unverifiable
+        # quote is exactly the confident-wrong evidence this gate exists to stop. The fix is to
+        # RECORD the deeper transcripts rather than to relax the check - so a title may carry
+        # `speechSamplesExtra`, a list of {offsetSec, lang, prob, text, capturedBy}, and a quote is
+        # accepted if it appears in ANY recorded transcript. Every quote still has to be in a
+        # transcript that lives in the catalogue and names how it was captured.
+        $texts = @("$(if($title){ $title.speechSample })")
+        if($title -and $title.speechSamplesExtra){
+          $texts += @($title.speechSamplesExtra | ForEach-Object { "$($_.text)" })
+        }
+        $sample = Normalize-Quote (($texts | Where-Object { $_ }) -join ' ')
         if(-not $sample){
           $evFalse += ("t{0:D2}  speech cited but the catalogue holds NO transcript for this title (speechStatus={1})" -f $id, $(if($title){ $title.speechStatus } else { '?' }))
         } elseif(-not $sample.Contains((Normalize-Quote $arg))){
