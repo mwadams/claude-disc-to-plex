@@ -127,4 +127,13 @@ foreach ($u in $Units) {
 }
 
 Write-Output ("{0}: {1} unit(s), {2:N2} GB" -f $(if ($DryRun) { 'would free' } else { 'freed' }), $okCount, ($freed/1GB))
-Write-Output ("free on D: {0:N0} GB" -f ((Get-PSDrive D).Free/1GB))
+# READ FREE SPACE FRESH, NOT FROM Get-PSDrive.
+#
+# Get-PSDrive serves a value cached for the session, so it reports the space as it was BEFORE the
+# removals this script just performed. On 2026-08-27 releasing Sunrise printed "freed 86.42 GB" and
+# then "free on D: 63 GB" - the pre-release figure, unchanged. The true value was 149.1 GB.
+#
+# That combination reads as a FAILED reclaim: the bytes are claimed freed and the disk looks no
+# emptier. The obvious response is to go looking for more to release, which is the one irreversible
+# step in this pipeline. CIM queries the volume directly.
+Write-Output ("free on D: {0:N1} GB" -f ((Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='D:'").FreeSpace/1GB))
