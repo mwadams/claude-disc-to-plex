@@ -41,6 +41,8 @@ $done = @(Get-Content -LiteralPath $Completed -ErrorAction SilentlyContinue |
 $assert = 'D:/video/.claude/skills/disc-to-plex/scripts/assert-accounted.ps1'
 $freed  = 0
 $okCount = 0
+# Baseline for the settle-check at the end: free space BEFORE anything is removed.
+$startFree = (Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='D:'" -ErrorAction SilentlyContinue).FreeSpace
 
 foreach ($u in $Units) {
   $unit = $u.Trim()
@@ -127,13 +129,30 @@ foreach ($u in $Units) {
 }
 
 Write-Output ("{0}: {1} unit(s), {2:N2} GB" -f $(if ($DryRun) { 'would free' } else { 'freed' }), $okCount, ($freed/1GB))
-# READ FREE SPACE FRESH, NOT FROM Get-PSDrive.
+# FREE SPACE LAGS A LARGE DELETE - WAIT FOR IT TO SETTLE BEFORE REPORTING.
 #
-# Get-PSDrive serves a value cached for the session, so it reports the space as it was BEFORE the
-# removals this script just performed. On 2026-08-27 releasing Sunrise printed "freed 86.42 GB" and
-# then "free on D: 63 GB" - the pre-release figure, unchanged. The true value was 149.1 GB.
+# Releasing Sunrise printed "freed 86.42 GB" and then "free on D: 63 GB" - the PRE-release figure.
+# I first blamed Get-PSDrive session caching and switched to CIM. That explanation was WRONG, and
+# the next release proved it: with CIM in place, releasing 54.33 GB still printed 99.6 GB, while
+# the true figure moments later was 147.6 GB. Both APIs report the volume honestly; the volume
+# itself has not finished accounting for thousands of just-deleted files.
 #
-# That combination reads as a FAILED reclaim: the bytes are claimed freed and the disk looks no
-# emptier. The obvious response is to go looking for more to release, which is the one irreversible
-# step in this pipeline. CIM queries the volume directly.
-Write-Output ("free on D: {0:N1} GB" -f ((Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='D:'").FreeSpace/1GB))
+# It matters because "bytes freed" beside an unchanged disk reads as a FAILED reclaim, and the
+# obvious response is to release more staging - the one irreversible step in this pipeline.
+#
+# So: poll until the figure actually moves, and if it never does, SAY the number may lag rather
+# than presenting a stale reading as fact. The authoritative number is $freed, measured from the
+# files before they were removed.
+$settled = $null
+$deadline = (Get-Date).AddSeconds(20)
+do {
+  $now = (Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='D:'").FreeSpace
+  if ($null -eq $startFree -or $now -gt $startFree) { $settled = $now; break }
+  Start-Sleep -Milliseconds 750
+} while ((Get-Date) -lt $deadline)
+if ($null -eq $settled) {
+  $settled = (Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='D:'").FreeSpace
+  Write-Output ("free on D: {0:N1} GB - NOT yet reflecting this release; the volume lags a large delete. {1:N2} GB was freed." -f ($settled/1GB), ($freed/1GB))
+} else {
+  Write-Output ("free on D: {0:N1} GB" -f ($settled/1GB))
+}
