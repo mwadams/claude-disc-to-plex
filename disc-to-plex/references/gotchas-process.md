@@ -159,3 +159,41 @@ the one question it exists to answer: *which* file, and *why*. Filter out PowerS
 (`^\s*\d+\s*\|`) and its continuation pipe (`^\s*\|\s*`) before matching. Same defect family as
 grepping a tool's output for anticipated strings: the filter matched something *shaped* like the
 answer.
+
+## The idle-monitor's status lines are HINTS, not state (2026-08-27)
+
+The background monitor that reports "lanes idle / OCR idle / NAS idle / staged and awaiting a
+manifest" is useful for waking you up, and unreliable as a description of what is true. Observed
+false signals in a single day:
+
+| it said | what was actually true |
+|---|---|
+| `staged and awaiting a manifest: Sword Divided d1..d4` | all four encoded, published and verified; staging held only for the reclaim gate |
+| `OCR IDLE with 5 file(s) awaiting a sidecar` | OCR was mid-file; it runs ONE file at a time by design, so a queue is normal throughput |
+| `NOTHING staged; the source track is the constraint` | two discs were staged, one of them mid-encode |
+| `staged and awaiting a manifest: The Bill S3 D1` | published; `verified 28/28` in the publish log |
+| `restart _fetch-one.ps1` | the fetch loop had already resumed on its own |
+
+The pattern: it infers state from cheap proxies (is a process visible right now, does a staged
+folder have a queued manifest) and cannot distinguish "not started" from "finished". Acting on it
+means hand-running a stage the pipeline already owns - which is how duplicate work gets created.
+
+**Treat every monitor line as "go and look".** The authorities are, in order: the artefact itself
+(is the file on the NAS, does it have a duration), then `_whatsrunning.ps1` (which enumerates ALL
+queue states from one list), then the loops' own logs. Never the notification.
+
+### And read a loop log WITH its timing, not just its tail
+
+Three separate mis-readings in one day, all from `tail`-ing a log and treating the last line as the
+current state:
+
+- a mid-encode `REFUSING: ... has no duration` read as a truncated output that nothing would retry;
+  the file was finished minutes later and published `verified 12/12`
+- a two-day-old `_publish-loop.log` read as live, producing a confident "the publish loop is jammed"
+  about a loop that was idling correctly
+- a `WARNING: 2 equal-duration titles` attributed to the disc I was working on; it belonged to the
+  disc catalogued in the next block
+
+A loop log is a stream of past moments. Before concluding anything from its tail, check the file's
+mtime, and check which unit's block the line sits in. **Better still, ask the artefact**: "is it on
+the NAS?" answered in one call what three log reads could not.
