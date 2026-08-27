@@ -737,3 +737,28 @@ So: enumerate what to sample FROM `titleCount` in that disc's own catalogue json
 `assert-accounted.ps1` does catch this at the gate - every catalogued title needs a disposition, so
 an unsampled title cannot pass - but by then the transcription pass has already been run and has to
 be run again for the missed title. Reading one number first is cheaper.
+
+### The provider PAGINATES at 20 - check totalSize, not what came back
+
+`metadata.provider.plex.tv/.../children` returns the first **20** episodes and stops. The response
+says so, but only if you look:
+
+    <MediaContainer size="20" totalSize="48" ...>
+
+Season 4 of The Bill declares `leafCount=48` on the season Directory, yet the children call returned
+E01-E20. A season list that stops at a plausible-looking number is exactly the kind of truncation
+that reads as complete - and on a long-running show, "this series has 20 episodes" is believable.
+
+Page through it:
+
+```powershell
+$all = @()
+for ($start = 0; $start -lt $total; $start += 20) {
+  $r = Invoke-WebRequest "$base/library/metadata/$seasonRk/children?X-Plex-Token=$tok&X-Plex-Container-Start=$start&X-Plex-Container-Size=20" -UseBasicParsing
+  $all += @(([xml]$r.Content).MediaContainer.Video)
+}
+```
+
+Always cross-check the count you got against the season's `leafCount` / the container's `totalSize`
+before treating an episode list as the whole season. Same defect family as reading a `tail` as the
+whole log, or a filtered grep as the whole output: the answer is shaped like a complete one.

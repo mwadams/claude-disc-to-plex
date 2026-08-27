@@ -65,10 +65,20 @@ function Wait-FreeSpaceSettled {
     $gain = $now - $Before
 
     if ($target -gt 0 -and $gain -ge $target) { $reason = 'expected'; break }
-    # Stability only counts once the figure has actually MOVED - otherwise a volume that has not
-    # begun accounting yet looks "stable" at its pre-delete value and we report the stale number
-    # with confidence, which is the whole bug.
-    if ($gain -gt 0 -and $stable -ge $StableReads) { $reason = 'stable'; break }
+
+    # STABILITY IS NOT ENOUGH WHEN WE KNOW WHAT WAS REMOVED.
+    #
+    # This first required only that the figure had MOVED before accepting a plateau. That is too
+    # weak, and it shipped a wrong number on the very first real use: reclaiming 83.22 GB of library
+    # files, the volume ticked up a few MB, held flat for the three reads, and the caller reported
+    # "free on D: 116.4 GB" as settled fact. The true figure once accounting finished was 199.7 GB.
+    #
+    # A large delete does not free space smoothly - it climbs in bursts with PLATEAUS between them,
+    # and an early plateau is indistinguishable from the end state by shape alone. So when
+    # ExpectedGain is known, only reaching it counts; a plateau short of it keeps waiting and, if
+    # the wait runs out, the caller is told the figure is provisional. Stability remains the only
+    # available signal when the caller cannot say how much it removed.
+    if ($target -le 0 -and $gain -gt 0 -and $stable -ge $StableReads) { $reason = 'stable'; break }
     if ((Get-Date) -ge $deadline) { $reason = 'timeout'; break }
 
     & $Sleeper $PollMs

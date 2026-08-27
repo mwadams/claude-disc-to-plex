@@ -33,12 +33,15 @@ Check 'reason'  $r.Reason  'expected'
 Check 'settled' $r.Settled 'True'
 Check 'free'    $r.Free    ($B + 48GB)
 
-Write-Output '2. falls short of expectation but stops moving -> stable'
+Write-Output '2. THE PLATEAU BUG: moves a little, then holds far short of the expected gain'
+#   Reclaiming 83 GB, the volume ticked up a few MB and held flat for three reads. The old rule
+#   ("it moved, and it is steady") accepted that and reported a figure 83 GB short as fact. A large
+#   delete frees space in BURSTS with plateaus between them, so a plateau proves nothing on its own.
 $r = Wait-FreeSpaceSettled -Before $B -ExpectedGain 50GB -StableReads 3 `
-       -Reader (Seq @($B, ($B + 30GB))) -Sleeper $noSleep -MaxPolls 10
-Check 'reason'  $r.Reason  'stable'
-Check 'settled' $r.Settled 'True'
-Check 'gain'    $r.Gain    30GB
+       -Reader (Seq @($B, ($B + 20MB))) -Sleeper $noSleep -MaxPolls 10
+Check 'reason'  $r.Reason  'timeout'
+Check 'settled' $r.Settled 'False'   # -> caller must say PROVISIONAL, not present it as fact
+Check 'gain'    $r.Gain    20MB
 
 Write-Output '3. THE REAL BUG: never moves -> timeout, never "stable"'
 $r = Wait-FreeSpaceSettled -Before $B -ExpectedGain 50GB -StableReads 3 `

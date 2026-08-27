@@ -224,6 +224,35 @@ function Resolve-DvdTitleMapping {
       }
     }
   }
+  # AN UNMATCHED TITLE POISONS THE WHOLE DISC'S MAPPING.
+  #
+  # The greedy pass takes each MakeMKV title's NEAREST free dvdvideo title. When several episodes
+  # sit within seconds of each other that nearest one is often not the right one, and the error
+  # cascades: each title takes a partner that belonged to a later title, until the last has nothing
+  # left inside tolerance and gets $null.
+  #
+  # Observed on The Bill S4 V2 D1 (2026-08-27). Six episodes spanning 24:13-24:51; MakeMKV runs
+  # ~1-2 s under ffprobe but NOT uniformly, which is enough to cross the wires:
+  #
+  #     MakeMKV 24:47 -> nearest free is dvdvideo 3 (1486, delta 1); the truth is dvdvideo 2 (1489, delta 2)
+  #
+  # producing t01->3 t02->5 t03->4 t04->7 t05->6 t06->NULL, with only ONE title flagged ambiguous.
+  # The pairwise swap check above cannot see it: the WRONG assignment has a strictly LOWER total
+  # error than the correct one, so no exchange looks like an improvement.
+  #
+  # There is no reliable way to repair the assignment here - but a null is proof that the pairing as
+  # a whole is unsound, because every real episode title does have a dvdvideo counterpart. So say so
+  # about ALL of them rather than letting five confident-looking rows stand beside one gap.
+  $unmatched = @($result.Keys | Where-Object { $null -eq $result[$_].dvdvideoTitle })
+  if ($unmatched.Count -gt 0 -and $result.Keys.Count -gt 1) {
+    foreach ($k in $result.Keys) {
+      $result[$k].mappingAmbiguous = $true
+      if ($result[$k].mappingTieSize -lt 2) { $result[$k].mappingTieSize = $result.Keys.Count }
+    }
+    Write-Host ("    {0} title(s) left UNMATCHED (t{1}) - the greedy assignment cascaded, so the whole disc's mapping is positional. ALL {2} title(s) marked ambiguous; probe the disc directly before citing content evidence." -f `
+                $unmatched.Count, (($unmatched | Sort-Object | ForEach-Object { '{0:00}' -f $_ }) -join ',t'), $result.Keys.Count)
+  }
+
   return $result
 }
 
