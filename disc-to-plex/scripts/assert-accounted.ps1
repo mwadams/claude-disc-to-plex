@@ -178,6 +178,7 @@ function Normalize-Quote([string]$s){ ((($s).ToLower() -replace '[^a-z0-9]+',' '
 $evFalse = @()      # cited evidence that FAILED verification, or an unknown class -> always fatal
 $evMissing = @()    # named titles with no citation at all -> warn, fatal under -RequireEvidence
 $evBlind = @()      # named titles for which the catalogue captured NOTHING -> always shown
+$evNote  = @()      # ambiguous mappings ACCEPTED on a recorded proof -> always shown, never silent
 foreach($id in ($disp.Keys | Sort-Object)){
   $d0 = $disp[$id]
   if($d0.kind -notin @('feature','extra','episode')){ continue }
@@ -201,9 +202,30 @@ foreach($id in ($disp.Keys | Sort-Object)){
   # citations against them are refused; name such a title from a rip, a menu render, or the user
   # (a speech: quote matching a possibly-foreign transcript is exactly the confident-wrong-
   # evidence trap this gate exists to close).
-  if($title -and $title.mappingAmbiguous -and $cls.ToLower() -in @('card','frame','speech')){
-    $evFalse += ("t{0:D2}  '{1}' cited, but this title's dvdvideo mapping is AMBIGUOUS (tie of {2} equal-duration titles, matched by order) - its captured evidence is positional. Corroborate from a rip, or cite menu:/user:/duration: instead" -f $id, $cls, $title.mappingTieSize)
+  # ...UNLESS THE MAPPING HAS SINCE BEEN PROVEN FROM CONTENT.
+  #
+  # The refusal above assumes the only evidence available is what the catalogue captured. That is
+  # not always so: the ambiguity can be resolved directly, by opening the mapped dvdvideo title
+  # itself and reading what it contains, which is not a positional claim at all.
+  #
+  # Without an outlet for that, the gate pushes toward two bad moves - relabel a `card:` citation
+  # as `user:` to satisfy the checker (recording false evidence, the exact thing this gate exists
+  # to stop), or bypass the gate. So a title may carry `mappingProvenBy`: free text saying HOW the
+  # pairing was established. It is only honoured when non-empty, and what it says is a claim the
+  # reader can check against the disc.
+  #
+  # Set on 2026-08-27 for Sword Divided d7 t00/t02 and d8 t01: frames pulled straight from
+  # dvdvideo titles 1/2/3 with `-f dvdvideo -title N` showed FATEFUL DAYS / FORLORN HOPE /
+  # THE MAILED FIST / RESTORATION, matching the catalogue's tNN head strips - so the by-order
+  # pairing was correct, and now demonstrably so rather than presumptively.
+  $proven = $title -and $title.PSObject.Properties.Name -contains 'mappingProvenBy' -and
+            "$($title.mappingProvenBy)".Trim()
+  if($title -and $title.mappingAmbiguous -and -not $proven -and $cls.ToLower() -in @('card','frame','speech')){
+    $evFalse += ("t{0:D2}  '{1}' cited, but this title's dvdvideo mapping is AMBIGUOUS (tie of {2} equal-duration titles, matched by order) - its captured evidence is positional. Corroborate from a rip, or cite menu:/user:/duration: instead, or record how you proved the mapping in the title's 'mappingProvenBy' field" -f $id, $cls, $title.mappingTieSize)
     continue
+  }
+  if($title -and $title.mappingAmbiguous -and $proven){
+    $evNote += ("t{0:D2}  mapping was ambiguous; accepted because mappingProvenBy says: {1}" -f $id, "$($title.mappingProvenBy)".Trim())
   }
   if($blind -and $cls.ToLower() -notin @('card','frame','speech')){
     # card/frame/speech citations on a blind title fail hard in the switch below; external
@@ -260,6 +282,13 @@ if($evFalse){
   Write-Output ""
   Write-Output "False evidence is worse than none: fix the citation, or look at the title again."
   exit 2
+}
+# An ambiguity waived on a proof must be VISIBLE. A gate that quietly stops objecting is
+# indistinguishable from a gate that was removed, and the whole value of `mappingProvenBy` is that
+# a reader can go and check the claim it carries.
+if($evNote){
+  Write-Output ("{0} ambiguous mapping(s) accepted on a recorded proof - verify these claims if anything downstream looks wrong:" -f $evNote.Count)
+  $evNote | ForEach-Object { Write-Output "   $_" }
 }
 if($evBlind){
   Write-Warning ("{0} named title(s) have NO captured evidence in the catalogue - external citations only:" -f $evBlind.Count)
