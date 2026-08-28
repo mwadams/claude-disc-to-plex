@@ -203,3 +203,35 @@ makemkvcon64.exe -r --cache=1 info "file:<stage>"
 It prints `Title #N was added (C cell(s), H:MM:SS)` per title. Agreement means the disc is simply
 what it is.
 
+
+## `dvd-path-check.ps1` IS BLIND WHEN BOTH TOOLS SHARE THE BUG (2026-08-28)
+
+`dvd-path-check.ps1` clears the dvdvideo first-cell truncation risk by checking that **ffmpeg agrees
+with MakeMKV**. That is a comparison, not a measurement — and a comparison cannot see a fault the
+two share.
+
+**The Saint Colour D13, dvdvideo title 8.** The VTS holds one PGC of **16:36 in 17 cells**, a 664 MB
+VOB. MakeMKV reports **0:59 / 37.4 MB**; ffmpeg also stops at ~59 s. Both read only the first cell,
+so they agree exactly — and the path check printed "dvdvideo path safe". Its counter-rule is
+structurally incapable of catching this: agreement is its pass condition.
+
+**What does catch it is the prover's byte comparison.** `prove-dvd-mapping.py` sums the VTS's title
+VOBs and compares against MakeMKV's `TINFO,11`. 37 MB against a 664 MB VTS does not match anything,
+so the title comes back **UNPROVEN** — an independent measurement against the disc's own structure
+rather than against another tool's opinion.
+
+So, on any DVD:
+
+- **A green `dvd-path-check` is necessary, not sufficient.** Read the prover's output too, and treat
+  a title whose MakeMKV size is a small fraction of its VTS VOB total as truncated until proven
+  otherwise, whatever the path check says.
+- The inverse case is the ordinary one and stays valid: a **2048-byte** (one-sector) shortfall is an
+  authoring artefact, not truncation — Rivals S2 D4's VTS_03 was short by exactly one sector and was
+  proven intact from TT_SRPT, chapter counts and MakeMKV's `TINFO,24`.
+- Recovering such a title is not simply "read the VOB directly": D13's 17 cells alternate between
+  audio streams `0x80` and `0x81` (ending at 12:31 and 11:31 against 16:36 of video), so a flat read
+  yields video with holes in the audio. **Defer it rather than ship it truncated or broken.**
+
+The general rule, which is not specific to DVDs: **when two tools agree, ask whether they share an
+implementation or a bug before treating the agreement as corroboration.** Independent corroboration
+has to come from a different KIND of evidence — here, bytes on disk against the disc's own tables.

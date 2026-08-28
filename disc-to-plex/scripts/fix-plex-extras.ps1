@@ -138,7 +138,21 @@ foreach($e in $eps){
 
   if(-not $NoPosters){
     if($haveFile){
-      $dur = [double](& $fp -v error -show_entries format=duration -of default=nw=1:nk=1 $file)
+      # A FILE STILL BEING COPIED HAS NO DURATION, AND THAT MUST NOT KILL THE RUN.
+      #
+      # ffprobe returns "N/A" (or nothing) for an mkv whose header is not yet written - exactly what
+      # a publish-in-progress looks like on the NAS. Casting that straight to [double] throws, and
+      # because this loop is not guarded the whole script ABORTS: on 2026-08-28 The Saint's S00E12
+      # was mid-copy (25 MB of 101 MB) and E12, E13 and E14 were all left untitled and unlocked.
+      # Titles are the point of this script and posters are the extra, so a missing duration must
+      # cost only the poster, and must SAY so rather than failing silently or loudly.
+      $rawDur = "$(& $fp -v error -show_entries format=duration -of default=nw=1:nk=1 $file)".Trim()
+      $dur = 0.0
+      if (-not [double]::TryParse($rawDur, [ref]$dur) -or $dur -le 0) {
+        $line += " | poster SKIPPED: no duration (still copying?)"
+        Write-Output $line
+        continue
+      }
       $t   = [Math]::Max(2,[Math]::Round($dur*$PosterAt,0))
       $jpg = Join-Path $tmp ("s{0:D2}e{1:D2}.jpg" -f $Season,$e.index)
       & $ff -y -v error -ss $t -i $file -frames:v 1 -vf "scale=640:-1" -q:v 3 $jpg 2>$null
