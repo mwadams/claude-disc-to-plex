@@ -162,6 +162,34 @@ pass.
 content", never "is one of them redundant". Any track mixed OVER the programme audio — commentary,
 audio description, an isolated-score-plus-narration — shares content by construction.
 
+## Ordinals from the SOURCE do not survive the RIP — MakeMKV emits MA *and* core (2026-08-28)
+
+The lossy core above is not only a dedup problem. It **renumbers the audio streams**, so an ordinal
+established on the source `.m2ts` points at different content in the MakeMKV `.mkv` you encode from.
+
+The Ladykillers (1955), BD. Content analysis of the source was settled and correct — `a:0` English
+dialogue, `a:1` French, `a:2` German, `a:3` Spanish, `a:4` the Philip Kemp commentary. MakeMKV's rip
+of the same title carries **10** audio tracks, not 5, because each DTS-HD MA track is paired with its
+own DTS core:
+
+```
+rip:  0 eng MA   1 eng core   2 fra MA   3 fra core   4 deu MA   5 deu core
+      6 spa MA   7 spa core   8 eng MA (commentary)   9 eng core
+```
+
+`audioTracks: [0, 4]` — right for the source — selects the English mix and the **German dub** in the
+rip. The commentary is `a:8`. Nothing about the resulting file looks wrong: correct track count,
+correct languages present, plausible sizes.
+
+**The tell was SIZE**: the rip came out 30.0 GB against a 25.5 GB source `.m2ts`. A rip materially
+larger than its source means extra streams, and on a DTS-HD/TrueHD disc that means cores.
+
+So: **derive audio ordinals from the FILE THE MANIFEST READS, never from the file you analysed.**
+When those differ — and for any `kind: "BD"` item reading a MakeMKV rip they almost always do —
+re-derive against the rip and its `.tracks.json`. `assert-tracks-analysed.ps1` is what forces this;
+it refuses an item whose tracks were never analysed, which is why the manifest waits on
+`_analyse-loop` rather than shipping on the source's numbering.
+
 ## analyze-tracks.py's ROLE ELECTION IS UNRELIABLE — read the samples, never the proposal (2026-08-27)
 
 Twice in one day, on two different discs, and in OPPOSITE directions:
