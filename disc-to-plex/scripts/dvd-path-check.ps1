@@ -156,13 +156,54 @@ foreach ($d in $Discs) {
     continue
   }
 
+  # PAIR BY THE PROVEN MAPPING, NOT BY POSITION.
+  #
+  # This compared MakeMKV's Nth title against ffmpeg's title N. That assumes the two enumerations
+  # run in step, and they do not always: on The World's Fastest Indian (2005) TT_SRPT declares six
+  # titles of which three are navigation stubs, so MakeMKV's first REAL title is dvdvideo 3 and the
+  # whole comparison sits three out. It probed the stubs, called the feature "short", and printed
+  # `*** USE MakeMKV ***` for a disc whose dvdvideo path was fine.
+  #
+  # A false alarm is the harmless half. THE SAME OFFSET CAN PAIR A TITLE AGAINST A LONGER SIBLING
+  # AND REPORT "ok" ON A GENUINELY TRUNCATED ONE - a truncation check that passes truncated
+  # content, which is the failure this script exists to prevent.
+  #
+  # `prove-dvd-mapping.py` already answers this from the disc's own tables (TT_SRPT plus exact VTS
+  # byte totals), so use its answer and fall back to position only when it cannot prove one - and
+  # say so, loudly, because an unproven pairing is exactly the state that produced the wrong verdict.
+  $map = $null
+  $proverPath = Join-Path $PSScriptRoot 'prove-dvd-mapping.py'
+  if (Test-Path -LiteralPath $proverPath) {
+    try {
+      $pj = & python $proverPath $src --json --minlength 1 2>$null | ConvertFrom-Json
+      if ($pj -and $pj.mapping) {
+        $map = @{}
+        foreach ($row in $pj.mapping) {
+          if ($null -ne $row.dvdvideoTitle) { $map[[int]$row.makemkvTitle] = [int]$row.dvdvideoTitle }
+        }
+        if ($map.Count -lt $mk.Count) { $map = $null }   # partial proof is not a mapping
+      }
+    } catch { $map = $null }
+  }
+  if (-not $map) {
+    Write-Host ("{0,-34} !! mapping NOT proven - pairing MakeMKV title N against dvdvideo N by" -f $d)
+    Write-Host    "      POSITION. If this disc has navigation stubs the pairing is offset and this"
+    Write-Host    "      verdict is unreliable in BOTH directions. Check prove-dvd-mapping.py by hand."
+  }
+
   $short = @()
   for ($i = 0; $i -lt $mk.Count; $i++) {
-    if ($ff[$i] -lt 0) { $short += "t$($i+1): ffmpeg could not read"; continue }
-    $gap = $mk[$i] - $ff[$i]
+    # $mk is 0-based over MakeMKV's titles; MakeMKV title ids are 0-based, so title id = $i.
+    # $ff is 0-based over dvdvideo titles 1..N, so dvdvideo title D sits at $ff[$D-1].
+    $dv = if ($map -and $map.ContainsKey($i)) { $map[$i] } else { $i + 1 }
+    $ffIdx = $dv - 1
+    # ${i} NOT $i - PowerShell reads "$i:" as a DRIVE-qualified variable and fails to parse.
+    if ($ffIdx -lt 0 -or $ffIdx -ge $ff.Count) { $short += "t${i}: dvdvideo $dv not probed"; continue }
+    if ($ff[$ffIdx] -lt 0) { $short += "t${i} (dvdvideo $dv): ffmpeg could not read"; continue }
+    $gap = $mk[$i] - $ff[$ffIdx]
     if ($gap -gt $ToleranceSec) {
-      $short += ("t{0}: ffmpeg {1} vs MakeMKV {2} (-{3}s)" -f ($i+1),
-                 [timespan]::FromSeconds($ff[$i]).ToString('hh\:mm\:ss'),
+      $short += ("t{0} (dvdvideo {1}): ffmpeg {2} vs MakeMKV {3} (-{4}s)" -f $i, $dv,
+                 [timespan]::FromSeconds($ff[$ffIdx]).ToString('hh\:mm\:ss'),
                  [timespan]::FromSeconds($mk[$i]).ToString('hh\:mm\:ss'), $gap)
     }
   }
