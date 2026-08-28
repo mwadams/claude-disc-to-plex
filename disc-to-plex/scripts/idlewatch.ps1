@@ -183,10 +183,15 @@ if ($queued -eq 0 -and $busyLanes -lt 2) {
   }
   # Normalise separators once, so the membership test needs only the forward-slash form. A literal
   # "_stage\$n\" in a PowerShell double-quoted string is a backslash-escape hazard for no gain.
+  # RECURSE `_queue`. It has FOUR states - the root, running/, done/ and failed/ - and naming them
+  # individually is how this bug survived its own fix: the first version listed root and running/
+  # only, so the alarm simply moved one stage later. `theinnocents-rip` came back as "awaiting a
+  # manifest" the moment its two manifests completed into done/. A manifest in ANY of those states
+  # is proof the decision was taken; failed/ included, because a failure is `_stallwatch.ps1`'s
+  # business, not an outstanding decision.
   $manifestText = (@(
-      Get-ChildItem 'D:/video/_manifests'     -File -Filter '*.json' -ErrorAction SilentlyContinue
-      Get-ChildItem 'D:/video/_queue'         -File -Filter '*.json' -ErrorAction SilentlyContinue
-      Get-ChildItem 'D:/video/_queue/running' -File -Filter '*.json' -ErrorAction SilentlyContinue
+      Get-ChildItem 'D:/video/_manifests' -File -Filter '*.json' -Recurse -ErrorAction SilentlyContinue
+      Get-ChildItem 'D:/video/_queue'     -File -Filter '*.json' -Recurse -ErrorAction SilentlyContinue
     ) | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw -ErrorAction SilentlyContinue }
   ) -join "`n"
   $manifestText = $manifestText.Replace('\', '/')
