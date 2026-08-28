@@ -615,9 +615,36 @@ proportion is a real question — and answer it with sector coverage plus contin
 disc did: I.i.1 through V.v's last line, all 24 chapters opening where the index says, cell sums
 exact on every title. There was no 9.5-minute hole for content to hide in.
 
-### Settle a doubtful tNN→dvdvideoTitle mapping by RE-EXTRACTING the frames and hashing them
+### Settle a doubtful tNN→dvdvideoTitle mapping ARITHMETICALLY — run the prover first
 
-Size is a useful tiebreak when durations are close. **Re-extraction is proof.**
+```
+python scripts/prove-dvd-mapping.py "D:/video/_stage/<disc>"
+```
+
+The disc already states the mapping; duration is a proxy for it. `VIDEO_TS.IFO`'s **TT_SRPT** table
+declares which VTS holds each dvdvideo title, and MakeMKV's `TINFO:<id>,11` source byte size equals
+that VTS's title-VOB total **to the byte** whenever the VTS holds one title. Where both hold, the
+pairing is arithmetic and needs no second opinion. Exit 0 = all proven; exit 2 = something is not.
+
+It reproduced The Jensen Code D1's hand-derived correction exactly (8/8), and independently
+re-derived DIE_MUMINS_3's known defect — VTS_11 truncated, 16 title sets absent.
+
+Two things it will not do, deliberately:
+
+- **It will not resolve a VTS holding several titles** (a one-VTS disc split by chapters). Those
+  share one VOB set, so size cannot separate them; they are reported UNPROVEN and still need
+  duration plus content corroboration.
+- **It will not guess.** A guess here would destroy the only property that makes it useful.
+
+⚠ **`--minlength` must match the catalogue's floor of 10.** MakeMKV numbers the titles it *shows*,
+so a higher floor drops a short title and shifts every id after it. The first run used MakeMKV's
+default 120 s, lost a 24.9 s boilerplate title, and produced a perfectly self-consistent mapping
+that was off by one throughout.
+
+### Settle it by RE-EXTRACTING the frames and hashing them
+
+When the prover reports UNPROVEN, this is the fallback. Size is a useful tiebreak when durations are
+close. **Re-extraction is proof.**
 
 The catalogue stores frames and a speech sample against each `tNN`. If the mapping is right, pulling
 the same timestamps out of the mapped `dvdvideoTitle` with the same filter chain reproduces those

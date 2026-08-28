@@ -396,6 +396,7 @@ Core pipeline, in the order you use them:
 | `install-tools.ps1` | fetch a driver-compatible ffmpeg, SupMover, mkvextract, seconv |
 | `assert-staged-complete.ps1` | **run BEFORE enumerating** — throws if the staging folder is still growing or short against source |
 | `scan-disc.ps1` | enumerate and classify DVD titles across a set of discs |
+| `prove-dvd-mapping.py` | prove tNN→dvdvideoTitle from TT_SRPT + VTS byte sizes, *without* duration |
 | `audit-bd-titles.ps1` | compare MakeMKV's title list against what was shipped |
 | `identify-audio.py` | transcribe each audio track to identify language and commentary |
 | `audio-dup-check.ps1` | hash decoded audio to tell a REAL commentary from a duplicate copy |
