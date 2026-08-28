@@ -230,9 +230,72 @@ def prove(disc_dir, info_text):
     return rows, unproven, srpt, missing
 
 
+def verify_claims(disc_dir, catalogue_path):
+    """Check every `mappingProvenBy` that CITES THIS SCRIPT against the disc itself.
+
+    WHY. `assert-accounted.ps1` honours `mappingProvenBy` when it is non-empty - and non-empty is
+    the whole test. Every other citation class is verified mechanically (`speech:` must be exact
+    recorded text, `mymovies:` must appear verbatim), so this is the one field where writing a
+    plausible sentence defeats the check. Demonstrated 2026-08-28: a catalogue with KNOWN-CROSSED
+    dvdvideoTitle values, with a proof string bolted on, passed the gate at exit 0.
+
+    The field is deliberately free text, because a legitimate proof can be "I pulled frames from
+    dvdvideo title 3 and read the card" - not machine-checkable, and it should stay allowed. But a
+    claim in THIS script's own words is entirely checkable, and it is the form most likely to be
+    copied or fabricated convincingly. So: claims naming a VTS and a byte total are re-derived from
+    the disc; anything else is reported as an unverified human claim and left alone.
+
+    Returns (verified, unverifiable, failures).
+    """
+    video_ts = disc_dir
+    if os.path.isdir(os.path.join(disc_dir, 'VIDEO_TS')):
+        video_ts = os.path.join(disc_dir, 'VIDEO_TS')
+    srpt = {e['title']: e for e in read_tt_srpt(video_ts)}
+    vob = vts_vob_bytes(video_ts)
+    per_vts = {}
+    for e in srpt.values():
+        per_vts.setdefault(e['vtsn'], []).append(e['title'])
+
+    with open(catalogue_path, encoding='utf-8') as fh:
+        cat = json.load(fh)
+
+    verified, unverifiable, failures = [], [], []
+    for t in cat.get('titles', []):
+        claim = (t.get('mappingProvenBy') or '').strip()
+        if not claim:
+            continue
+        label = 't%02d' % t.get('title', -1)
+        dv = t.get('dvdvideoTitle')
+        m = re.search(r'VTS_(\d+)\s+title VOBs total\s+(\d+)\s+bytes', claim)
+        if not m:
+            unverifiable.append((label, claim))
+            continue
+        vtsn, stated = int(m.group(1)), int(m.group(2))
+        actual = vob.get(vtsn)
+        if actual is None:
+            failures.append((label, f'claim names VTS_{vtsn:02d}, which has no title VOBs on disk'))
+        elif actual != stated:
+            failures.append((label, f'claim says VTS_{vtsn:02d} totals {stated:,} bytes; the disc '
+                                    f'says {actual:,}'))
+        elif dv not in srpt:
+            failures.append((label, f'dvdvideoTitle {dv} is not declared in TT_SRPT'))
+        elif srpt[dv]['vtsn'] != vtsn:
+            failures.append((label, f'claim places dvdvideo {dv} in VTS_{vtsn:02d}, but TT_SRPT '
+                                    f'puts it in VTS_{srpt[dv]["vtsn"]:02d}'))
+        elif len(per_vts.get(vtsn, [])) != 1:
+            failures.append((label, f'VTS_{vtsn:02d} holds {len(per_vts[vtsn])} titles, so a byte '
+                                    f'total cannot single out dvdvideo {dv}'))
+        else:
+            verified.append((label, dv, vtsn))
+    return verified, unverifiable, failures
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('disc')
+    ap.add_argument('--verify-claims', metavar='CATALOGUE_JSON',
+                    help="re-derive every mappingProvenBy that cites this script against the disc; "
+                         "exit 3 if any claim does not check out")
     ap.add_argument('--info-file', help='saved `makemkvcon -r info` output, instead of running it')
     ap.add_argument('--json', action='store_true')
     ap.add_argument('--minlength', type=int, default=10,
@@ -242,6 +305,21 @@ def main():
 
     if not os.path.isdir(a.disc):
         raise SystemExit(f'not a directory: {a.disc}')
+
+    if a.verify_claims:
+        ok, unver, bad = verify_claims(a.disc, a.verify_claims)
+        for label, dv, vtsn in ok:
+            print(f'    {label}  VERIFIED  dvdvideo {dv} in VTS_{vtsn:02d} - byte total and '
+                  f'TT_SRPT placement both re-derived from the disc')
+        for label, claim in unver:
+            print(f'    {label}  unverified human claim (not this script\'s wording): {claim[:90]}')
+        for label, why in bad:
+            print(f'    {label}  *** CLAIM DOES NOT CHECK OUT *** {why}')
+        print(f'\n{len(ok)} verified, {len(unver)} unverifiable, {len(bad)} FAILED')
+        if bad:
+            print('A recorded proof that is not true is worse than no proof: the gate honours it.')
+        return 3 if bad else 0
+
     if a.info_file:
         with open(a.info_file, encoding='utf-8', errors='replace') as fh:
             info_text = fh.read()
@@ -256,11 +334,15 @@ def main():
                           'declaredButUnaccounted': missing}, indent=2))
     else:
         print(f'{os.path.basename(os.path.normpath(a.disc))} - {len(srpt)} dvdvideo title(s) in TT_SRPT')
-        print(f'{"makemkv":>8}  {"dvdvideo":>8}  {"vts":>4}  {"bytes":>14}  proof')
+        # LABEL EVERY NUMBER IN THE ROW. Three bare right-aligned integers next to each other read
+        # as a sequence, not as fields: "t08  9  6" was misread as "dvdvideo 6" when it means
+        # dvdvideo 9, in VTS_06. This script exists to stop exactly one class of mistake - a title
+        # attributed to the wrong number - so its own output must not be capable of causing it.
         for r in rows:
-            dv = r['dvdvideoTitle'] if r['dvdvideoTitle'] is not None else '-'
-            vt = r['vts'] if r['vts'] is not None else '-'
-            print(f'    t{r["makemkvTitle"]:02d}  {dv:>8}  {vt:>4}  {r["sizeBytes"]:>14,}  '
+            dv = f'dvdvideo {r["dvdvideoTitle"]}' if r['dvdvideoTitle'] is not None else 'dvdvideo ?'
+            vt = f'VTS_{r["vts"]:02d}' if r['vts'] is not None else 'VTS ?'
+            print(f'    t{r["makemkvTitle"]:02d} -> {dv:<13} in {vt:<7} '
+                  f'{r["sizeBytes"]:>14,} bytes  '
                   f'{r["provenBy"] or "UNPROVEN: " + (r["note"] or "")}')
         if unproven:
             print(f'\n{len(unproven)} title(s) UNPROVEN - these still rest on duration and need '

@@ -293,6 +293,42 @@ foreach($id in ($disp.Keys | Sort-Object)){
   }
 }
 
+# RE-DERIVE ANY `mappingProvenBy` THAT CITES THE PROVER. NON-EMPTY IS NOT A PROOF.
+#
+# The waiver above is honoured whenever the field is non-empty - and that WAS the entire test.
+# Every other citation class is checked mechanically (`speech:` must be exact recorded text,
+# `mymovies:` must appear verbatim in the disc's own metadata), so this was the one field where a
+# plausible sentence defeated the gate. Demonstrated 2026-08-28 on The Saint Colour D5: a catalogue
+# whose dvdvideoTitle values were KNOWN to be crossed, with the correct-sounding proof strings left
+# in place, passed at exit 0.
+#
+# The field stays FREE TEXT on purpose - a legitimate proof can be "I pulled frames from dvdvideo
+# title 3 and read the card", which no script can check. But a claim written in
+# prove-dvd-mapping.py's own words names a VTS and a byte total, and those are re-derivable from
+# the disc. So verify exactly those, and leave human prose alone (reported, not trusted).
+$proverClaims = @($cat.titles | Where-Object {
+  $_.PSObject.Properties.Name -contains 'mappingProvenBy' -and
+  "$($_.mappingProvenBy)" -match 'VTS_\d+\s+title VOBs total\s+\d+\s+bytes'
+})
+if ($proverClaims.Count) {
+  $prover = Join-Path $PSScriptRoot 'prove-dvd-mapping.py'
+  if (-not (Test-Path -LiteralPath $prover)) {
+    $evFalse += "prove-dvd-mapping.py is missing, so $($proverClaims.Count) recorded mapping proof(s) cannot be re-derived - refusing rather than trusting them"
+  } else {
+    $vOut = & python $prover $Disc --verify-claims $catPath 2>&1
+    if ($LASTEXITCODE -ne 0) {
+      foreach ($line in @($vOut | Where-Object { "$_" -match 'DOES NOT CHECK OUT' })) {
+        $evFalse += ("mappingProvenBy re-derivation: " + ("$line".Trim()))
+      }
+      if (-not ($vOut | Where-Object { "$_" -match 'DOES NOT CHECK OUT' })) {
+        $evFalse += "mappingProvenBy re-derivation failed (exit $LASTEXITCODE): $(($vOut | Select-Object -Last 3) -join ' / ')"
+      }
+    } else {
+      $evNote += "$($proverClaims.Count) mapping proof(s) RE-DERIVED from the disc's own VTS byte totals and TT_SRPT"
+    }
+  }
+}
+
 if($evFalse){
   Write-Output ""
   Write-Output "*** EVIDENCE CITATIONS THAT DO NOT CHECK OUT ***"
