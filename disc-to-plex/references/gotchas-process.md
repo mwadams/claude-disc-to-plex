@@ -229,3 +229,28 @@ So, before opening media to check something:
 That last one is also the correct stall test, and it is what I should have run first: a process with
 advancing CPU or a growing output is progressing, however slowly. **Do not conclude "hung" from
 elapsed time alone.**
+
+## THE SKILL'S SCRIPT AND THE PIPELINE'S SCRIPT ARE DIFFERENT FILES (2026-08-28)
+
+`SKILL.md` documents **`scripts/publish-work.ps1`**. The running pipeline calls
+**`D:/video/_publish.ps1`**. They are separate files that have diverged, and `_publish-loop.ps1`
+invokes the second one.
+
+Fixing the partial-file guard, I edited the documented script, confirmed it parsed, confirmed there
+was only one copy of *that name* on the disk — and the running loop went on using the old logic. The
+tell was the log still printing the OLD message (`REFUSING`) after the edit, when the new code says
+`SKIPPING`. Had the wording been unchanged, nothing would have revealed it.
+
+So, before editing any pipeline behaviour:
+
+- **Find out what the LOOP calls**, not what the skill documents. `grep` the `_*-loop.ps1` for the
+  script name; do not assume the documented one is the live one.
+- **Change a message string as well as the logic** when you can. A behaviour change is invisible in
+  a log; a wording change is not, and it is what proves your edit is the code being run.
+- **Apply the fix to BOTH** if both are real, or the next reader inherits two behaviours with one
+  name. Same reasoning as the control-char hook: a guard protects the file it is wired to, not the
+  one you meant.
+
+This is the same shape as the 2026-08-23 mangled-path incident, where a guard script could not load
+its config and so **the guard it implements silently never ran**. Editing an unused copy has exactly
+that signature: everything reports success and nothing changes.
