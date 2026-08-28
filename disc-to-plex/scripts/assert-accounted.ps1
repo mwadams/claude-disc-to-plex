@@ -372,16 +372,37 @@ if ($proverClaims.Count) {
   if (-not (Test-Path -LiteralPath $prover)) {
     $evFalse += "prove-dvd-mapping.py is missing, so $($proverClaims.Count) recorded mapping proof(s) cannot be re-derived - refusing rather than trusting them"
   } else {
-    $vOut = & python $prover $Disc --verify-claims $catPath 2>&1
-    if ($LASTEXITCODE -ne 0) {
-      foreach ($line in @($vOut | Where-Object { "$_" -match 'DOES NOT CHECK OUT' })) {
-        $evFalse += ("mappingProvenBy re-derivation: " + ("$line".Trim()))
+    # RESOLVE THE DISC TO A DIRECTORY FIRST.
+    #
+    # `-Disc` has always accepted a BARE DISC NAME - SKILL.md's own example is
+    # `-Disc "MAN_GOLDEN_GUN_F1"` - because everything else here only needs it to name the
+    # catalogue file, via Split-Path -Leaf. The re-derivation added on 2026-08-28 was the first
+    # thing to need an actual PATH, and it broke the bare-name form with `not a directory`.
+    # A regression introduced by a guard is still a regression: accept both forms.
+    $discDir = $Disc
+    if (-not (Test-Path -LiteralPath $discDir -PathType Container)) {
+      $candidate = Join-Path 'D:/video/_stage' $discName
+      if (Test-Path -LiteralPath $candidate -PathType Container) { $discDir = $candidate }
+    }
+    if (-not (Test-Path -LiteralPath $discDir -PathType Container)) {
+      # The staged disc is gone (already reclaimed). The claims cannot be re-derived against a disc
+      # that is not there - say so rather than passing silently OR failing the whole gate, because
+      # a reclaimed disc is a normal state, not a fault.
+      $evNote += "$($proverClaims.Count) mapping proof(s) NOT re-derived - the staged disc is no longer on disk"
+      $proverClaims = @()
+    }
+    if ($proverClaims.Count) {
+      $vOut = & python $prover $discDir --verify-claims $catPath 2>&1
+      if ($LASTEXITCODE -ne 0) {
+        foreach ($line in @($vOut | Where-Object { "$_" -match 'DOES NOT CHECK OUT' })) {
+          $evFalse += ("mappingProvenBy re-derivation: " + ("$line".Trim()))
+        }
+        if (-not ($vOut | Where-Object { "$_" -match 'DOES NOT CHECK OUT' })) {
+          $evFalse += "mappingProvenBy re-derivation failed (exit $LASTEXITCODE): $(($vOut | Select-Object -Last 3) -join ' / ')"
+        }
+      } else {
+        $evNote += "$($proverClaims.Count) mapping proof(s) RE-DERIVED from the disc's own VTS byte totals and TT_SRPT"
       }
-      if (-not ($vOut | Where-Object { "$_" -match 'DOES NOT CHECK OUT' })) {
-        $evFalse += "mappingProvenBy re-derivation failed (exit $LASTEXITCODE): $(($vOut | Select-Object -Last 3) -join ' / ')"
-      }
-    } else {
-      $evNote += "$($proverClaims.Count) mapping proof(s) RE-DERIVED from the disc's own VTS byte totals and TT_SRPT"
     }
   }
 }
