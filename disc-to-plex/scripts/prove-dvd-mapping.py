@@ -27,13 +27,23 @@ Twice in three days is a script, not a note. The disc already states the answer 
 So where a VTS holds exactly one title AND its VOB total matches exactly one MakeMKV title's size,
 the pairing is PROVEN arithmetic, not an inference from two clocks that disagree.
 
+  * Where a VTS holds SEVERAL titles, that total proves only group membership - so the same
+    arithmetic is applied one level finer, from the VTS's own IFO. VTS_PTT_SRPT gives each VTS
+    title its entry PGC, and that PGC's cell table gives every cell's first/last sector, i.e. an
+    exact per-title byte size. It is used only where those per-title sizes account for the WHOLE
+    VTS with no remainder. See vts_title_bytes().
+
 WHAT IT DELIBERATELY WILL NOT DO
 --------------------------------
-It proves what it can and says so; it never guesses the rest. A VTS holding several titles (a
-one-VTS disc split by chapters, the `chapterStart`/`chapterEnd` case) cannot be resolved by size,
-because every title in it shares one VOB set. Those are reported UNPROVEN and left to duration and
-corroboration from content. Reporting a guess here would be worse than reporting nothing: the whole
-value of this script is that its answers need no second opinion.
+It proves what it can and says so; it never guesses the rest. Where neither the VTS total nor the
+per-title cell-sector total singles out one title - a VTS whose IFO will not parse, or one title
+split across PGCs by chapters (the `chapterStart`/`chapterEnd` case) - the row is reported UNPROVEN
+and left to duration and corroboration from content. Reporting a guess here would be worse than
+reporting nothing: the whole value of this script is that its answers need no second opinion.
+
+Both proof forms are re-derivable by --verify-claims, which is the point: a claim written in this
+script's own words must be checkable against the disc, or it becomes the one field where a
+plausible sentence defeats the gate.
 
 USAGE
   python prove-dvd-mapping.py "D:/video/_stage/<disc>"
@@ -84,6 +94,69 @@ def read_tt_srpt(video_ts_dir):
         nr_of_ptts = struct.unpack('>H', data[e + 2:e + 4])[0]
         out.append({'title': i + 1, 'vtsn': data[e + 6], 'vts_ttn': data[e + 7],
                     'nr_of_ptts': nr_of_ptts})
+    return out
+
+
+def vts_title_bytes(video_ts_dir):
+    """(vtsn, vts_ttn) -> exact bytes of that ONE title, from the VTS IFO's own tables.
+
+    WHY THIS EXISTS. The VTS VOB total below is exact only when the VTS holds ONE title; where it
+    holds several, the total proves group membership and nothing more. But the disc states the
+    finer answer too, in the same arithmetic style:
+
+      * VTS_PTT_SRPT (sector pointer at 0xC8) gives each VTS title its entry PGC number.
+      * VTS_PGCIT (0xCC) locates that PGC, whose cell playback table (C_PBKT, offset at PGC+0xE8)
+        lists every cell's first and last sector. At 2048 bytes/sector that is an exact byte size.
+
+    On The Saint D8, VTS_05 holds dvdvideo 5/6/7 and VTS_06 holds 8/9 - five titles the VTS-total
+    method could only report UNPROVEN, and which it additionally listed as "declared but never
+    enumerated" when they had in fact been enumerated perfectly well. The per-title sizes sum to
+    each VTS total with ZERO remainder and each matches one MakeMKV title exactly, so all nine
+    titles prove one-to-one with duration never consulted.
+
+    Returns {} for any VTS whose IFO cannot be parsed - the caller then falls back to the VTS
+    total, i.e. to the previous behaviour, rather than to a guess.
+    """
+    SECTOR = 2048
+    out = {}
+    for name in sorted(os.listdir(video_ts_dir)):
+        m = re.fullmatch(r'VTS_(\d\d)_0\.IFO', name, re.IGNORECASE)
+        if not m:
+            continue
+        vtsn = int(m.group(1))
+        try:
+            b = open(os.path.join(video_ts_dir, name), 'rb').read()
+            if b[:12] != b'DVDVIDEO-VTS':
+                continue
+            ptt_srpt = struct.unpack_from('>I', b, 0xC8)[0] * SECTOR
+            pgcit = struct.unpack_from('>I', b, 0xCC)[0] * SECTOR
+            nr_titles = struct.unpack_from('>H', b, ptt_srpt)[0]
+            entry_pgc = []
+            for i in range(nr_titles):
+                off = struct.unpack_from('>I', b, ptt_srpt + 8 + 4 * i)[0]
+                entry_pgc.append(struct.unpack_from('>H', b, ptt_srpt + off)[0])
+            nr_pgc = struct.unpack_from('>H', b, pgcit)[0]
+            pgc_bytes = {}
+            for i in range(nr_pgc):
+                off = struct.unpack_from('>I', b, pgcit + 8 + 8 * i + 4)[0]
+                p = pgcit + off
+                nr_cells = b[p + 3]
+                cpbkt = struct.unpack_from('>H', b, p + 0xE8)[0]
+                total = 0
+                for c in range(nr_cells):
+                    cp = p + cpbkt + 24 * c
+                    first = struct.unpack_from('>I', b, cp + 8)[0]
+                    last = struct.unpack_from('>I', b, cp + 20)[0]
+                    if last < first:
+                        raise ValueError('cell %d of PGC %d has last < first sector' % (c, i + 1))
+                    total += (last - first + 1) * SECTOR
+                pgc_bytes[i + 1] = total
+            for ttn, pgcn in enumerate(entry_pgc, start=1):
+                if pgcn in pgc_bytes:
+                    out[(vtsn, ttn)] = pgc_bytes[pgcn]
+        except Exception:
+            # A VTS we cannot parse simply contributes nothing; never a guess.
+            continue
     return out
 
 
@@ -167,6 +240,7 @@ def prove(disc_dir, info_text):
 
     srpt = read_tt_srpt(video_ts)
     vob = vts_vob_bytes(video_ts)
+    title_bytes = vts_title_bytes(video_ts)
     sizes = parse_makemkv_info(info_text)
 
     # How many dvdvideo titles live in each VTS. Only a VTS with exactly ONE is separable by size.
@@ -194,6 +268,37 @@ def prove(disc_dir, info_text):
                 row['note'] = (f'VTS_{v:02d} holds {len(titles)} titles '
                                f'({", ".join(str(t["title"]) for t in titles)}) - they share one VOB '
                                f'set, so size cannot separate them')
+                unproven.append(row)
+        elif len(hits) == 0 and title_bytes:
+            # NO VTS TOTAL MATCHES - which is the SHAPE a title inside a multi-title VTS takes:
+            # its own size is a fraction of the set it lives in. Go one level finer and match
+            # against the per-title cell-sector totals, but only where that VTS's per-title sizes
+            # ACCOUNT FOR THE WHOLE VTS with no remainder - otherwise the IFO reading is not
+            # trustworthy enough to prove anything with, and it stays unproven.
+            cand = [(vtsn, ttn) for (vtsn, ttn), nb in title_bytes.items()
+                    if nb == want and sum(x for (vv, _), x in title_bytes.items() if vv == vtsn)
+                    == vob.get(vtsn)]
+            if len(cand) == 1:
+                vtsn, ttn = cand[0]
+                match = [t for t in per_vts.get(vtsn, []) if t['vts_ttn'] == ttn]
+                if len(match) == 1:
+                    row['vts'] = vtsn
+                    row['dvdvideoTitle'] = match[0]['title']
+                    row['provenBy'] = (
+                        f"VTS_{vtsn:02d} title {ttn} totals {want} bytes across its PGC's cell "
+                        f"sectors, matching MakeMKV t{mkv_id:02d} exactly; that VTS holds "
+                        f"{len(per_vts[vtsn])} title(s) whose per-title sizes sum to the VTS total "
+                        f"with no remainder (VTSN={vtsn}, VTS_TTN={ttn})")
+                else:
+                    row['note'] = (f'per-title size matches VTS_{vtsn:02d} title {ttn}, but TT_SRPT '
+                                   f'does not declare exactly one title at that position')
+                    unproven.append(row)
+            else:
+                near = sorted(vob.items(), key=lambda kv: abs(kv[1] - want))[:1]
+                hint = (f'; nearest VTS_{near[0][0]:02d} off by {near[0][1] - want:+d}'
+                        if near else '')
+                row['note'] = (f'byte total {want} matches no title set exactly{hint}, and no '
+                               f'single per-title cell-sector total either')
                 unproven.append(row)
         elif len(hits) > 1:
             row['note'] = f'byte total {want} matches {len(hits)} title sets ({sorted(hits)})'
@@ -252,6 +357,7 @@ def verify_claims(disc_dir, catalogue_path):
         video_ts = os.path.join(disc_dir, 'VIDEO_TS')
     srpt = {e['title']: e for e in read_tt_srpt(video_ts)}
     vob = vts_vob_bytes(video_ts)
+    title_bytes = vts_title_bytes(video_ts)
     per_vts = {}
     for e in srpt.values():
         per_vts.setdefault(e['vtsn'], []).append(e['title'])
@@ -266,6 +372,34 @@ def verify_claims(disc_dir, catalogue_path):
             continue
         label = 't%02d' % t.get('title', -1)
         dv = t.get('dvdvideoTitle')
+        # A per-title claim (multi-title VTS) is re-derived against the IFO's own cell-sector
+        # totals; the VTS-total claim below is re-derived against the VOB sizes. Both are this
+        # script's own wording, so both must be checkable - a proof form that verify-claims could
+        # only shrug at would be exactly the fabrication-shaped gap this function exists to close.
+        mt = re.search(r'VTS_(\d+)\s+title\s+(\d+)\s+totals\s+(\d+)\s+bytes across', claim)
+        if mt:
+            vtsn, ttn, stated = int(mt.group(1)), int(mt.group(2)), int(mt.group(3))
+            actual = title_bytes.get((vtsn, ttn))
+            vts_sum = sum(x for (vv, _), x in title_bytes.items() if vv == vtsn)
+            if actual is None:
+                failures.append((label, f'claim names VTS_{vtsn:02d} title {ttn}, which the IFO '
+                                        f'does not describe'))
+            elif actual != stated:
+                failures.append((label, f'claim says VTS_{vtsn:02d} title {ttn} is {stated:,} '
+                                        f'bytes; the disc says {actual:,}'))
+            elif vts_sum != vob.get(vtsn):
+                failures.append((label, f'VTS_{vtsn:02d} per-title sizes sum to {vts_sum:,} but its '
+                                        f'title VOBs total {vob.get(vtsn):,} - unaccounted bytes'))
+            elif dv not in srpt:
+                failures.append((label, f'dvdvideoTitle {dv} is not declared in TT_SRPT'))
+            elif srpt[dv]['vtsn'] != vtsn or srpt[dv]['vts_ttn'] != ttn:
+                failures.append((label, f'claim places dvdvideo {dv} at VTS_{vtsn:02d} title {ttn}, '
+                                        f'but TT_SRPT puts it at VTS_{srpt[dv]["vtsn"]:02d} title '
+                                        f'{srpt[dv]["vts_ttn"]}'))
+            else:
+                verified.append((label, dv, vtsn))
+            continue
+
         m = re.search(r'VTS_(\d+)\s+title VOBs total\s+(\d+)\s+bytes', claim)
         if not m:
             unverifiable.append((label, claim))

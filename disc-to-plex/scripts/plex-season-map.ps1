@@ -111,10 +111,27 @@ $order   = if($ordPref -eq 'aired'){ 'tvdbAiring' } else { $ordPref }
 # The provider returns XML whose children are <Directory>/<Video> ELEMENTS - not a Metadata array,
 # so parse as XML rather than JSON.
 function Provider-Children($id, $ord){
+  # ASK FOR THE WHOLE CONTAINER. The provider PAGINATES, and its default page is 20 - so a season
+  # with more than 20 episodes silently returned only its first 20 and the rest simply were not
+  # there. On The Saint that printed 20 rows under a heading that said "episodes=27" three lines
+  # above, and E21-E27 - four of which were sitting on the disc being catalogued - looked like
+  # episodes that did not exist. A truncated list is far more dangerous than a failed call: it is
+  # well-formed, plausible, and answers the question wrongly.
   $q = "https://metadata.provider.plex.tv/library/metadata/$id/children?X-Plex-Token=$tok"
+  # 200 is comfortably above any real season (the longest here is 27) and stays modest: asking for
+  # 1000 tripped plex.tv's Cloudflare WAF and got the host blocked outright.
+  $q += "&X-Plex-Container-Start=0&X-Plex-Container-Size=200"
   if($ord){ $q += "&episodeOrder=$ord" }
   $raw = Invoke-WebRequest $q -TimeoutSec 60 -UseBasicParsing
-  ([xml]$raw.Content).MediaContainer.ChildNodes | Where-Object { $_.NodeType -eq 'Element' }
+  $mc  = ([xml]$raw.Content).MediaContainer
+  $kids = $mc.ChildNodes | Where-Object { $_.NodeType -eq 'Element' }
+  # And VERIFY it, rather than trusting the parameter: totalSize is what the provider says exists.
+  # If we ever get fewer than that, say so loudly instead of returning a short list.
+  if($mc.totalSize -and ([int]$mc.totalSize -ne @($kids).Count)){
+    Write-Warning ("PROVIDER RETURNED A PARTIAL LIST for $id - got {0} of {1} declared. " +
+                   "Do NOT treat the missing entries as non-existent." -f @($kids).Count, [int]$mc.totalSize)
+  }
+  $kids
 }
 
 $seasons = Provider-Children $showId $order

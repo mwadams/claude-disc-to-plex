@@ -448,7 +448,22 @@ foreach($it in $items){
   # automatic pick treats untagged as English, so every French/Spanish dub would be kept, and a
   # 5.1 LPCM dub gets FLAC-encoded into the output. Read the real languages from the PLAYLIST
   # .mpls (the m2ts has none) and list only the ones you want.
-  if(Has $it 'audioTracks'){
+  # `audioTracks: []` means KEEP NO AUDIO, and it has to be tested BEFORE Has(): Has stringifies
+  # the value and rejects '', so an empty array reads as "field absent" and silently falls through
+  # to the automatic pick - the opposite of what it says.
+  #
+  # That is not a theoretical difference. The Saint D8's dvdvideo title 7 (7:22 of mute newsreel
+  # rushes) DECLARES one AC-3 stream and ships ZERO packets in it. Written as `audioTracks: []`
+  # and run through the old path, the auto-picker kept that stream anyway and the extra shipped
+  # with two audio tracks - an AAC downmix and the AC-3 passthru - each containing no packets at
+  # all. Every structural check passes: the file plays, the duration is exact to the frame, the
+  # size is plausible. A viewer just finds two audio tracks that are silent.
+  $audioNone = ($it.PSObject.Properties.Name -contains 'audioTracks') -and
+               ($null -ne $it.audioTracks) -and (@($it.audioTracks).Count -eq 0)
+  if($audioNone){
+    $keep = @()
+    Write-Output "   audioTracks [] -> keeping NO audio (explicit)"
+  } elseif(Has $it 'audioTracks'){
     $keep = @($it.audioTracks | ForEach-Object { [int]$_ } | Where-Object { $_ -ge 0 -and $_ -lt $na })
     Write-Output "   audioTracks explicit -> a:$($keep -join ' a:')"
   } else {
@@ -683,7 +698,9 @@ foreach($it in $items){
     elseif($j -eq 0 -and $origLang -and $origLang -notin @('eng','en')){ $origLang }
     else { Audio-Lang $inspec $keep[$j] }
   }
-  $lang0 = & $langOf 0                      # language of the FIRST kept track = what the AAC downmix is made from
+  # language of the FIRST kept track = what the AAC downmix is made from. Not evaluated when no
+  # track is kept: $langOf would index an empty $keep to read a tag that is about to go unused.
+  $lang0 = if($nk -gt 0){ & $langOf 0 } else { 'eng' }
   if($nk -gt 0){
     if($ch0 -ge 6){
       $a += @("-c:a:$aacIdx",'aac',"-b:a:$aacIdx",'160k',"-ac:a:$aacIdx",'6',"-ar:a:$aacIdx",'48000',"-metadata:s:a:$aacIdx",'title=Surround 5.1 (AAC)',"-metadata:s:a:$aacIdx","language=$lang0","-disposition:a:$aacIdx",'default'); $aacIdx++
