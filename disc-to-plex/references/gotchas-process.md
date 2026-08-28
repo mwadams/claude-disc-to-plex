@@ -197,3 +197,35 @@ current state:
 A loop log is a stream of past moments. Before concluding anything from its tail, check the file's
 mtime, and check which unit's block the line sits in. **Better still, ask the artefact**: "is it on
 the NAS?" answered in one call what three log reads could not.
+
+## DIAGNOSTICS COUNT AS MEDIA LOAD — "just checking" is not free (2026-08-28)
+
+Reading a log is free. **Opening media is not**, and a diagnostic that opens media competes with the
+pipeline exactly as another job would. Called out by the user after a stretch of slow running.
+
+The offences, in descending order of how wrong each was:
+
+- **Running `mkvextract` on the very file the OCR loop was already extracting.** I had decided the
+  loop's copy was "hung" (1 s CPU over 40 min) and ran a second extraction to test it. It was not
+  hung, it was slow — and I had just made it slower by putting a third concurrent reader on a 2.6 GB
+  file while two NVENC lanes and a whisper analysis were running. Both copies completed.
+- **Four `makemkvcon info` disc scans** while testing `prove-dvd-mapping.py`. Each one scans the disc.
+- **A library-wide `ffprobe` sweep** over every `.mkv` to find files missing a sidecar.
+- **Recursive directory walks** over `_stage` and the library for space accounting.
+
+The rule the subtitle skill already states for its workers — *"this budget covers everything touching
+the media, not just workers"* — is general. It applies to investigation, not merely to jobs.
+
+So, before opening media to check something:
+
+1. **Can a log answer it?** `_logs/*.log`, the catalogue JSON, a manifest, `Get-Item` for a size, a
+   process's CPU or `WriteTransferCount`. All free. Prefer them.
+2. **Is the pipeline busy?** If lanes, OCR, whisper or a rip are running, a media-touching diagnostic
+   is a fifth job. Defer it, or accept that you are slowing the thing you are measuring.
+3. **NEVER duplicate work already in flight.** If a loop is doing X, do not also do X to find out how
+   X is going. Measure the running copy instead — CPU delta and bytes-written delta over a short
+   sample distinguish "slow" from "stalled" without opening anything.
+
+That last one is also the correct stall test, and it is what I should have run first: a process with
+advancing CPU or a growing output is progressing, however slowly. **Do not conclude "hung" from
+elapsed time alone.**
