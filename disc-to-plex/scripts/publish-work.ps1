@@ -48,9 +48,37 @@ if (-not $local) { throw "nothing to publish in $src" }
 # refuse to publish anything that looks unfinished - a truncated mkv has no duration in its header
 $paths   = Get-Content 'D:\video\.transcode-tools\tool-paths.json' -Raw | ConvertFrom-Json
 $ffprobe = Join-Path (Split-Path $paths.ffmpeg) 'ffprobe.exe'
+# SKIP THE PARTIAL FILE, DO NOT ABANDON THE WHOLE WORK.
+#
+# This threw on the first partial mkv, which refuses the ENTIRE work folder. That is correct for a
+# work encoded in one go, and badly wrong for a show encoded across many discs over hours: with two
+# lanes writing continuously into `The Saint (1962)` there was almost always one partial file, so
+# the publish aborted on essentially every pass - 115 of them - while 39 finished episodes sat local
+# and only 21 reached the NAS. Seasons 02/03/04 had NOTHING published.
+#
+# That directly defeats the project's own rule, "publish immediately, gate only the reclaim": the
+# user cannot confirm a unit is in Plex until it is on the NAS, so holding everything back stalls
+# the pipeline exactly when it is busiest. The colour run published fine only because nothing was
+# encoding into it at the time.
+#
+# The guard's purpose is "never publish a partial file", and skipping achieves that completely.
+# Abandoning the work achieves it too, but at the cost of everything else in the folder. The
+# reclaim stays safe either way: `_release-published.ps1` gates per file on a byte-identical NAS
+# copy, so a partly-published work simply does not fully reclaim.
+#
+# Say what was skipped and why. A silent skip would read as "published everything".
+$partial = @()
 foreach ($f in $local | Where-Object { $_.Extension -eq '.mkv' }) {
   $d = "$(& $ffprobe -v error -show_entries format=duration -of csv=p=0 $f.FullName 2>$null)".Trim()
-  if (-not $d -or $d -eq 'N/A') { throw "REFUSING: $($f.Name) has no duration - it is a partial file" }
+  if (-not $d -or $d -eq 'N/A') { $partial += $f }
+}
+if ($partial.Count) {
+  foreach ($f in $partial) {
+    Write-Output "SKIPPING (still encoding): $($f.Name) has no duration - it is a partial file"
+  }
+  # Drop them from this pass; the loop re-publishes when they finalise.
+  $local = @($local | Where-Object { $partial.FullName -notcontains $_.FullName })
+  if (-not $local) { throw "every file in $src is still partial - nothing to publish yet" }
 }
 
 # Refuse to publish AHEAD of the OCR pass. The documented order is encode -> OCR -> publish, and
@@ -101,6 +129,13 @@ $local | Group-Object Extension | ForEach-Object { "   {0,-6} {1}" -f $_.Name, $
 $rcLog  = Join-Path $env:TEMP ("robocopy_{0}_{1}.log" -f ($Work -replace '[^\w]','_'), $PID)
 $flags = @('/E','/R:3','/W:5','/NP','/NFL','/NDL',"/LOG:$rcLog")
 if (-not $Overwrite) { $flags += @('/XC','/XN','/XO') }
+# EXCLUDE THE PARTIALS FROM THE COPY ITSELF, not merely from the verification list.
+#
+# `/E` copies the whole tree regardless of what $local holds, so dropping a partial file from that
+# list alone would let it reach the NAS while the report counted only the complete ones - a silent
+# half-file on the server, which is strictly worse than the stall this change fixes. /XF takes full
+# paths and is the only thing that actually keeps them back.
+if ($partial.Count) { $flags += '/XF'; $flags += @($partial | ForEach-Object { $_.FullName }) }
 robocopy $src $dst @flags | Out-Null
 $rcExit = $LASTEXITCODE
 if ($rcExit -ge 8) {

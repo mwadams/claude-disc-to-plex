@@ -789,3 +789,155 @@ for ($start = 0; $start -lt $total; $start += 20) {
 Always cross-check the count you got against the season's `leafCount` / the container's `totalSize`
 before treating an episode list as the whole season. Same defect family as reading a `tail` as the
 whole log, or a filtered grep as the whole output: the answer is shaped like a complete one.
+
+---
+
+# Reading the on-screen title card mechanically (`read-card.ps1`)
+
+`verify-title-cards.ps1` scores a card against the title the FILENAME already claims, so it can only
+confirm or deny a name you have chosen. `read-card.ps1` is the step *before* that: OCR the same
+evidence and score it against EVERY canonical episode, so the name comes out of the disc. It reads
+through `-f dvdvideo -title N`, the path `transcode.ps1` uses, so the ordinal it reports is the
+ordinal you rip with. Proven across 12 discs of The Saint (1962).
+
+## Binarise, and SWEEP the threshold
+
+Thin white type over live action is unreadable to OCR as plain greyscale — "THE LATIN TOUCH" came
+back as `fs gos av _- ee`. Binarising the luma and inverting leaves black type on white and the same
+frame reads perfectly.
+
+**One threshold is not enough, and the failure is silent.** At 225, four cards read perfectly while
+another disc's `THE SCORPION` read as *nothing at all*; at 180 all five read. A tool that reports
+"no card" when the card is plainly there does not merely fail — it tells the reader this disc has no
+card and sends them somewhere else entirely. Sweep 180 → 140 → 225.
+
+## 🔴 A show's FIXED main-title card can score a PERFECT match against a real episode
+
+Every episode of The Saint opens on "THE SAINT / BY LESLIE CHARTERIS / STARRING ROGER MOORE". Scored
+by token overlap against the canon, that is a **1.00 for S02E02 _Starring the Saint_** — so every
+title on every disc could return a confident wrong answer for an episode it is not. All four titles
+on one disc did, and only one of that disc's episodes was even in Series 2. Two other agents hit the
+same thing independently on two further discs.
+
+The remedy is to **strip credit LINES before scoring, not credit WORDS.** Dropping the words would
+make the real *Starring the Saint* unfindable; dropping whole lines keeps it, because its own card
+reads `STARRING THE SAINT` — a different line from `THE SAINT STARRING ROGER MOORE`. The stop-list
+is parameterised (`-CreditNames`, `-ShowTitleWords`, `-TitleAnchor`, `-KeepLines`); The Saint's
+values are the defaults, as the worked example.
+
+**Never accept a match whose quoted `OCR:` line is the main-title card.** The story title appears a
+few seconds *after* the star credit, with the guest-star credit following it.
+
+## 🔴 …and the fix for that false positive quietly introduced FALSE NEGATIVES
+
+The first version of the strip also ate a bare `THE`, which OCR routinely puts on its own line above
+the story title. Since almost every Saint episode title begins with "The", **correct reads were
+capped at 0.67**. It never produced a wrong answer. What it produced was:
+
+* good evidence that looked mediocre, inviting a needless fallback to contact sheets; and
+* an early-exit that never fired, so every title swept all three thresholds and card reading ran
+  **3x longer than necessary** — visible only as "things are slow".
+
+Name this class and watch for it: **a guard added against a false positive can introduce false
+negatives, and those present as sluggishness and unremarkable scores rather than as an error.** Test
+a new filter against the cases it must KEEP, not only the ones it must drop.
+
+Two smaller traps in the same scorer, both worth leaving alone rather than "fixing":
+
+* Token matching is deliberately **substring**-based so OCR run-ons (`BARBARASHELLEY`) still match.
+  The cost is spurious partials — "ring" matched inside "STARRING". Strip the credit line; do not
+  switch to word-boundary matching, which breaks the run-on case.
+* **A disc can spell a title differently from the canon.** One disc's card reads `THE CHECKERED
+  FLAG` where the provider has "Chequered" — a perfect read scoring 0.33. A low score on clean OCR
+  is a prompt to compare spellings, not evidence of a wrong title.
+
+## The canonical list, and what happens without one
+
+`-Canon` is a JSON array of `{season, ep, title}` from the **same provider query
+`plex-season-map.ps1` uses** — `metadata.provider.plex.tv` with the section's own `episodeOrder`.
+Do not build it from `/children` with no parameter: that is the `watch.plex.tv` tree, which the
+scanner never matches against. Note the provider pages at 20, so pass `X-Plex-Container-Size`.
+
+**With no canon the script still runs** and still prints the `card-like lines seen` list — the raw
+card text and guest-star credits, often enough to name an episode by hand. What is lost is the
+scoring: nothing is matched for you and identification rests entirely on the reader. That is a real
+downgrade, and a title named that way should say so in its disposition.
+
+---
+
+# The stills gallery: a second witness with an unrelated failure mode
+
+Many TV box sets end each disc with a silent stills gallery divided into captioned sections naming
+that disc's own stories. Where one exists it is worth reading on **every** disc, because it shares no
+failure mode with the card scorer — different frames, and no scoring involved — and the two fail in
+*opposite* directions:
+
+* one disc's `SIBAO` card read only at threshold 225; 180 and 140 returned noise, so a
+  single-threshold reader reports NO MATCH on a perfectly legible card — **and the gallery names it
+  regardless.** A `NO MATCH` is when the gallery is most valuable, not a reason to give up.
+* the main-title trap yields a confident *wrong* answer where the gallery yields none.
+
+It corroborates **content**, not just captions: *Sibao*'s section stills show a masked figure over a
+chalked veve and a torch-lit night ceremony, matching the episode's Haitian setting.
+
+## 🔴 It is a CORROBORATING WITNESS, NOT AN ENUMERATOR
+
+One disc holds four episodes and its gallery has **three** section cards — 12 s apart, every frame
+to 39 s carrying stills and no fourth card, verified second by second rather than inferred.
+(The three it names are that disc's three Series 1 episodes; the one it omits is a Series 2 episode
+sharing the disc. That fits, but it is an observation, not a proven mechanism.) Therefore:
+
+* it **cannot establish how many episodes a disc holds**;
+* its silence about an episode is **not evidence against that episode**;
+* where it under-covers it does **not reveal WHICH slot is unnamed**, so gallery *position* carries
+  no weight there at all and every card must stand alone.
+
+That last clause is what stops it being used the wrong way round.
+
+**Order is not guaranteed either.** On most discs the section order matched disc order exactly — but
+on one it named 3 of 4 and *not* in disc order. So earn the ordering per disc: read the cards
+independently first, confirm the gallery order against the ones that are unambiguous, and only then
+let position corroborate a marginal card.
+
+Record how many sections it held and which episodes it did and did not corroborate, rather than
+writing "the gallery agreed" as though it had covered everything.
+
+## Reading it
+
+* **Sample at 2 s.** At 5–6 s it missed two of one disc's four captions and would have read a
+  four-episode gallery as two — failing *quietly*, in the direction of looking like weaker
+  corroboration than it is. `catalogue-dvd.ps1`'s head strip covers only the first 40 s at 1 fps and
+  on one disc stops *before* the fourth caption.
+* **Captions sit at roughly y = 360–405** on a 720x576 frame, well below the logo band. Crop to the
+  logo and you read nothing — indistinguishable from a gallery with no captions.
+  `crop=620:70:50:345` at `fps=1/2` against a `-map 0 -c copy` extract works reliably.
+* **Seek on the OUTPUT side.** Input-side `-ss` on the dvdvideo demuxer overshoots non-linearly
+  (`-ss 60` landed at 1:52, `-ss 170` at 4:54), which stepped two windows straight over a card and
+  made the title look cardless. Decode from the start.
+
+---
+
+# Frame evidence must be something you can LOOK AT
+
+Title cards are **faded in**, so the exact second an OCR pass reports is routinely the black gap
+beside the card: on one disc the card OCRs at 82 s and the frame at 82.0 s is solid black, 1,383
+bytes. Capture a neighbourhood, not a single second — `capture-evidence.py` does this and refuses
+near-blank frames.
+
+`assert-accounted.ps1` now refuses a `card:`/`frame:` citation unless the catalogued art both exists
+and carries picture. Byte size alone is too crude, so the discriminator is the **luma range** from
+ffmpeg `signalstats`:
+
+```
+blank.png   1,383 B   YMIN=16 YMAX=16   -> range   0
+card.png  205,260 B   YMIN=16 YMAX=223  -> range 207
+```
+
+YMIN is 16 on **both** — broadcast black — so the absolute level says nothing and only the range
+separates them. A title may legitimately hold some dark frames, so the gate refuses only when
+*nothing* held for that title carries picture.
+
+This closed the same hole that `mappingProvenBy` had: **the gate was checking the SHAPE of the
+evidence rather than its content.** A dangling reference — listed in the catalogue, deleted from
+disk — was worse than a blank, because the evidence looks present right up until somebody opens it.
+`drop-blank-frames.py` sweeps both out of existing catalogues.

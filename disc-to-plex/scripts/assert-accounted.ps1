@@ -175,6 +175,28 @@ $catById = @{}
 foreach($t in $cat.titles){ $catById[[int]$t.title] = $t }
 function Normalize-Quote([string]$s){ ((($s).ToLower() -replace '[^a-z0-9]+',' ').Trim()) }
 
+# Thresholds for "can this frame actually be looked at?" - see the card/frame branch below.
+$EvidenceMinBytes    = 8000   # a 720x576 PNG of near-solid black lands around 1-2 KB
+$EvidenceMinLumaRange = 24    # measured: blank frame 0, real title card 207
+$ffmpegForEvidence = $null
+$tpForEvidence = 'D:/video/.transcode-tools/tool-paths.json'
+if(Test-Path -LiteralPath $tpForEvidence){
+  $ffmpegForEvidence = (Get-Content $tpForEvidence -Raw | ConvertFrom-Json).ffmpeg
+}
+function Get-LumaRange([string]$path){
+  # No ffmpeg = no measurement. Return $null rather than a verdict: the caller reports
+  # "unmeasurable", which is honest, instead of silently passing or silently failing every frame.
+  if(-not $ffmpegForEvidence -or -not (Test-Path -LiteralPath $ffmpegForEvidence)){ return $null }
+  $out = & $ffmpegForEvidence -hide_banner -loglevel error -i $path -vf 'signalstats,metadata=print:file=-' -f null - 2>$null
+  $min = $null; $max = $null
+  foreach($l in $out){
+    if("$l" -match 'YMIN=([\d.]+)'){ $min = [double]$Matches[1] }
+    if("$l" -match 'YMAX=([\d.]+)'){ $max = [double]$Matches[1] }
+  }
+  if($null -eq $min -or $null -eq $max){ return $null }
+  return $max - $min
+}
+
 $evFalse = @()      # cited evidence that FAILED verification, or an unknown class -> always fatal
 $evMissing = @()    # named titles with no citation at all -> warn, fatal under -RequireEvidence
 $evBlind = @()      # named titles for which the catalogue captured NOTHING -> always shown
@@ -269,6 +291,41 @@ foreach($id in ($disp.Keys | Sort-Object)){
       $hasArt = $title -and ((@($title.frames) | Where-Object { $_ }).Count -gt 0 -or $title.headStrip)
       if(-not $hasArt){
         $evFalse += ("t{0:D2}  {1} cited but the catalogue captured NO frames or head strip for this title" -f $id, $cls)
+      }
+      else {
+        # ...AND THE ART MUST BE SOMETHING YOU CAN ACTUALLY LOOK AT.
+        #
+        # Counting frames is a SHAPE check, and this file already records what shape checks are
+        # worth: `mappingProvenBy` was honoured whenever it was non-empty until a plausible
+        # sentence defeated it. The same hole was open here - a solid-black PNG (measured: 1,383
+        # bytes, luma range ZERO) satisfied "the catalogue holds frames" while proving nothing,
+        # and a DANGLING reference (listed here, deleted from disk) was worse still, because the
+        # evidence looks present right up until somebody opens it.
+        #
+        # This is not a rare accident: title cards are FADED IN, so the second an OCR pass reports
+        # is routinely the black gap beside the card. On The Saint Monochrome D2 dvdvideo 4 the
+        # card OCRs at 82s and the frame at 82.0s is solid black; 83s carries it.
+        #
+        # Byte size alone is too crude - a dark but real frame can be small - so the discriminator
+        # is the LUMA RANGE from ffmpeg's signalstats:
+        #     blank.png   1,383 B   YMIN=16 YMAX=16   -> range   0
+        #     card.png  205,260 B   YMIN=16 YMAX=223  -> range 207
+        # YMIN is 16 on BOTH (broadcast black), so the absolute level says nothing and only the
+        # range separates them. A title may legitimately hold some dark frames, so this refuses
+        # only when NOTHING held for the title carries picture.
+        $legible = 0; $why = @()
+        foreach($art in (@($title.frames | Where-Object { $_ }) + @($title.headStrip | Where-Object { $_ }))){
+          if(-not (Test-Path -LiteralPath $art)){ $why += "$(Split-Path $art -Leaf): missing from disk"; continue }
+          if((Get-Item -LiteralPath $art).Length -lt $EvidenceMinBytes){ $why += "$(Split-Path $art -Leaf): blank"; continue }
+          $range = Get-LumaRange $art
+          if($null -eq $range){ $why += "$(Split-Path $art -Leaf): unmeasurable"; continue }
+          if($range -lt $EvidenceMinLumaRange){ $why += ("{0}: featureless (luma range {1})" -f (Split-Path $art -Leaf), [int]$range); continue }
+          $legible++
+        }
+        if($legible -eq 0){
+          $evFalse += ("t{0:D2}  {1} cited, but NONE of the catalogued art for this title can be looked at ({2}) - a frame that exists but shows nothing is not evidence. Capture a frame that SHOWS the card; it is faded in, so try a second either side" -f `
+                       $id, $cls, (($why | Sort-Object -Unique) -join '; '))
+        }
       }
     }
     'mymovies' {

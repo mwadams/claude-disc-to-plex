@@ -235,7 +235,7 @@ Symptom: the item prints its `crop=` line, then `!! FAILED (1 s)` (or `0 s`), an
 holds:
 
 ```
-Error opening input file D:ideo\.transcode-tools\work\...\s2_fixed.sup.
+Error opening input file D:<VT>ideo\.transcode-tools\work\...\s2_fixed.sup.
 Error opening input files: No such file or directory
 ```
 

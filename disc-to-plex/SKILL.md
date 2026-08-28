@@ -397,6 +397,10 @@ Core pipeline, in the order you use them:
 | `assert-staged-complete.ps1` | **run BEFORE enumerating** — throws if the staging folder is still growing or short against source |
 | `scan-disc.ps1` | enumerate and classify DVD titles across a set of discs |
 | `prove-dvd-mapping.py` | prove tNN→dvdvideoTitle from TT_SRPT + VTS byte sizes, *without* duration |
+| `apply-proof.py` | rewrite a catalogue onto that proven mapping, **moving each evidence bundle with it** |
+| `capture-evidence.py` | capture frames through a title's *proven* dvdvideo number and register them, refusing near-blank ones |
+| `drop-blank-frames.py` | sweep blank and dangling frame references out of a catalogue |
+| `read-card.ps1` | OCR a DVD title's on-screen episode card and score it against the show's canonical episode list |
 | `audit-bd-titles.ps1` | compare MakeMKV's title list against what was shipped |
 | `identify-audio.py` | transcribe each audio track to identify language and commentary |
 | `audio-dup-check.ps1` | hash decoded audio to tell a REAL commentary from a duplicate copy |
