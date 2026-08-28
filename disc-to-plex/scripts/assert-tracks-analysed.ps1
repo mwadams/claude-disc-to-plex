@@ -26,6 +26,30 @@ if ($items -isnot [array]) { $items = @($items) }
 $problems = @()
 $checked = 0
 
+# HOW MANY GATED ITEMS SHARE EACH `src`?
+#
+# For kind "MKV" a src is one file per title, so `<src>.tracks.json` names exactly one analysis.
+# For kind "DVD" the src is the DISC FOLDER, shared by every title on it - so a single
+# `<src>.tracks.json` is claimed by all of them, and an analysis of title 2 would silently stand as
+# evidence for title 3. That is precisely the unearned claim this gate exists to refuse.
+#
+# Found on The Saint Colour D14 (2026-08-28), which has TWO two-audio titles. It had never bitten
+# before only because every earlier DVD had at most one - D1 and D11 in the same batch each had
+# exactly one, so their single file was unambiguous. That is luck, not design.
+#
+# So: count the gated items per src first. Where a DVD src is shared, the evidence must be
+# title-aware (`<src>.title<N>.tracks.json`); where it is not, the legacy name stays valid and
+# nothing already shipped is invalidated.
+$gatedPerSrc = @{}
+foreach ($pre in $items) {
+  if ($pre.PSObject.Properties.Name -contains 'audioTracks' -or
+      $pre.PSObject.Properties.Name -contains 'commentary' -or
+      $pre.PSObject.Properties.Name -contains 'audioDescription') {
+    $k = "$($pre.src)"
+    $gatedPerSrc[$k] = 1 + [int]$gatedPerSrc[$k]
+  }
+}
+
 foreach ($it in $items) {
   $out = "$($it.out)"
   # Only items that make an explicit audio claim are gated. An item with no audioTracks takes the
@@ -81,7 +105,22 @@ foreach ($it in $items) {
   }
   if ($trivial) { continue }
 
-  $ev = "$($it.src).tracks.json"
+  # Prefer title-aware evidence for a DVD; fall back to the legacy name only when this src is not
+  # shared by another gated item (see the $gatedPerSrc note above).
+  $ev        = "$($it.src).tracks.json"
+  $isDvdDir  = (Test-Path -LiteralPath "$($it.src)" -PathType Container) -and ($null -ne $it.title)
+  if ($isDvdDir) {
+    $titleEv = "$($it.src).title$($it.title).tracks.json"
+    if (Test-Path -LiteralPath $titleEv) {
+      $ev = $titleEv
+    } elseif ([int]$gatedPerSrc["$($it.src)"] -gt 1) {
+      $problems += "$(Split-Path $out -Leaf): AMBIGUOUS EVIDENCE - $([int]$gatedPerSrc[""$($it.src)""]) " +
+                   "gated items share this DVD folder, so '$(Split-Path $ev -Leaf)' cannot be " +
+                   "evidence for title $($it.title) specifically. Write " +
+                   "'$(Split-Path $titleEv -Leaf)' (analyze-tracks.py --out) and re-run."
+      continue
+    }
+  }
   if (-not (Test-Path -LiteralPath $ev)) {
     $problems += "$(Split-Path $out -Leaf): NO EVIDENCE - run analyze-tracks.py on $($it.src)"
     continue
