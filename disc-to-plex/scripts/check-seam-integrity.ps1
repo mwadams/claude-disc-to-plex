@@ -101,10 +101,21 @@ try {
 
   Write-Host ""
   if ($totalBad) {
-    Write-Host ("*** DECODER FILL AT {0} OF {1} SEAMS - {2} corrupt frames ***" -f $dirtySeams, $seams.Count, $totalBad)
+    Write-Host ("*** SATURATED FILL AT {0} OF {1} SEAMS - {2} affected frames ***" -f $dirtySeams, $seams.Count, $totalBad)
     Write-Host "The item is COMPLETE but not INTACT - duration and frame count cannot see this."
-    Write-Host "Rebuild: take the VIDEO from a CONTINUOUS read of the source, and use per-program"
-    Write-Host "reads only for what a continuous read cannot give you (usually the per-cell audio)."
+    Write-Host ''
+    Write-Host "FIRST establish WHERE it comes from, because two very different causes look identical:"
+    Write-Host "  1. re-read the title with a CONTINUOUS read (no -pg, no chapter args) and stream-copy"
+    Write-Host "     it losslessly, then run this check on THAT. No re-encode, no concat, no joins."
+    Write-Host "  2. decode the whole stream at -v warning and count decoder messages."
+    Write-Host ''
+    Write-Host "If the continuous copy is CLEAN and messages are non-zero, the assembly introduced it -"
+    Write-Host "rebuild from the continuous read. If the continuous copy shows the SAME frames at the"
+    Write-Host "SAME timestamps and the decoder reports ZERO messages, the fill is ENCODED IN THE SOURCE"
+    Write-Host "and NO re-read or re-encode can remove it - look at a frame full-size before assuming a"
+    Write-Host "pipeline bug. Real case: The Saint S00E22, where a per-program build and a continuous"
+    Write-Host "read produced byte-identical defect maps (17 seams, 269 frames) because the disc's own"
+    Write-Host "master carries a horizontal picture slip with green fill at every trailer join."
     exit 2
   }
   Write-Host ("all {0} seams clean" -f $seams.Count)

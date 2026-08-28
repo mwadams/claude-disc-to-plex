@@ -15,23 +15,45 @@
 #
 # which recovers content that -preindex and -trim do not.
 #
-# 🔴 USE -chapter_start/-chapter_end, NOT -pg, TO SELECT ONE PROGRAM. `-pg` is an ENTRY point,
-# not a selection: ffmpeg documents it as "entry PG number", it has no exit counterpart, and it
-# returns program N **and everything after it to the end of the PGC**. Measured on a 625-frame /
-# 4-program PGC (The Saint Monochrome D15, VTS_01): -pg 1 = 625 frames, -pg 2 = 335, -pg 3 = 155
-# -- nested, not disjoint. Looping N over -pg and concatenating therefore yields a reel several
-# times the true length, every trailer repeated with one more of its neighbours each time.
-# -chapter_start N -chapter_end N on the same PGC returns 290 and 180 frames: disjoint, and they
-# sum to the title exactly.
+# 🔴 DO NOT LOOP OVER -pg. `-pg` is an ENTRY point, not a selection: ffmpeg documents it as "entry
+# PG number", it has no exit counterpart, and it returns program N **and everything after it to the
+# end of the PGC**. Measured on a 625-frame / 4-program PGC (The Saint Monochrome D15, VTS_01):
+# -pg 1 = 625 frames, -pg 2 = 335, -pg 3 = 155 -- nested, not disjoint. Looping N over -pg and
+# concatenating therefore yields a reel several times the true length, every item repeated with one
+# more of its neighbours each time.
 #
-# ⚠ AND WHATEVER SELECTOR YOU USE, A PER-PROGRAM READ CAN CORRUPT ITS OWN TAIL -- FRAME COUNTS
-# CANNOT SEE IT. If the disc's cell boundaries are not GOP-aligned, the last frames of a segment
-# decode from an incomplete GOP and render partly as DECODER FILL: saturated green/red bands that
-# grow over ~8-30 frames until the frame is solid, then the next program starts. The frames are
-# all PRESENT -- only their contents are wrong -- so a total that matches the disc exactly proves
-# nothing about them. That is precisely how it shipped: The Saint (1962) S00E22 "Trailer Reel"
-# totalled 996.66 s / 24,910 frames, identical to a flat VOB read, with ~1 s of corruption at
-# every one of its 17 seams (269 frames).
+# 🔴 AND DO NOT TRUST A CHAPTER *RANGE* EITHER - ASK FOR ONE UNIT AT A TIME, THEN VERIFY IT.
+# On D15 VTS_01, `-chapter_start N -chapter_end N` returned 290 and 180 frames: disjoint, summing to
+# the title exactly. But on The Saint Monochrome D10 title 6 - four programs across seven cells,
+# 212.8 s declared - a flat read stopped at 49.8 s, `-preindex 1` returned the same 49.8 s, and
+# `-chapter_start 1 -chapter_end 4` ALSO returned 49.8 s. The range arguments were accepted and
+# SILENTLY IGNORED; only reading ONE chapter at a time returned each program whole. A one-pass encode
+# there would have shipped a valid, plausible 49.8 s file that had silently lost three extras.
+#
+# So neither `-pg` nor a chapter RANGE can be relied on to honour what you asked for. What survived
+# on both discs is: request ONE unit, COUNT ITS PACKETS, and check the units sum to the title.
+#
+# TWO SIGNATURES THAT LOOK IDENTICAL IN A DURATION COLUMN - both are "the read stopped early":
+#   * first-cell truncation - the read returns the length of cell 1 (D13 title 8: 59 s of 996 s)
+#   * first-chapter truncation - the read returns the length of chapter 1 (D10 title 6: 49.8 s of 212.8 s)
+# Neither announces itself. Both look like "the title is simply that long" until you compare against
+# the PGC's declared time or the VTS byte size.
+#
+# ⚠ AND A FRAME COUNT THAT MATCHES THE DISC SAYS NOTHING ABOUT WHETHER THOSE FRAMES ARE RIGHT.
+# The Saint (1962) S00E22 "Trailer Reel" totalled 996.66 s / 24,910 frames, identical to a flat VOB
+# read, and carried 8-30 frames of saturated green/red fill at every one of its 17 seams (269
+# frames). All PRESENT, ~269 of them wrong. Only the picture can see that.
+#
+# 🔴 BUT DO NOT ASSUME THE ASSEMBLY CAUSED IT. The obvious theory - that reading a program in
+# isolation leaves its final GOP incomplete - was written here first and was WRONG. Rebuilding from
+# a single CONTINUOUS read of the VTS VOB (no -pg, no chapter args, no concat, no joins at all)
+# reproduced the defect EXACTLY: same 17 seams, same 269 frames, same per-seam counts and chroma.
+# The stream decodes with ZERO decoder messages, and a full-size frame shows the picture SLIDING
+# horizontally with green filling the gap, film grain and dirt visible in the green -- a picture
+# slip baked into the disc's own master. Nothing to recover; no re-encode can fix it.
+#
+# So when seams are dirty, FIRST take a continuous read, stream-copy it losslessly and re-check
+# THAT. It costs minutes and separates "our assembly broke it" from "the source is like this".
 #
 # So after concatenating, SCAN THE SEAMS FROM THE PICTURE. Black leader between items is normal
 # and proves nothing; what separates the defect from the leader is the direction saturation moves.
@@ -149,10 +171,14 @@ foreach ($d in $Discs) {
     Write-Host ("{0,-34} *** USE MakeMKV *** ({1}/{2} titles short)" -f $d, $short.Count, $mk.Count)
     $short | ForEach-Object { Write-Host "      $_" }
     Write-Host "      REMEDY if MakeMKV is also short, or you want to stay on the dvdvideo path:"
-    Write-Host "        ffmpeg -f dvdvideo -title M -chapter_start N -chapter_end N -i `"<disc>`" ...  # N = 1..programs"
-    Write-Host "      Read the title PROGRAM BY PROGRAM and concatenate the programs into ONE item."
+    Write-Host "        ffmpeg -f dvdvideo -title M -chapter_start N -chapter_end N -i `"<disc>`" ...  # ONE unit, N=N"
+    Write-Host "      Read the title ONE UNIT AT A TIME and concatenate the units into ONE item."
     Write-Host "      Do NOT loop over -pg: it is an ENTRY point, not a selection - it returns program N"
     Write-Host "      AND everything after it, so concatenating those gives a reel several times too long."
+    Write-Host "      Do NOT trust a chapter RANGE either: on Monochrome D10 title 6, -chapter_start 1"
+    Write-Host "      -chapter_end 4 was accepted and SILENTLY IGNORED, returning chapter 1's 49.8s of a"
+    Write-Host "      declared 212.8s - a valid file that had lost three extras. COUNT EACH UNIT'S PACKETS"
+    Write-Host "      and check they sum to the title:  assert-stream-packets.ps1 -Disc <disc> -Title M"
     Write-Host "      THEN CHECK THE SEAMS FROM THE PICTURE, not from the totals. Where cells are not"
     Write-Host "      GOP-aligned, each segment's last ~8-30 frames decode as saturated green/red DECODER"
     Write-Host "      FILL. Those frames are all present, so duration and frame count still match the disc"

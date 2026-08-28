@@ -228,9 +228,17 @@ So, on any DVD:
 - The inverse case is the ordinary one and stays valid: a **2048-byte** (one-sector) shortfall is an
   authoring artefact, not truncation — Rivals S2 D4's VTS_03 was short by exactly one sector and was
   proven intact from TT_SRPT, chapter counts and MakeMKV's `TINFO,24`.
-- Recovering such a title is not simply "read the VOB directly": D13's 17 cells alternate between
+- ~~Recovering such a title is not simply "read the VOB directly": D13's 17 cells alternate between
   audio streams `0x80` and `0x81` (ending at 12:31 and 11:31 against 16:36 of video), so a flat read
-  yields video with holes in the audio.
+  yields video with holes in the audio.~~
+  **WRONG — corrected 2026-08-28, and left here because this belief is what caused the defect.** It
+  sent the recovery down the per-program route, which is where the corruption came from. A flat read
+  of `VTS_05_1.VOB` yields video AND audio complete: `0x80` carries **31,136 AC3 frames = 996.35 s**
+  against 996.40 s of picture. `silencedetect` over it finds **6 silences totalling 8.27 s, longest
+  1.58 s**, at the leader positions, aligning with the video's black segments to within ~0.2 s.
+  The "12:31 / 11:31" figures came from `format=duration`, which for this source reports **57.936 s
+  for both streams** — garbage. The alternation is real at the *cell* level; it does not put holes in
+  the assembled stream. **Recovering such a title often IS simply "read the VOB directly".**
 
 ### The remedy: read each PROGRAM, not the title (SOLVED 2026-08-28)
 
@@ -251,25 +259,197 @@ Measured on a 625-frame / 4-program PGC (The Saint Monochrome D15, VTS_01): `-pg
 `-pg 2` = 335, `-pg 3` = 155 — nested, not disjoint. `-chapter_start N -chapter_end N` on the same
 PGC returns 290 and 180: disjoint, summing to the title exactly. The `-pg` loop only appeared to
 work on D13 because that disc's read aborts after one cell anyway, so each read stopped where the
-bug stopped it — which is also why the segments ended mid-GOP.
+bug stopped it.
+
+🔴 **A chapter RANGE is not reliable either — ask for ONE unit at a time and verify each.** The
+290/180 measurement above stands, but on **The Saint Monochrome D10 title 6** (four programs across
+seven cells, 212.8 s declared) a flat read stopped at **49.8 s**, `-preindex 1` returned the same
+49.8 s, and **`-chapter_start 1 -chapter_end 4` also returned 49.8 s** — accepted and silently
+ignored. Only reading one chapter at a time returned each program whole. A one-pass encode there
+would have shipped a valid, plausible 49.8 s file that had **silently lost three extras**.
+
+So neither `-pg` nor a chapter range can be trusted to honour the request. What survived on both
+discs is: **request ONE unit, count its packets, and check the units sum to the title.**
+
+**Two truncation signatures that are indistinguishable in a duration column** — both are "the read
+stopped early", and neither announces itself:
+
+| signature | example | looks like |
+|---|---|---|
+| stops at **cell 1**'s length | D13 title 8: **59 s** of 996 s | "the title is simply 59 s" |
+| stops at **chapter 1**'s length | D10 title 6: **49.8 s** of 212.8 s | "the title is simply 49.8 s" |
+
+In both cases `ffprobe` reports the title's **declared** time (996.4 s / 212.8 s) while the decode
+yields the truncated length. **The declared figure has now misled us on two unrelated discs in one
+day**, which makes it a pattern rather than an anecdote — see the `format=duration` entry below.
 
 Measured on D13 title 8: 17 programs, **996.66 s total = the declared 00:16:36 exactly**, and
 **24,910 frames — the same count a flat read of `VTS_05_1.VOB` produces**, so the programs tile the
 reel with no gap and no overlap.
 
 ⚠ **But that identity is a completeness check, NOT an integrity check, and it was read as both.**
-The frames were all present and ~269 of them were wrong. Where a disc's cells are not GOP-aligned,
-each segment's last 8–30 frames decode from an incomplete GOP and render as saturated green/red
-**decoder fill** that grows until the frame is solid. Frame count and duration cannot see it — only
-the picture can. The shipped item (`The Saint (1962) - S00E22 - Trailer Reel.mkv`) carried this at
-**all 17 seams**. After concatenating, run `blackdetect` to locate the joins and `signalstats` over
-the ~2 s before each: fill reads `SATMAX` 109–130 with `UAVG`/`VAVG` 35–70 off neutral, against
-`SATMAX ~22` for the surrounding picture. Leader black is not the defect — it sits at `U=V=128`,
-`SATMAX ~0`. **A fade desaturates; fill saturates.** Where seams are dirty, take the VIDEO from a
-continuous read and use the per-program reads only for the audio a flat read cannot give you.
+The frames were all present and ~269 of them were wrong: the shipped item
+(`The Saint (1962) - S00E22 - Trailer Reel.mkv`) carries 8–29 frames of saturated green/red fill at
+**every one of its 17 seams**, growing until the frame is solid. Frame count and duration cannot see
+it — only the picture can.
+
+To find it: `blackdetect` to locate the joins, `signalstats` over the ~2 s before each. Fill reads
+`SATMAX` 109–130 with `UAVG`/`VAVG` 35–70 off neutral, against `SATMAX ~22` for the surrounding
+picture. Leader black is not the defect — it sits at `U=V=128`, `SATMAX ~0`. **A fade desaturates;
+fill saturates.** Or run `scripts/check-seam-integrity.ps1`.
+
+🔴 **DO NOT assume the assembly caused it — on this disc it did NOT.** The obvious theory, and the
+one written here first, was that reading a program in isolation leaves its final GOP incomplete so
+the tail decodes from missing data. **That was wrong, and it was disproved by rebuilding.** A second
+build taken from a single CONTINUOUS read of `VTS_05_1.VOB` — no `-pg`, no chapter arguments, no
+concatenation, no joins of any kind — reproduced the defect **exactly**: the same 17 seams, the same
+269 frames, the same per-seam counts and the same worst chroma values as the `-pg` build. Two
+independent demux routes, byte-identical defect maps.
+
+What it actually is: decoding the whole stream at `-v warning` reports **zero** decoder messages, and
+a full-size frame shows the picture **sliding horizontally** with green filling the vacated area —
+sharp, complete picture content being displaced, with film grain and dirt visible in the green. That
+is a **picture slip baked into the disc's own master**, faithfully encoded. No re-read, re-demux or
+re-encode can remove it, because there is nothing missing to recover.
+
+### METHOD RULE: look at ONE FRAME FULL-SIZE before forming a theory
+
+**A tiled contact sheet is for LOCATING a defect. It is never evidence for CHARACTERISING one.**
+
+Scaled to 240 px and butted against its neighbours, this defect read as "green bars intruding and
+growing" — which sounds like progressive data loss, which suggested incomplete GOPs, which pointed
+at the per-program assembly. Every step followed from the previous one and the whole chain was
+wrong. What the tiling actually showed was one frame's green edge abutting the next frame's, plus
+the slip itself. **One full-size frame ended the theory immediately**: sharp, complete picture
+sliding sideways, with grain and dirt in the green.
+
+Cost of the rule: one `-frames:v 1` extraction. Cost of skipping it: a re-fetch off a slow USB disk,
+a full rebuild, and a wrong cause written into three files.
+
+```
+ffmpeg -ss <t> -i "<file>" -frames:v 1 -y frame.png      # full size, no scale, no tile
+```
+
+**The discriminator, once you are looking at the frame:**
+
+| | decoder fill (data genuinely missing) | transfer / master fault (faithfully encoded) |
+|---|---|---|
+| shape | flat, macroblock-aligned edges | arbitrary edges; picture displaced or distorted |
+| texture | uniform — nothing was decoded there | carries **grain, dust, hairs, scratches** |
+| picture | degraded, smeared, propagating | **sharp and complete**, just in the wrong place |
+| decoder | emits concealment warnings | **zero** messages |
+
+And the ordering rule that follows from it: when a defect sits at the joins, it *looks* like a defect
+caused by joining. **Before rebuilding anything, take a continuous read, stream-copy it losslessly,
+and run the check on THAT.** Minutes, and it separates "our assembly broke it" from "the source is
+like this" — which is the difference between a fix and a detour.
 
 This is per-disc and must be measured, not assumed: on the D15 control the single-program read was
 **bit-identical** to the continuous read across all 290 frames (`psnr=inf`, `mse 0.00`).
+
+### A SOURCE title's `format=duration` is METADATA, not a measurement — count packets
+
+This is the one to carry off this page, because it is not specific to this disc and it puts a hole
+in a check the project uses constantly.
+
+```
+ffprobe -f dvdvideo -title 8 -i "<disc>" -show_entries format=duration    ->  996.400000
+```
+
+That is the full 16:36, and it is **wrong**. The same title DECODES **1,480 packets (~59 s)**, against
+**24,910** from a flat read of its VOB. The reported figure is the **IFO's declared PGC time**, copied
+out of the disc's own structure — the demuxer never decoded anything to produce it. A duration check
+on that title says "fine".
+
+Hold the distinction explicitly:
+
+- **Duration of an ENCODED OUTPUT is trustworthy.** It comes from a real decode, so output-vs-MakeMKV
+  comparisons — and `transcode.ps1`'s own duration checks — stay valid.
+- **Duration of a SOURCE title read through `-f dvdvideo` is metadata**, and can be perfectly correct
+  while the title decodes to a fraction of it.
+
+**To measure a SOURCE, count packets:**
+
+```
+ffprobe -v error -f dvdvideo -title N -i "<disc>" -select_streams v:0 -count_packets \
+        -show_entries stream=nb_read_packets -of csv=p=0
+```
+
+or let the guard do it, over every stream at once, with the zero-packet check as well:
+
+```
+pwsh -File scripts/assert-stream-packets.ps1 -Disc "<disc>" -Title N
+pwsh -File scripts/assert-stream-packets.ps1 -Path "<file>"
+```
+
+**This is why the D13 reel passed every structural check it was given.** Declared duration right
+(996.4 s, from the IFO). Frame count right after the `-pg` loop (24,910, matching the disc). Size
+plausible. Picture wrong. Each check was answered by a number that never came from looking at the
+frames.
+
+**The pattern, which is not about DVDs at all:** of the defects found on 2026-08-28 — this
+truncation, a `-pg` program that declared an audio stream and shipped zero packets, an extra that
+shipped two zero-packet audio tracks because `audioTracks: []` read as absent, and the seam
+corruption itself — **every one was invisible to durations, sizes and stream declarations, and every
+one was caught by counting packets.** A declaration is a promise; a packet count is delivery. When
+the two can disagree, only one of them is evidence.
+
+### Encoding from a flat VOB drops frames at the cell joins (`drop=` in the progress line)
+
+A DVD's program stream carries a **timestamp discontinuity at every cell boundary**. Feed that to an
+encoder and ffmpeg's constant-frame-rate conversion silently discards frames around each one.
+
+Rebuilding the D13 reel from a `-fflags +genpts` remux of `VTS_05_1.VOB` produced **24,885 frames
+against the source's 24,910 — 25 lost**, one or two per cell join. The only visible sign at the time
+was `drop=25` drifting up in the ffmpeg stats line. The output was otherwise flawless and, crucially,
+**internally consistent**: it declared 995.40 s and decoded 995.40 s, so `assert-stream-packets.ps1`
+passed it. Nothing inside the file disagreed with anything else inside the file.
+
+Extracting the audio the same way is noisy in a useful way — the remux prints
+`non monotonically increasing dts` **once per internal join** (16 for a 17-cell PGC), which is the
+discontinuity announcing itself.
+
+**Fix: strip the timestamps and impose a clean rate**, rather than trying to repair them:
+
+```
+ffmpeg -i VTS_05_1.VOB -map 0:v:0 -c copy -f mpeg2video reel.m2v      # elementary streams,
+ffmpeg -i VTS_05_1.VOB -map 0:a:1 -c copy -f ac3        reel.ac3      #   no timestamps at all
+ffmpeg -fflags +genpts -r 25 -i reel.m2v -fflags +genpts -i reel.ac3 \
+       -map 0:v:0 -map 1:a:0 -c copy reel-cfr.mkv                     # clean 25 fps CFR
+```
+
+`genpts` over a raw ES generates exact 40 ms intervals; `genpts` over the VOB inherits the
+discontinuities, which is the whole difference. The re-encode then reports no `drop=` at all and
+returns all 24,910 frames. MPEG-2 keeps its aspect flags in the sequence header, so DAR 4:3 and
+SAR 16:15 survive the round trip — verify rather than assume.
+
+**Two things to carry:** watch `drop=` on any DVD-sourced encode, and when you know the source's
+frame count, gate on it — `assert-stream-packets.ps1 -ExpectVideoPackets <n>`.
+
+#### The general principle, which outlives this bug
+
+**Internal consistency is not evidence of completeness — it only ever proves a file agrees with
+itself.** Uniform loss shrinks every number together: duration, frame count and declarations all
+move down in step, so nothing inside the file disagrees with anything else inside it and every
+self-check passes. Detecting that requires an **external reference** — the source's own count.
+This is the general form of half the defects found on 2026-08-28; the frame-drop is just its
+instance. Whenever you can obtain a source-side number, gate on it rather than on self-agreement.
+
+#### MEASURED: the ordinary `-f dvdvideo` path is NOT affected — the flat VOB read was the special case
+
+Checked 2026-08-28 rather than assumed, because if the normal path shared the fault then every
+multi-cell DVD episode already shipped would be short:
+
+| test | result |
+|---|---|
+| **4-cell title encoded through `transcode.ps1`** (D15 title 1, 25 s, 3 internal joins) | source **625** packets → output **625**. Exact. No `drop=` at all |
+| **10-cell title stream-copied via `-f dvdvideo`** (D15 title 2, 48:10) | **0** dts-discontinuity warnings; **72,255** packets = 2890.20 s = the declared duration exactly |
+| **flat VOB read of the same shape** (D13 `VTS_05_1.VOB`, 17 cells) | **16** `non monotonically increasing dts` warnings — one per internal join — and 25 frames dropped on encode |
+
+**The `dvdvideo` demuxer normalises cell timestamps; a flat VOB read does not.** So the exposure is
+confined to routes that bypass the demuxer and read the VOB directly — which is exactly the recovery
+route this page recommends for a first-cell-truncated title. Use it, but re-time the elementary
+streams as above and gate the result on the source count.
 
 ⚠ Verify EVERY program before concatenating, not a sample. On D13, program 6 declares its second
 audio stream but ships **zero packets** on it, so an item keeping that ordinal would carry a silent

@@ -403,6 +403,7 @@ Core pipeline, in the order you use them:
 | `make-manifest.ps1` | build a manifest from a pipe-delimited episode table |
 | `analyze-tracks.py` | **measure** each audio stream (spoken language, duplicate/lossy-core, role) and propose the manifest's audio fields |
 | `assert-tracks-analysed.ps1` | refuse a manifest whose audio claims disagree with that evidence (runs in `lane-runner`) |
+| `assert-stream-packets.ps1` | **COUNT THE PACKETS** — catches a source title whose declared duration is right and whose decode is a fraction of it, and any stream declared but shipping zero packets |
 | `transcode.ps1` | the encoder — BD/DVD/MKV, crop, audio matrix, subtitles, guards |
 | `check-seam-integrity.ps1` | for a CONCATENATED item: look for decoder fill at the segment joins, which duration and frame count cannot see |
 | `ocr-subtitles.ps1` | bitmap subtitles → SRT sidecar |
