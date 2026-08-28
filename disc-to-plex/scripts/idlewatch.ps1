@@ -196,28 +196,32 @@ if ($queued -eq 0 -and $busyLanes -lt 2) {
   ) -join "`n"
   $manifestText = $manifestText.Replace('\', '/')
 
+  # RECORD WHY each folder was skipped. The summary line asserts a REASON, and a reason nobody
+  # counted is a guess: "all decided or held" was written while a disc was mid-robocopy, which is
+  # neither. Tally as we go so the line can only say what was actually observed.
+  $skip = [ordered]@{ decided = 0; held = 0; copying = 0; inUse = 0 }
   $staged = @()
   foreach ($d in Get-ChildItem 'D:\video\_stage' -Directory -ErrorAction SilentlyContinue) {
     $n = $d.Name
     # Cheap, decisive, and ahead of the slow E: byte-count read below.
-    if ($decided.ContainsKey($n)) { continue }
-    if ($manifestText.Contains("_stage/$n/")) { continue }
+    if ($decided.ContainsKey($n)) { $skip.decided++; continue }
+    if ($manifestText.Contains("_stage/$n/")) { $skip.decided++; continue }
     # A unit with a .HOLD file is DELIBERATELY parked by the user (the Mumins discs, awaiting a
     # missing disc). It is not awaiting a manifest and never will be until the hold is lifted, so
     # naming it every 90 seconds is a permanent false alarm - and this monitor's whole value is
     # being believed on the day it means something. _stallwatch.ps1 already honours .HOLD; this
     # did not, so the same three units were reported as work-waiting for two days.
-    if (Test-Path -LiteralPath (Join-Path $d.FullName '.HOLD')) { continue }
-    if ($inUse | Where-Object { $_ -match [regex]::Escape("_stage\$n") -or $_ -match [regex]::Escape("_stage/$n") }) { continue }
+    if (Test-Path -LiteralPath (Join-Path $d.FullName '.HOLD')) { $skip.held++; continue }
+    if ($inUse | Where-Object { $_ -match [regex]::Escape("_stage\$n") -or $_ -match [regex]::Escape("_stage/$n") }) { $skip.inUse++; continue }
     # A live robocopy into this folder means it is still being written, whatever the byte counts
     # say - and it needs no slow E: read to detect.
     if (Get-CimInstance Win32_Process -Filter "Name='robocopy.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -match [regex]::Escape("_stage\$n") }) { continue }
+        Where-Object { $_.CommandLine -match [regex]::Escape("_stage\$n") }) { $skip.copying++; continue }
     $srcDir = Join-Path $srcRoot $n
     if (Test-Path -LiteralPath $srcDir) {
       $sv = Get-ChildItem -LiteralPath $srcDir -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum
       $tv = Get-ChildItem -LiteralPath $d.FullName -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum
-      if ($sv.Count -ne $tv.Count -or $sv.Sum -ne $tv.Sum) { continue }   # still copying
+      if ($sv.Count -ne $tv.Count -or $sv.Sum -ne $tv.Sum) { $skip.copying++; continue }   # still copying
     }
     $staged += $n
   }
@@ -228,8 +232,11 @@ if ($queued -eq 0 -and $busyLanes -lt 2) {
     # doing their job: folders ARE staged, they just have no decision outstanding. Say what is
     # actually being claimed, or the next reader checks _stage, sees eight folders, and stops
     # trusting the line that follows the semicolon.
-    $held = @(Get-ChildItem 'D:/video/_stage' -Directory -ErrorAction SilentlyContinue).Count
-    $msgs += "QUEUE EMPTY, $busyLanes/2 lanes busy - nothing staged AWAITING A DECISION ($held staged folder(s), all decided or held); the source track is the constraint"
+    $why = @(($skip.GetEnumerator() | Where-Object { $_.Value } | ForEach-Object { "$($_.Value) $($_.Key)" })) -join ', '
+    if (-not $why) { $why = 'none' }
+    # A disc still COPYING means the source track is working, so do not then blame the source track.
+    $tail = if ($skip.copying) { 'the source track is working' } else { 'the source track is the constraint' }
+    $msgs += "QUEUE EMPTY, $busyLanes/2 lanes busy - nothing staged AWAITING A DECISION ($why); $tail"
   }
 }
 
