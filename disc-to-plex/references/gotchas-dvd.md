@@ -230,7 +230,32 @@ So, on any DVD:
   proven intact from TT_SRPT, chapter counts and MakeMKV's `TINFO,24`.
 - Recovering such a title is not simply "read the VOB directly": D13's 17 cells alternate between
   audio streams `0x80` and `0x81` (ending at 12:31 and 11:31 against 16:36 of video), so a flat read
-  yields video with holes in the audio. **Defer it rather than ship it truncated or broken.**
+  yields video with holes in the audio.
+
+### The remedy: read each PROGRAM, not the title (SOLVED 2026-08-28)
+
+`-chapter_start`/`-chapter_end`, `-preindex` and `-trim` all still truncate. **The demuxer's program
+option does not:**
+
+```
+ffmpeg -f dvdvideo -pgc 1 -pg N -title M -i "<disc>" -map 0 -c copy pgN.mkv
+```
+
+Each program is returned IN FULL, and the per-cell `0x80`/`0x81` alternation resolves when a program
+is read in isolation — every program then exposes both audio streams populated for its whole length.
+Concatenate the programs (`-f concat`) into ONE item; do not ship N fragments (see the gallery rule
+in `naming.md`).
+
+Measured on D13 title 8: 17 programs, **996.66 s total = the declared 00:16:36 exactly**, and
+**24,910 frames — the same count a flat read of `VTS_05_1.VOB` produces**, so the programs tile the
+reel with no gap and no overlap. That frame-count identity is the check worth copying: it proves
+completeness against the disc rather than against the tool that was wrong.
+
+⚠ Verify EVERY program before concatenating, not a sample. On D13, program 6 declares its second
+audio stream but ships **zero packets** on it, so an item keeping that ordinal would carry a silent
+minute — invisible to any duration or size check. The two streams there are the same narration
+offset by about a second (`analyze-tracks.py` roles: `primary` / `alternateMix`), so keeping the
+stream that is populated everywhere costs nothing.
 
 The general rule, which is not specific to DVDs: **when two tools agree, ask whether they share an
 implementation or a bug before treating the agreement as corroboration.** Independent corroboration

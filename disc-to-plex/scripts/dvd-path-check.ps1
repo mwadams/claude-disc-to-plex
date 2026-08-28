@@ -6,6 +6,15 @@
 # MakeMKV independently reports the same length, the disc is simply that length and the fast path
 # is correct. Only a COMPARISON can tell those apart, so make the comparison mechanical.
 #
+# ⚠ BUT AGREEMENT IS NOT COMPLETENESS. Both tools read only a title's FIRST CELL, so on a
+# multi-cell PGC they can agree while both being wrong, and this script prints "ok". See the note
+# at the bottom of the loop (The Saint Colour D13 title 8: a 16:36 / 17-cell reel that both tools
+# called 0:59). The fix in that case is to read each PROGRAM separately:
+#
+#     ffmpeg -f dvdvideo -pgc 1 -pg N -title M -i "<disc>" ...
+#
+# which returns every program IN FULL where -chapter_end, -preindex and -trim all still truncate.
+#
 # On the Media10 archive discs this found every title truncated by up to 5 minutes, which the
 # slates' own stated durations then confirmed.
 #
@@ -103,9 +112,32 @@ foreach ($d in $Discs) {
   if ($short) {
     Write-Host ("{0,-34} *** USE MakeMKV *** ({1}/{2} titles short)" -f $d, $short.Count, $mk.Count)
     $short | ForEach-Object { Write-Host "      $_" }
+    Write-Host "      REMEDY if MakeMKV is also short, or you want to stay on the dvdvideo path:"
+    Write-Host "        ffmpeg -f dvdvideo -pgc 1 -pg N -title M -i `"<disc>`" ...   # N = 1..(programs in the PGC)"
+    Write-Host "      Each PROGRAM is read IN FULL. -chapter_end, -preindex and -trim all still truncate;"
+    Write-Host "      the program option is the one that works. Concatenate the programs into one item."
   } else {
     Write-Host ("{0,-34} ok - dvdvideo path safe ({1} titles agree)" -f $d, $mk.Count)
   }
+
+  # ---- THE BLIND SPOT THIS COMPARISON CANNOT SEE ---------------------------------------------
+  # "The two tools agree" is not "the disc is that length". Both readers share the SAME first-cell
+  # limitation, so on a multi-cell PGC they can agree WHILE BOTH BEING WRONG - and this script then
+  # prints "ok".
+  #
+  # Real case: The Saint Colour D13 title 8, a trailer reel authored as ONE PGC of 00:16:36 in 17
+  # cells. MakeMKV reported 0:00:59 / 37.4 MB, `-f dvdvideo -title 8` decoded ~59 s, they agreed,
+  # and this script reported "ok - dvdvideo path safe (9 titles agree)". What exposed it was the
+  # BYTE comparison: 37 MB of reported title against a 663,889,920-byte VTS, which
+  # prove-dvd-mapping.py already reports as UNPROVEN. Reading each of the 17 programs recovered the
+  # full 24,910 frames.
+  #
+  # So a duration agreement is necessary, not sufficient. Run prove-dvd-mapping.py as well, and
+  # treat any title whose MakeMKV size is a small fraction of its VTS as truncated until proven
+  # otherwise - then use the -pg remedy above.
+  Write-Host ("{0,-34} note: agreement is NOT completeness - both tools read only a title's first cell." -f '')
+  Write-Host ("{0,-34}       Cross-check byte sizes with prove-dvd-mapping.py; if a title is a small" -f '')
+  Write-Host ("{0,-34}       fraction of its VTS, read it per-PROGRAM: -f dvdvideo -pgc 1 -pg N -title M" -f '')
 
   # ---- Is this disc's mymovies.xml telling the truth about its own contents? -------------------
   # It is a NAMING hint, never a structural authority. On the Media10 drive it was wrong about
