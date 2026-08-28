@@ -404,6 +404,7 @@ Core pipeline, in the order you use them:
 | `analyze-tracks.py` | **measure** each audio stream (spoken language, duplicate/lossy-core, role) and propose the manifest's audio fields |
 | `assert-tracks-analysed.ps1` | refuse a manifest whose audio claims disagree with that evidence (runs in `lane-runner`) |
 | `transcode.ps1` | the encoder — BD/DVD/MKV, crop, audio matrix, subtitles, guards |
+| `check-seam-integrity.ps1` | for a CONCATENATED item: look for decoder fill at the segment joins, which duration and frame count cannot see |
 | `ocr-subtitles.ps1` | bitmap subtitles → SRT sidecar |
 | `publish-work.ps1` | copy a finished work to the NAS and verify every file |
 | `prune-empty-folders.ps1` | tidy folders left behind by reclaims |

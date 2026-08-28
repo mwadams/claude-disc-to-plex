@@ -234,22 +234,42 @@ So, on any DVD:
 
 ### The remedy: read each PROGRAM, not the title (SOLVED 2026-08-28)
 
-`-chapter_start`/`-chapter_end`, `-preindex` and `-trim` all still truncate. **The demuxer's program
-option does not:**
+`-preindex` and `-trim` still truncate. Reading the title one PROGRAM at a time does not:
 
 ```
-ffmpeg -f dvdvideo -pgc 1 -pg N -title M -i "<disc>" -map 0 -c copy pgN.mkv
+ffmpeg -f dvdvideo -title M -chapter_start N -chapter_end N -i "<disc>" -map 0 -c copy pgN.mkv
 ```
 
-Each program is returned IN FULL, and the per-cell `0x80`/`0x81` alternation resolves when a program
-is read in isolation — every program then exposes both audio streams populated for its whole length.
-Concatenate the programs (`-f concat`) into ONE item; do not ship N fragments (see the gallery rule
-in `naming.md`).
+Reading a program in isolation also resolves the per-cell `0x80`/`0x81` alternation — every program
+then exposes both audio streams populated for its whole length. Concatenate the programs
+(`-f concat`) into ONE item; do not ship N fragments (see the gallery rule in `naming.md`).
+
+🔴 **`-pg` is an ENTRY point, not a selection — do not loop over it.** This section first
+recommended `-pgc 1 -pg N`, which was wrong in the general case. ffmpeg documents `-pg` as "entry
+PG number" and gives it no exit counterpart: it returns program N **and everything after it**.
+Measured on a 625-frame / 4-program PGC (The Saint Monochrome D15, VTS_01): `-pg 1` = 625 frames,
+`-pg 2` = 335, `-pg 3` = 155 — nested, not disjoint. `-chapter_start N -chapter_end N` on the same
+PGC returns 290 and 180: disjoint, summing to the title exactly. The `-pg` loop only appeared to
+work on D13 because that disc's read aborts after one cell anyway, so each read stopped where the
+bug stopped it — which is also why the segments ended mid-GOP.
 
 Measured on D13 title 8: 17 programs, **996.66 s total = the declared 00:16:36 exactly**, and
 **24,910 frames — the same count a flat read of `VTS_05_1.VOB` produces**, so the programs tile the
-reel with no gap and no overlap. That frame-count identity is the check worth copying: it proves
-completeness against the disc rather than against the tool that was wrong.
+reel with no gap and no overlap.
+
+⚠ **But that identity is a completeness check, NOT an integrity check, and it was read as both.**
+The frames were all present and ~269 of them were wrong. Where a disc's cells are not GOP-aligned,
+each segment's last 8–30 frames decode from an incomplete GOP and render as saturated green/red
+**decoder fill** that grows until the frame is solid. Frame count and duration cannot see it — only
+the picture can. The shipped item (`The Saint (1962) - S00E22 - Trailer Reel.mkv`) carried this at
+**all 17 seams**. After concatenating, run `blackdetect` to locate the joins and `signalstats` over
+the ~2 s before each: fill reads `SATMAX` 109–130 with `UAVG`/`VAVG` 35–70 off neutral, against
+`SATMAX ~22` for the surrounding picture. Leader black is not the defect — it sits at `U=V=128`,
+`SATMAX ~0`. **A fade desaturates; fill saturates.** Where seams are dirty, take the VIDEO from a
+continuous read and use the per-program reads only for the audio a flat read cannot give you.
+
+This is per-disc and must be measured, not assumed: on the D15 control the single-program read was
+**bit-identical** to the continuous read across all 290 frames (`psnr=inf`, `mse 0.00`).
 
 ⚠ Verify EVERY program before concatenating, not a sample. On D13, program 6 declares its second
 audio stream but ships **zero packets** on it, so an item keeping that ordinal would carry a silent

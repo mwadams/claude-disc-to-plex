@@ -9,11 +9,47 @@
 # ⚠ BUT AGREEMENT IS NOT COMPLETENESS. Both tools read only a title's FIRST CELL, so on a
 # multi-cell PGC they can agree while both being wrong, and this script prints "ok". See the note
 # at the bottom of the loop (The Saint Colour D13 title 8: a 16:36 / 17-cell reel that both tools
-# called 0:59). The fix in that case is to read each PROGRAM separately:
+# called 0:59). The fix in that case is to read the title PROGRAM BY PROGRAM:
 #
-#     ffmpeg -f dvdvideo -pgc 1 -pg N -title M -i "<disc>" ...
+#     ffmpeg -f dvdvideo -title M -chapter_start N -chapter_end N -i "<disc>" ...
 #
-# which returns every program IN FULL where -chapter_end, -preindex and -trim all still truncate.
+# which recovers content that -preindex and -trim do not.
+#
+# 🔴 USE -chapter_start/-chapter_end, NOT -pg, TO SELECT ONE PROGRAM. `-pg` is an ENTRY point,
+# not a selection: ffmpeg documents it as "entry PG number", it has no exit counterpart, and it
+# returns program N **and everything after it to the end of the PGC**. Measured on a 625-frame /
+# 4-program PGC (The Saint Monochrome D15, VTS_01): -pg 1 = 625 frames, -pg 2 = 335, -pg 3 = 155
+# -- nested, not disjoint. Looping N over -pg and concatenating therefore yields a reel several
+# times the true length, every trailer repeated with one more of its neighbours each time.
+# -chapter_start N -chapter_end N on the same PGC returns 290 and 180 frames: disjoint, and they
+# sum to the title exactly.
+#
+# ⚠ AND WHATEVER SELECTOR YOU USE, A PER-PROGRAM READ CAN CORRUPT ITS OWN TAIL -- FRAME COUNTS
+# CANNOT SEE IT. If the disc's cell boundaries are not GOP-aligned, the last frames of a segment
+# decode from an incomplete GOP and render partly as DECODER FILL: saturated green/red bands that
+# grow over ~8-30 frames until the frame is solid, then the next program starts. The frames are
+# all PRESENT -- only their contents are wrong -- so a total that matches the disc exactly proves
+# nothing about them. That is precisely how it shipped: The Saint (1962) S00E22 "Trailer Reel"
+# totalled 996.66 s / 24,910 frames, identical to a flat VOB read, with ~1 s of corruption at
+# every one of its 17 seams (269 frames).
+#
+# So after concatenating, SCAN THE SEAMS FROM THE PICTURE. Black leader between items is normal
+# and proves nothing; what separates the defect from the leader is the direction saturation moves.
+# A real fade to black DESATURATES; decoder fill SATURATES. Locate the joins with blackdetect,
+# then look at the ~2 s before each one:
+#
+#     ffmpeg -i reel.mkv -vf blackdetect=d=0.15:pix_th=0.10 -an -f null -
+#     ffmpeg -i reel.mkv -vf signalstats,metadata=print:file=stats.txt -an -f null -
+#
+# ...or just run the guard that does both and exits 2 on a dirty seam:
+#
+#     pwsh -File scripts/check-seam-integrity.ps1 -Path "<concatenated item>"
+#
+# and flag frames with SATMAX >= 60 while UAVG/VAVG sit >= 12 off neutral (128). On the shipped
+# reel those frames ran SATMAX 109-130 with UAVG/VAVG down at 57-93 or up at 227-236, against
+# SATMAX ~22 for the surrounding picture. A GOP-aligned disc gives no such frames at all: on the
+# D15 control, the single-program read was BIT-IDENTICAL to the continuous read for all 290 frames
+# (psnr=inf, mse 0.00), so this is a per-disc property to be measured, never assumed either way.
 #
 # On the Media10 archive discs this found every title truncated by up to 5 minutes, which the
 # slates' own stated durations then confirmed.
@@ -113,9 +149,20 @@ foreach ($d in $Discs) {
     Write-Host ("{0,-34} *** USE MakeMKV *** ({1}/{2} titles short)" -f $d, $short.Count, $mk.Count)
     $short | ForEach-Object { Write-Host "      $_" }
     Write-Host "      REMEDY if MakeMKV is also short, or you want to stay on the dvdvideo path:"
-    Write-Host "        ffmpeg -f dvdvideo -pgc 1 -pg N -title M -i `"<disc>`" ...   # N = 1..(programs in the PGC)"
-    Write-Host "      Each PROGRAM is read IN FULL. -chapter_end, -preindex and -trim all still truncate;"
-    Write-Host "      the program option is the one that works. Concatenate the programs into one item."
+    Write-Host "        ffmpeg -f dvdvideo -title M -chapter_start N -chapter_end N -i `"<disc>`" ...  # N = 1..programs"
+    Write-Host "      Read the title PROGRAM BY PROGRAM and concatenate the programs into ONE item."
+    Write-Host "      Do NOT loop over -pg: it is an ENTRY point, not a selection - it returns program N"
+    Write-Host "      AND everything after it, so concatenating those gives a reel several times too long."
+    Write-Host "      THEN CHECK THE SEAMS FROM THE PICTURE, not from the totals. Where cells are not"
+    Write-Host "      GOP-aligned, each segment's last ~8-30 frames decode as saturated green/red DECODER"
+    Write-Host "      FILL. Those frames are all present, so duration and frame count still match the disc"
+    Write-Host "      exactly - that is how a corrupt reel shipped (The Saint S00E22, 17/17 seams bad)."
+    Write-Host "        ffmpeg -i reel.mkv -vf blackdetect=d=0.15:pix_th=0.10 -an -f null -   # find the joins"
+    Write-Host "        ffmpeg -i reel.mkv -vf signalstats,metadata=print:file=stats.txt -an -f null -"
+    Write-Host "      In the ~2 s before each join, fill shows as SATMAX >= 60 with UAVG/VAVG >= 12 off 128."
+    Write-Host "      Leader black is NOT the defect (it sits at U=V=128, SATMAX ~0); a fade desaturates,"
+    Write-Host "      fill saturates. If seams are dirty, take the VIDEO from a continuous read of the VTS"
+    Write-Host "      VOB and use the per-program reads only for the audio the flat read cannot give you."
   } else {
     Write-Host ("{0,-34} ok - dvdvideo path safe ({1} titles agree)" -f $d, $mk.Count)
   }
@@ -134,10 +181,18 @@ foreach ($d in $Discs) {
   #
   # So a duration agreement is necessary, not sufficient. Run prove-dvd-mapping.py as well, and
   # treat any title whose MakeMKV size is a small fraction of its VTS as truncated until proven
-  # otherwise - then use the -pg remedy above.
+  # otherwise - then use the per-program remedy above.
+  #
+  # And note how the recovery itself then went wrong, because the second half of the job is the
+  # half that gets skipped: the 17 programs were recovered, they tiled the reel exactly, and the
+  # item shipped with a second of decoder fill at every join. The recovery was verified against
+  # ARITHMETIC (996.66 s, 24,910 frames, both exact) when the failure was PICTORIAL. Recovering
+  # the frames and recovering the picture are two claims, and only one of them was checked.
   Write-Host ("{0,-34} note: agreement is NOT completeness - both tools read only a title's first cell." -f '')
   Write-Host ("{0,-34}       Cross-check byte sizes with prove-dvd-mapping.py; if a title is a small" -f '')
-  Write-Host ("{0,-34}       fraction of its VTS, read it per-PROGRAM: -f dvdvideo -pgc 1 -pg N -title M" -f '')
+  Write-Host ("{0,-34}       fraction of its VTS, read it per-PROGRAM with -chapter_start/-chapter_end" -f '')
+  Write-Host ("{0,-34}       (NOT -pg, which is an entry point), then LOOK AT THE SEAMS - an exact" -f '')
+  Write-Host ("{0,-34}       frame count says nothing about whether those frames decoded correctly." -f '')
 
   # ---- Is this disc's mymovies.xml telling the truth about its own contents? -------------------
   # It is a NAMING hint, never a structural authority. On the Media10 drive it was wrong about
