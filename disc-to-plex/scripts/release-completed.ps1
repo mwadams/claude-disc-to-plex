@@ -109,7 +109,17 @@ foreach ($u in $Units) {
   $targets  = @($dir)
   $sidecar  = Join-Path $Stage "$unit.tracks.json"
   if (Test-Path -LiteralPath $sidecar) { $targets += $sidecar }
-  foreach ($suffix in @('-rip', '-x', '-main', '-mkv')) {
+  # ALSO the per-title evidence files. assert-tracks-analysed.ps1 keys DVD audio evidence to
+  # `<unit>.title<N>.tracks.json` whenever one disc folder is the src of several gated items (a DVD
+  # src is the FOLDER, so the legacy single name cannot speak for two titles). Matching only
+  # `<unit>.tracks.json` left those orphaned in _stage on every such disc - first seen on
+  # The Saint Colour D14, which needed one per movie version.
+  Get-ChildItem -LiteralPath $Stage -Filter "$unit.title*.tracks.json" -File -ErrorAction SilentlyContinue |
+    ForEach-Object { $targets += $_.FullName }
+  # '-reel' and '-audio' are hand-built intermediates: the per-PROGRAM extraction used to recover a
+  # first-cell-truncated title (see gotchas-dvd.md) and a per-title audio extraction for analysis.
+  # Both are named with the same slug convention as the rip folders so they are reclaimed with them.
+  foreach ($suffix in @('-rip', '-x', '-main', '-mkv', '-reel', '-audio')) {
     $ripDir = Join-Path $Stage "$slug$suffix"
     if (Test-Path -LiteralPath $ripDir -PathType Container) { $targets += $ripDir }
   }
