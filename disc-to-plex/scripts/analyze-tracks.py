@@ -50,6 +50,18 @@ TOOLS = json.loads(Path(r'D:\video\.transcode-tools\tool-paths.json').read_text(
 FFMPEG = TOOLS['ffmpeg']
 FFPROBE = str(Path(FFMPEG).parent / 'ffprobe.exe')
 
+# INPUT OPTIONS FOR THE SOURCE. Empty for a plain file; for a DVD the source is a FOLDER and ffprobe
+# cannot open a directory - it needs `-f dvdvideo -title N`, the same path transcode.ps1 encodes
+# from, so the ordinals here are the ordinals `audioTracks` will mean.
+#
+# Without this, `assert-tracks-analysed.ps1` asked for `<src>.title<N>.tracks.json` on any DVD item
+# claiming a commentary and NOTHING COULD PRODUCE IT: a guard demanding evidence its own
+# evidence-producer cannot generate. Found on Farscape S1 (2026-08-29). The guard's header already
+# documents this exact ffprobe-cannot-open-a-directory defect for its EXEMPTION probe; it was still
+# open on the evidence side.
+SRC_OPTS = []
+
+
 COMMENTARY_HINTS = re.compile(
     r'\b(we (shot|filmed|had|were|wanted)|the scene|this shot|the film|the movie|the director|'
     r'the script|the sequence|originally|actually|you can see|i remember|the studio|the set|'
@@ -118,7 +130,7 @@ def run(cmd):
 def probe_streams(src):
     r = run([FFPROBE, '-v', 'error', '-select_streams', 'a', '-show_entries',
              'stream=index,codec_name,profile,channels,bit_rate:stream_tags=language,title',
-             '-of', 'json', src])
+             '-of', 'json'] + SRC_OPTS + [src])
     out = []
     for i, s in enumerate(json.loads(r.stdout).get('streams', [])):
         t = s.get('tags', {}) or {}
@@ -136,7 +148,8 @@ def probe_streams(src):
 
 
 def duration(src):
-    r = run([FFPROBE, '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', src])
+    r = run([FFPROBE, '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0']
+            + SRC_OPTS + [src])
     try:
         return float(r.stdout.strip())
     except ValueError:
@@ -144,7 +157,8 @@ def duration(src):
 
 
 def rms_db(src, filtergraph):
-    r = run([FFMPEG, '-hide_banner', '-ss', str(rms_db.start), '-t', str(rms_db.dur), '-i', src,
+    r = run([FFMPEG, '-hide_banner', '-ss', str(rms_db.start), '-t', str(rms_db.dur)]
+            + SRC_OPTS + ['-i', src,
              '-filter_complex', filtergraph, '-map', '[x]', '-f', 'null', '-'])
     m = re.findall(r'RMS level dB:\s*(-?[\d.]+|-?inf)', r.stderr)
     if not m:
@@ -189,7 +203,8 @@ def core_candidate(a, b):
 def _pcm(src, i):
     """Decode the comparison window of a:i to mono float32 @48k."""
     r = subprocess.run([FFMPEG, '-hide_banner', '-v', 'error',
-                        '-ss', str(rms_db.start), '-t', str(rms_db.dur), '-i', src,
+                        '-ss', str(rms_db.start), '-t', str(rms_db.dur)]
+                       + SRC_OPTS + ['-i', src,
                         '-map', f'0:a:{i}', '-ac', '1', '-ar', '48000', '-f', 'f32le', '-'],
                        capture_output=True)
     if r.returncode != 0 or not r.stdout:
@@ -273,7 +288,8 @@ def transcribe(model, src, track, offsets, dur):
     with tempfile.TemporaryDirectory() as td:
         for off in offsets:
             wav = Path(td) / f'a{track}_{off}.wav'
-            r = run([FFMPEG, '-y', '-hide_banner', '-v', 'error', '-ss', str(off), '-i', src,
+            r = run([FFMPEG, '-y', '-hide_banner', '-v', 'error', '-ss', str(off)]
+                    + SRC_OPTS + ['-i', src,
                      '-t', str(dur), '-map', f'0:a:{track}', '-ac', '1', '-ar', '16000', str(wav)])
             if not wav.exists() or wav.stat().st_size < 1000:
                 failures.append('offset %ds: extraction produced no usable wav (%s)'
@@ -367,8 +383,16 @@ def main():
     ap.add_argument('--offsets', type=int, nargs='+')
     ap.add_argument('--dur', type=int, default=75)
     ap.add_argument('--model', default='base')
+    ap.add_argument('--dvd-title', type=int, metavar='N',
+                    help="source is a DVD FOLDER: read it through `-f dvdvideo -title N`, the same "
+                         "path transcode.ps1 encodes from. Output defaults to "
+                         "<src>.title<N>.tracks.json, which is what assert-tracks-analysed.ps1 "
+                         "requires when several titles share one disc folder.")
     ap.add_argument('--out')
     a = ap.parse_args()
+    # Arm the DVD input options BEFORE anything probes the source.
+    if getattr(a, 'dvd_title', None):
+        globals()['SRC_OPTS'] = ['-f', 'dvdvideo', '-title', str(a.dvd_title)]
 
     src = a.src
     dur_total = duration(src)
@@ -413,7 +437,8 @@ def main():
         #
         # Write the evidence file so the loop counts this as analysed, with an empty stream list
         # and a proposal that ships no audio - which is the correct manifest for a gallery.
-        out = a.out or (src + '.tracks.json')
+        out = a.out or (src + ('.title%d.tracks.json' % a.dvd_title
+                               if getattr(a, 'dvd_title', None) else '.tracks.json'))
         payload = {'src': src, 'duration': dur_total, 'offsets': offsets, 'streams': [],
                    'proposal': {'audioTracks': [], 'audioLangs': []},
                    'warnings': ['no audio streams on this title - nothing to analyse. Normal for a '
@@ -815,7 +840,8 @@ def main():
 
     result = {'src': src, 'duration': dur_total, 'offsets': offsets,
               'streams': streams, 'proposal': proposal, 'warnings': warnings}
-    out = a.out or (src + '.tracks.json')
+    out = a.out or (src + ('.title%d.tracks.json' % a.dvd_title
+                          if getattr(a, 'dvd_title', None) else '.tracks.json'))
     Path(out).write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding='utf-8')
 
     print('\nproposed manifest audio fields:')
