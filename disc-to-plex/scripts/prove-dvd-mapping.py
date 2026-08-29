@@ -385,12 +385,46 @@ def prove(disc_dir, info_text):
                 # SAME cells are the same bytes, so size cannot separate them and must not pretend
                 # to. Say which doors they are - that is the useful answer, and it is what tells
                 # the reader this is one item with two entries rather than a mapping failure.
-                row['note'] = ('byte total %d matches %d declared titles over identical cells (%s)'
-                               ' - the two-door shape; size cannot separate them, and they are the '
-                               'same material' %
-                               (want, len(cand),
-                                ', '.join('VTS_%02d title %d' % c for c in sorted(cand))))
-                unproven.append(row)
+                #
+                # RESOLVE IT when the candidates are doors onto ONE item: same VTS, and identical
+                # cell ranges. Then "which door" has no consequences - every one addresses the same
+                # sectors - and the lowest entry is the answer, exactly as the whole-VTS door case
+                # above already concludes. Leaving it UNPROVEN sent the author away to settle a
+                # distinction that does not exist, and the honest per-title claim they then had to
+                # write by hand is the one generated here.
+                #
+                # NOT resolved when the candidates span different VTSs or carry different cells:
+                # equal sizes across genuinely different material is real ambiguity, and collapsing
+                # it would be the fabrication this script exists to prevent. (Farscape S3 D3:
+                # VTS_01 declares six titles, of which 2 and 5 play identical cells.)
+                same_vts = {c[0] for c in cand}
+                cells0 = title_ranges.get(cand[0])
+                doors = (len(same_vts) == 1 and cells0 and
+                         all(title_ranges.get(c) == cells0 for c in cand))
+                if doors:
+                    vtsn = cand[0][0]
+                    ttns = sorted(c[1] for c in cand)
+                    entries = sorted(t['title'] for t in per_vts.get(vtsn, [])
+                                     if t['vts_ttn'] in ttns)
+                    ttn = next(t['vts_ttn'] for t in per_vts[vtsn] if t['title'] == entries[0])
+                    row['vts'] = vtsn
+                    row['dvdvideoTitle'] = entries[0]
+                    row['provenBy'] = (
+                        f"VTS_{vtsn:02d} title {ttn} totals {want} bytes across its PGC's cell "
+                        f"sectors, matching MakeMKV t{mkv_id:02d} exactly; that VTS holds "
+                        f"{len(per_vts[vtsn])} title(s) whose cells, unioned, cover the VTS total "
+                        f"exactly (VTSN={vtsn}, VTS_TTN={ttn}). NOTE this size is shared by "
+                        f"dvdvideo {', '.join(str(e) for e in entries)}, whose PGCs play IDENTICAL "
+                        f"cell sectors - one item behind several doors, so the size does not single "
+                        f"one out and does not need to: every door is the same material, and "
+                        f"{entries[0]} is its lowest entry")
+                else:
+                    row['note'] = ('byte total %d matches %d declared titles over identical cells '
+                                   '(%s) - the two-door shape; size cannot separate them, and they '
+                                   'are the same material' %
+                                   (want, len(cand),
+                                    ', '.join('VTS_%02d title %d' % c for c in sorted(cand))))
+                    unproven.append(row)
             else:
                 near = sorted(vob.items(), key=lambda kv: abs(kv[1] - want))[:1]
                 hint = (f'; nearest VTS_{near[0][0]:02d} off by {near[0][1] - want:+d}'
