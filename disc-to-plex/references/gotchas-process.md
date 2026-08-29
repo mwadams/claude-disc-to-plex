@@ -280,3 +280,32 @@ So, whenever an argument is a PATH and the callee is not a shell built-in:
   looks identical to one that was never passed.
 
 The existing narrower rule stays correct; it is simply an instance of this.
+
+## A TOOL THAT PRINTS ITS RESULTS THEN FAILS ON THE WRITE LOOKS EXACTLY LIKE SUCCESS (2026-08-29)
+
+`deep-speech` transcribed all sixteen windows of a disc, **printed every one**, and then died writing
+the catalogue: *"cannot be performed on a file with a user-mapped section open"*. The run read as
+complete — every transcript was there on screen — and the catalogue held **nothing**.
+
+It was caught only by **counting the samples that actually landed in the artifact** rather than
+trusting the log. That is the same defect family as an OCR gate crowded out by error records, a rip
+"confirmed" from a grep of anticipated outcomes, and a publish loop whose log predates the file it
+describes: **output is evidence of intent, not of effect.**
+
+So for anything that computes then persists:
+
+- **Verify by re-reading the artifact and counting what is in it.** Never conclude from the tool's
+  own output that the write happened.
+- **Throw if the write did not take.** A tool that cannot confirm its own effect should fail, not
+  return.
+
+### The worse half: a stale in-memory copy silently reverts someone else's repair
+
+Had that write *succeeded*, it would have been more damaging than the failure. The process had loaded
+the catalogue **before `apply-proof.py` corrected the mapping**, so writing it back would have
+clobbered the repair — restoring a crossed `dvdvideoTitle` while looking like a routine transcript
+registration, and leaving evidence filed against the wrong titles with nothing to indicate it.
+
+**Two processes must not hold the same catalogue open across a modification.** Where concurrent work
+is unavoidable, re-read immediately before writing and merge, rather than writing back a copy loaded
+earlier. This is why sequencing matters: run the proof, let it finish, then register evidence.
