@@ -421,7 +421,31 @@ def verify_claims(disc_dir, catalogue_path):
                                     f'total cannot single out dvdvideo {dv}'))
         else:
             verified.append((label, dv, vtsn))
-    return verified, unverifiable, failures
+    # WHICH TITLES DOES THE DISC DECLARE THAT THE CATALOGUE NEVER MENTIONS?
+    #
+    # `assert-accounted.ps1` checks that every CATALOGUED title has a disposition. If MakeMKV never
+    # enumerated a title there is no row, so "every title accounted for" is vacuously true and the
+    # gate passes a disc with content nobody looked at.
+    #
+    # The Zoo Gang D2, 2026-08-29: MakeMKV reported dvdvideo 5 as "9 seconds" and skipped it, so it
+    # had NO CATALOGUE ROW AT ALL. It is really 12:41 - a whole extra. Both readers stop at the end
+    # of chapter 1, so neither duration nor their agreement could reveal it.
+    #
+    # TT_SRPT is the disc's own declaration and owes nothing to either reader, so compare against
+    # that. This needs no MakeMKV run - the catalogue already records each row's dvdvideoTitle.
+    claimed_dv = {t.get('dvdvideoTitle') for t in cat.get('titles', [])
+                  if t.get('dvdvideoTitle') is not None}
+    uncatalogued = []
+    for e in sorted(srpt.values(), key=lambda x: x['title']):
+        if e['title'] in claimed_dv:
+            continue
+        on_disk = e['vtsn'] in vob
+        uncatalogued.append({
+            'title': e['title'], 'vts': e['vtsn'], 'vtsOnDisk': on_disk,
+            'chapters': e.get('nr_of_ptts'),
+            'why': ('VTS present - a title the catalogue never lists (MakeMKV may have skipped it)'
+                    if on_disk else 'VTS has no title VOBs on disk')})
+    return verified, unverifiable, failures, uncatalogued
 
 
 def main():
@@ -441,7 +465,7 @@ def main():
         raise SystemExit(f'not a directory: {a.disc}')
 
     if a.verify_claims:
-        ok, unver, bad = verify_claims(a.disc, a.verify_claims)
+        ok, unver, bad, uncat = verify_claims(a.disc, a.verify_claims)
         for label, dv, vtsn in ok:
             print(f'    {label}  VERIFIED  dvdvideo {dv} in VTS_{vtsn:02d} - byte total and '
                   f'TT_SRPT placement both re-derived from the disc')
@@ -452,6 +476,21 @@ def main():
         print(f'\n{len(ok)} verified, {len(unver)} unverifiable, {len(bad)} FAILED')
         if bad:
             print('A recorded proof that is not true is worse than no proof: the gate honours it.')
+
+        # Report titles the DISC declares that the CATALOGUE never lists. Not a failure - a disc can
+        # legitimately declare navigation stubs - but it must be SEEN, because the accounting gate
+        # cannot: no row means no missing disposition. The Zoo Gang D2's 12:41 extra was invisible
+        # exactly this way.
+        if uncat:
+            present = [u for u in uncat if u['vtsOnDisk']]
+            print(f'\n*** {len(uncat)} title(s) DECLARED BY THE DISC BUT NOT IN THE CATALOGUE ***')
+            for u in uncat:
+                ch = f", {u['chapters']} chapter(s)" if u.get('chapters') else ''
+                print(f'    dvdvideo {u["title"]:>3}  VTS_{u["vts"]:02d}{ch}  {u["why"]}')
+            if present:
+                print(f'\n    {len(present)} of these sit in a VTS that IS on disk. The accounting')
+                print('    gate cannot flag them - a title with no catalogue row has no missing')
+                print('    disposition. Decode each and account for it, or record why it is empty.')
         return 3 if bad else 0
 
     if a.info_file:

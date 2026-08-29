@@ -403,6 +403,20 @@ if ($proverClaims.Count) {
       } else {
         $evNote += "$($proverClaims.Count) mapping proof(s) RE-DERIVED from the disc's own VTS byte totals and TT_SRPT"
       }
+      # SURFACE TITLES THE DISC DECLARES THAT THE CATALOGUE NEVER LISTED.
+      #
+      # This gate can only check that every CATALOGUED title has a disposition. A title MakeMKV
+      # never enumerated has no row, so it has no MISSING disposition and the gate passes - the
+      # completeness claim is vacuous exactly where it matters. The Zoo Gang D2 (2026-08-29):
+      # MakeMKV called dvdvideo 5 "9 seconds" and skipped it; it is really 12:41, a whole extra,
+      # and nothing here could have said so.
+      #
+      # TT_SRPT is the disc's own declaration and owes nothing to MakeMKV, so report the difference.
+      # NOT a failure - navigation stubs and padding titles are legitimate and common - but it must
+      # be visible, because the reader is the only thing that can judge it.
+      foreach ($line in @($vOut | Where-Object { "$_" -match 'DECLARED BY THE DISC|^\s+dvdvideo\s+\d+\s+VTS_' })) {
+        $evNote += ("declared-vs-catalogued: " + ("$line".Trim()))
+      }
     }
   }
 }
