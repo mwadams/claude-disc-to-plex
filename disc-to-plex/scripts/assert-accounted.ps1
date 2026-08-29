@@ -363,9 +363,17 @@ foreach($id in ($disp.Keys | Sort-Object)){
 # title 3 and read the card", which no script can check. But a claim written in
 # prove-dvd-mapping.py's own words names a VTS and a byte total, and those are re-derivable from
 # the disc. So verify exactly those, and leave human prose alone (reported, not trusted).
+#
+# MATCH BOTH PROOF FORMS. The prover writes two: the VTS-total one below, and a per-title
+# cell-sector one ("VTS_05 title 3 totals N bytes across its PGC's cell sectors") used wherever a
+# VTS holds several titles. Only the first was listed here, so on exactly the discs where the
+# mapping is hardest - multi-title VTSs, PLAY ALLs, two doors - the machine proof was filed as
+# unverifiable human prose and never re-derived, and a hand-written imitation of that wording
+# would have been waived unchecked. `--verify-claims` has always understood both.
 $proverClaims = @($cat.titles | Where-Object {
   $_.PSObject.Properties.Name -contains 'mappingProvenBy' -and
-  "$($_.mappingProvenBy)" -match 'VTS_\d+\s+title VOBs total\s+\d+\s+bytes'
+  ("$($_.mappingProvenBy)" -match 'VTS_\d+\s+title VOBs total\s+\d+\s+bytes' -or
+   "$($_.mappingProvenBy)" -match 'VTS_\d+\s+title\s+\d+\s+totals\s+\d+\s+bytes across')
 })
 if ($proverClaims.Count) {
   $prover = Join-Path $PSScriptRoot 'prove-dvd-mapping.py'

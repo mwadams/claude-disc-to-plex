@@ -201,6 +201,30 @@ foreach ($it in $items) {
                      "calls it '$($s.role)' - a dub labelled 'Audio Commentary' is how " +
                      "Thunderball nearly shipped"
       }
+
+      # CHANNEL COUNT, INDEPENDENT OF THE TRANSCRIPT. The check above asks the evidence file
+      # whether it agrees with the manifest - so when the EVIDENCE is inverted, both agree and
+      # both are wrong. That happened on Farscape S1 D6 dvdvideo 3: the episode's dialogue tripped
+      # the commentary word-list, the real commentary was elected primary, and the analyzer
+      # proposed `commentary: 0` - the 5.1 programme mix. This gate passed it. It was caught by a
+      # human reading the transcripts, which is not a control.
+      #
+      # A commentary is mixed for two speakers in a room: 2.0, sometimes mono. The programme mix
+      # is the one with the channels. So a "commentary" carrying MORE channels than the track it
+      # would play under is not a commentary, whatever the transcript says - and this holds for
+      # dubs, audio description and duplicate mixes too, none of which are ever the widest track.
+      $mainIdx = if ($it.PSObject.Properties.Name -contains 'audioTracks' -and @($it.audioTracks).Count) {
+                   [int](@($it.audioTracks)[0]) } else { $null }
+      if ($null -ne $mainIdx -and $mainIdx -ne $ci) {
+        $main = $byIdx[$mainIdx]
+        if ($s -and $main -and $s.channels -and $main.channels -and
+            [int]$s.channels -gt [int]$main.channels) {
+          $problems += "$(Split-Path $out -Leaf): a:$ci is tagged as commentary but carries " +
+                       "$($s.channels) channels against a:$mainIdx's $($main.channels) - the " +
+                       "wider mix is the programme, so this pair is INVERTED. Re-read both " +
+                       "transcripts before changing anything; do not simply swap the numbers"
+        }
+      }
     }
   }
 

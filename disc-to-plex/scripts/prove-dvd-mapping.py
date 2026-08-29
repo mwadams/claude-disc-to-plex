@@ -30,8 +30,9 @@ the pairing is PROVEN arithmetic, not an inference from two clocks that disagree
   * Where a VTS holds SEVERAL titles, that total proves only group membership - so the same
     arithmetic is applied one level finer, from the VTS's own IFO. VTS_PTT_SRPT gives each VTS
     title its entry PGC, and that PGC's cell table gives every cell's first/last sector, i.e. an
-    exact per-title byte size. It is used only where those per-title sizes account for the WHOLE
-    VTS with no remainder. See vts_title_bytes().
+    exact per-title byte size. It is used only where those titles' cells, UNIONED, cover the whole
+    VTS - the union and not the sum, because a PLAY ALL replays its episodes' cells and a two-door
+    VTS counts the same cells twice. See vts_covered_bytes().
 
 WHAT IT DELIBERATELY WILL NOT DO
 --------------------------------
@@ -60,6 +61,21 @@ import re
 import struct
 import subprocess
 import sys
+
+
+# DVD-Video logical sector size. MUST be module level, because `vts_title_ranges()` reads it.
+#
+# It was a function local until the union refactor below deleted it along with the byte arithmetic
+# that had been its only other use - leaving two live references and a NameError on every VTS. The
+# bare `except Exception: continue` then swallowed it, so the function returned {} and the run came
+# back "7 of 8 DECLARED title(s) were never enumerated": a report that reads like a half-copied
+# disc, produced by a one-line typo. That is why the handler below is now narrow. It was caught in
+# minutes only because the run happened to be a test against a disc with a KNOWN answer.
+#
+# (An earlier note here blamed this for the hand-mapping of the Farscape series-2 discs. It cannot
+# have been: those runs predate this refactor and reached the sum-vs-union check that
+# vts_covered_bytes documents, which is a different fault in the caller.)
+SECTOR = 2048
 
 
 # --------------------------------------------------------------------------------------- IFO
@@ -97,8 +113,8 @@ def read_tt_srpt(video_ts_dir):
     return out
 
 
-def vts_title_bytes(video_ts_dir):
-    """(vtsn, vts_ttn) -> exact bytes of that ONE title, from the VTS IFO's own tables.
+def vts_title_ranges(video_ts_dir):
+    """(vtsn, vts_ttn) -> [(first_sector, last_sector), ...], the cells of that title's entry PGC.
 
     WHY THIS EXISTS. The VTS VOB total below is exact only when the VTS holds ONE title; where it
     holds several, the total proves group membership and nothing more. But the disc states the
@@ -110,14 +126,17 @@ def vts_title_bytes(video_ts_dir):
 
     On The Saint D8, VTS_05 holds dvdvideo 5/6/7 and VTS_06 holds 8/9 - five titles the VTS-total
     method could only report UNPROVEN, and which it additionally listed as "declared but never
-    enumerated" when they had in fact been enumerated perfectly well. The per-title sizes sum to
-    each VTS total with ZERO remainder and each matches one MakeMKV title exactly, so all nine
-    titles prove one-to-one with duration never consulted.
+    enumerated" when they had in fact been enumerated perfectly well. Each per-title size matches
+    one MakeMKV title exactly, so all nine titles prove one-to-one with duration never consulted.
+
+    SECTORS, NOT BYTES, because titles within one VTS OVERLAP and a byte figure cannot say so.
+    A PLAY ALL replays its constituent episodes' cells; a second "door" PGC entered from another
+    menu button covers the same cells again. Only the ranges distinguish coverage from
+    double-counting - see vts_covered_bytes(), which is what the caller must test against.
 
     Returns {} for any VTS whose IFO cannot be parsed - the caller then falls back to the VTS
     total, i.e. to the previous behaviour, rather than to a guess.
     """
-    SECTOR = 2048
     out = {}
     for name in sorted(os.listdir(video_ts_dir)):
         m = re.fullmatch(r'VTS_(\d\d)_0\.IFO', name, re.IGNORECASE)
@@ -136,27 +155,76 @@ def vts_title_bytes(video_ts_dir):
                 off = struct.unpack_from('>I', b, ptt_srpt + 8 + 4 * i)[0]
                 entry_pgc.append(struct.unpack_from('>H', b, ptt_srpt + off)[0])
             nr_pgc = struct.unpack_from('>H', b, pgcit)[0]
-            pgc_bytes = {}
+            pgc_cells = {}
             for i in range(nr_pgc):
                 off = struct.unpack_from('>I', b, pgcit + 8 + 8 * i + 4)[0]
                 p = pgcit + off
                 nr_cells = b[p + 3]
                 cpbkt = struct.unpack_from('>H', b, p + 0xE8)[0]
-                total = 0
+                cells = []
                 for c in range(nr_cells):
                     cp = p + cpbkt + 24 * c
                     first = struct.unpack_from('>I', b, cp + 8)[0]
                     last = struct.unpack_from('>I', b, cp + 20)[0]
                     if last < first:
                         raise ValueError('cell %d of PGC %d has last < first sector' % (c, i + 1))
-                    total += (last - first + 1) * SECTOR
-                pgc_bytes[i + 1] = total
+                    cells.append((first, last))
+                pgc_cells[i + 1] = cells
             for ttn, pgcn in enumerate(entry_pgc, start=1):
-                if pgcn in pgc_bytes:
-                    out[(vtsn, ttn)] = pgc_bytes[pgcn]
-        except Exception:
-            # A VTS we cannot parse simply contributes nothing; never a guess.
+                if pgcn in pgc_cells:
+                    out[(vtsn, ttn)] = pgc_cells[pgcn]
+        except (struct.error, ValueError, IndexError, OSError) as exc:
+            # A VTS we cannot parse simply contributes nothing; never a guess. Two rules, both
+            # learned from the NameError described at SECTOR:
+            #
+            # NARROW, so a fault in THIS CODE is never disguised as a fault in the disc. NameError,
+            # AttributeError and TypeError are always our bug and must crash loudly; only the
+            # errors a malformed IFO can actually raise are caught here.
+            #
+            # And SAY SO on stderr even then: a silent skip is indistinguishable from "this disc is
+            # genuinely unprovable", which is how one typo produced a full page of UNPROVEN rows
+            # and a "never enumerated" warning about a disc that was perfectly intact.
+            print('WARNING: %s could not be parsed for per-title cell ranges (%s: %s) - '
+                  'falling back to VTS totals for that title set'
+                  % (name, type(exc).__name__, exc), file=sys.stderr)
             continue
+    return out
+
+
+def vts_title_bytes(video_ts_dir):
+    """(vtsn, vts_ttn) -> exact bytes of that ONE title. See vts_title_ranges()."""
+    return {k: sum((last - first + 1) * 2048 for first, last in cells)
+            for k, cells in vts_title_ranges(video_ts_dir).items()}
+
+
+def vts_covered_bytes(ranges):
+    """vtsn -> bytes covered by the UNION of that VTS's declared titles' cells.
+
+    THE SUM WAS THE WRONG MEASURE, and it made a whole common disc shape unprovable. The caller
+    only trusts per-title sizes where the VTS is fully accounted for; that test was written as
+    "the per-title sizes sum to the VTS total with no remainder", which holds only when no two
+    titles share a cell. Both Farscape series-2 shapes break it - a PLAY ALL replays its episodes'
+    cells, and a two-door VTS counts the same cells under both doors - so the sum overshoots, every
+    row went UNPROVEN, and the script additionally warned "8 of 9 declared titles never
+    enumerated", which reads exactly like a half-copied disc. Nothing was wrong with the disc or
+    the rip. Six discs were mapped by hand as a result.
+
+    The union is the measure that was meant: it asks whether the declared titles COVER the VTS,
+    which is the real question, and is unchanged on the one-title-per-VTS discs where the sum
+    happened to be right.
+    """
+    per_vts = {}
+    for (vtsn, _), cells in ranges.items():
+        per_vts.setdefault(vtsn, []).extend(cells)
+    out = {}
+    for vtsn, cells in per_vts.items():
+        total, covered_to = 0, -1
+        for first, last in sorted(cells):
+            if last <= covered_to:
+                continue                      # wholly inside a range already counted
+            total += (last - max(first, covered_to + 1) + 1) * 2048
+            covered_to = last
+        out[vtsn] = total
     return out
 
 
@@ -240,7 +308,9 @@ def prove(disc_dir, info_text):
 
     srpt = read_tt_srpt(video_ts)
     vob = vts_vob_bytes(video_ts)
-    title_bytes = vts_title_bytes(video_ts)
+    title_ranges = vts_title_ranges(video_ts)
+    title_bytes = {k: sum((b - a + 1) * 2048 for a, b in v) for k, v in title_ranges.items()}
+    covered = vts_covered_bytes(title_ranges)
     sizes = parse_makemkv_info(info_text)
 
     # How many dvdvideo titles live in each VTS. Only a VTS with exactly ONE is separable by size.
@@ -265,10 +335,28 @@ def prove(disc_dir, info_text):
                                    f"t{mkv_id:02d} exactly; TT_SRPT declares one title in that VTS "
                                    f"(VTSN={v}, VTS_TTN={titles[0]['vts_ttn']})")
             else:
-                row['note'] = (f'VTS_{v:02d} holds {len(titles)} titles '
-                               f'({", ".join(str(t["title"]) for t in titles)}) - they share one VOB '
-                               f'set, so size cannot separate them')
-                unproven.append(row)
+                # THE VTS TOTAL MATCHED, AND SEVERAL TITLES ARE DECLARED IN IT. Before giving up,
+                # ask whether those titles cover IDENTICAL cells. If they do, this is the two-door
+                # shape and the question "which door did MakeMKV enumerate?" has no consequences -
+                # both address the same sectors, so the rip is the same bytes either way. Reporting
+                # that as a flat UNPROVEN sent an author away to measure a distinction that does
+                # not exist; reporting the containment is the answer they actually needed.
+                same = [t for t in titles
+                        if title_ranges.get((v, t['vts_ttn'])) ==
+                        title_ranges.get((v, titles[0]['vts_ttn']))]
+                if len(same) == len(titles) and title_ranges.get((v, titles[0]['vts_ttn'])):
+                    row['dvdvideoTitle'] = titles[0]['title']
+                    row['provenBy'] = (
+                        f"VTS_{v:02d} title VOBs total {want} bytes, matching MakeMKV "
+                        f"t{mkv_id:02d} exactly; TT_SRPT declares {len(titles)} titles in that VTS "
+                        f"({', '.join(str(t['title']) for t in titles)}) but their PGCs cover "
+                        f"IDENTICAL cell sectors - one item behind two doors, so every one of them "
+                        f"is the same material and title {titles[0]['title']} is its lowest entry")
+                else:
+                    row['note'] = (f'VTS_{v:02d} holds {len(titles)} titles '
+                                   f'({", ".join(str(t["title"]) for t in titles)}) over DIFFERENT '
+                                   f'cells - they share one VOB set, so size cannot separate them')
+                    unproven.append(row)
         elif len(hits) == 0 and title_bytes:
             # NO VTS TOTAL MATCHES - which is the SHAPE a title inside a multi-title VTS takes:
             # its own size is a fraction of the set it lives in. Go one level finer and match
@@ -276,8 +364,7 @@ def prove(disc_dir, info_text):
             # ACCOUNT FOR THE WHOLE VTS with no remainder - otherwise the IFO reading is not
             # trustworthy enough to prove anything with, and it stays unproven.
             cand = [(vtsn, ttn) for (vtsn, ttn), nb in title_bytes.items()
-                    if nb == want and sum(x for (vv, _), x in title_bytes.items() if vv == vtsn)
-                    == vob.get(vtsn)]
+                    if nb == want and covered.get(vtsn) == vob.get(vtsn)]
             if len(cand) == 1:
                 vtsn, ttn = cand[0]
                 match = [t for t in per_vts.get(vtsn, []) if t['vts_ttn'] == ttn]
@@ -287,12 +374,23 @@ def prove(disc_dir, info_text):
                     row['provenBy'] = (
                         f"VTS_{vtsn:02d} title {ttn} totals {want} bytes across its PGC's cell "
                         f"sectors, matching MakeMKV t{mkv_id:02d} exactly; that VTS holds "
-                        f"{len(per_vts[vtsn])} title(s) whose per-title sizes sum to the VTS total "
-                        f"with no remainder (VTSN={vtsn}, VTS_TTN={ttn})")
+                        f"{len(per_vts[vtsn])} title(s) whose cells, unioned, cover the VTS total "
+                        f"exactly (VTSN={vtsn}, VTS_TTN={ttn})")
                 else:
                     row['note'] = (f'per-title size matches VTS_{vtsn:02d} title {ttn}, but TT_SRPT '
                                    f'does not declare exactly one title at that position')
                     unproven.append(row)
+            elif len(cand) > 1:
+                # THE TWO-DOOR SIGNATURE. Two PGCs entered from different menu buttons over the
+                # SAME cells are the same bytes, so size cannot separate them and must not pretend
+                # to. Say which doors they are - that is the useful answer, and it is what tells
+                # the reader this is one item with two entries rather than a mapping failure.
+                row['note'] = ('byte total %d matches %d declared titles over identical cells (%s)'
+                               ' - the two-door shape; size cannot separate them, and they are the '
+                               'same material' %
+                               (want, len(cand),
+                                ', '.join('VTS_%02d title %d' % c for c in sorted(cand))))
+                unproven.append(row)
             else:
                 near = sorted(vob.items(), key=lambda kv: abs(kv[1] - want))[:1]
                 hint = (f'; nearest VTS_{near[0][0]:02d} off by {near[0][1] - want:+d}'
@@ -322,16 +420,44 @@ def prove(disc_dir, info_text):
     # So: account for every title the DISC declares, not merely every title MakeMKV offered, and
     # separate "the VTS is not on disk" (an incomplete copy - escalate) from "the VTS is here but
     # was not enumerated" (usually below the minlength floor - benign, but say so).
+    #
+    # A THIRD CLASS, and on a TV disc the commonest: a declared title whose cells are ALREADY
+    # COVERED by a title that was claimed. That is a second door - another menu button entering the
+    # same material - not absent content, and it is not a missing episode however much the wording
+    # "never enumerated" suggests one. Farscape S2 D1 declares 8 titles and enumerates 6; every one
+    # of the shortfall is a door onto bytes already accounted for, and the disc is intact. Saying
+    # so is the whole point: a warning that cannot tell a duplicate entry from a truncated rip
+    # trains the reader to ignore it, and DIE_MUMINS_3 is why the warning must survive to be read.
     claimed = {r['dvdvideoTitle'] for r in rows if r['dvdvideoTitle'] is not None}
+    claimed_cells = {}
+    for e in srpt:
+        if e['title'] in claimed:
+            claimed_cells.setdefault(e['vtsn'], []).extend(
+                title_ranges.get((e['vtsn'], e['vts_ttn']), []))
     missing = []
     for e in srpt:
         if e['title'] in claimed:
             continue
         on_disk = e['vtsn'] in vob
+        own = title_ranges.get((e['vtsn'], e['vts_ttn']))
+        covered_elsewhere = bool(own) and all(
+            any(a <= first and last <= b for a, b in claimed_cells.get(e['vtsn'], []))
+            for first, last in own)
+        if covered_elsewhere:
+            why = ('its cells are wholly covered by an enumerated title - a second door onto the '
+                   'same material, not missing content')
+        elif on_disk:
+            # STATE ITS SIZE. "Not enumerated" alone cannot be acted on - the reader must know
+            # whether they are looking at a missing 44-minute episode or a stub. Farscape S2 D1's
+            # dvdvideo 1 is five sectors, 10,240 bytes, and no amount of investigation was going to
+            # make it interesting; without the number it looked exactly like the other case.
+            nb = sum((last - first + 1) * SECTOR for first, last in (own or []))
+            why = ('VTS present but not enumerated (%s - below the minlength floor?)'
+                   % (f'{nb:,} bytes' if own else 'size unknown, IFO unparsed'))
+        else:
+            why = 'VTS HAS NO TITLE VOBs ON DISK - the copy is incomplete'
         missing.append({'title': e['title'], 'vts': e['vtsn'], 'vtsOnDisk': on_disk,
-                        'why': ('VTS present but not enumerated (below the minlength floor?)'
-                                if on_disk else
-                                'VTS HAS NO TITLE VOBs ON DISK - the copy is incomplete')})
+                        'secondDoor': covered_elsewhere, 'why': why})
     return rows, unproven, srpt, missing
 
 
@@ -357,7 +483,9 @@ def verify_claims(disc_dir, catalogue_path):
         video_ts = os.path.join(disc_dir, 'VIDEO_TS')
     srpt = {e['title']: e for e in read_tt_srpt(video_ts)}
     vob = vts_vob_bytes(video_ts)
-    title_bytes = vts_title_bytes(video_ts)
+    title_ranges = vts_title_ranges(video_ts)
+    title_bytes = {k: sum((b - a + 1) * 2048 for a, b in v) for k, v in title_ranges.items()}
+    covered = vts_covered_bytes(title_ranges)
     per_vts = {}
     for e in srpt.values():
         per_vts.setdefault(e['vtsn'], []).append(e['title'])
@@ -380,16 +508,17 @@ def verify_claims(disc_dir, catalogue_path):
         if mt:
             vtsn, ttn, stated = int(mt.group(1)), int(mt.group(2)), int(mt.group(3))
             actual = title_bytes.get((vtsn, ttn))
-            vts_sum = sum(x for (vv, _), x in title_bytes.items() if vv == vtsn)
+            vts_cov = covered.get(vtsn)
             if actual is None:
                 failures.append((label, f'claim names VTS_{vtsn:02d} title {ttn}, which the IFO '
                                         f'does not describe'))
             elif actual != stated:
                 failures.append((label, f'claim says VTS_{vtsn:02d} title {ttn} is {stated:,} '
                                         f'bytes; the disc says {actual:,}'))
-            elif vts_sum != vob.get(vtsn):
-                failures.append((label, f'VTS_{vtsn:02d} per-title sizes sum to {vts_sum:,} but its '
-                                        f'title VOBs total {vob.get(vtsn):,} - unaccounted bytes'))
+            elif vts_cov != vob.get(vtsn):
+                failures.append((label, f"VTS_{vtsn:02d}'s declared titles cover {vts_cov:,} bytes "
+                                        f'but its title VOBs total {vob.get(vtsn):,} - '
+                                        f'unaccounted bytes'))
             elif dv not in srpt:
                 failures.append((label, f'dvdvideoTitle {dv} is not declared in TT_SRPT'))
             elif srpt[dv]['vtsn'] != vtsn or srpt[dv]['vts_ttn'] != ttn:
@@ -526,7 +655,15 @@ def main():
 
         if missing:
             absent = [m for m in missing if not m['vtsOnDisk']]
-            print(f'\n*** {len(missing)} of {len(srpt)} DECLARED title(s) were never enumerated ***')
+            doors = [m for m in missing if m.get('secondDoor')]
+            # HEADLINE THE NUMBER THAT MATTERS. Counting second doors in the alarm is what made
+            # this line read like a half-copied disc on a disc that was complete.
+            real = len(missing) - len(doors)
+            head = (f'{real} of {len(srpt)} DECLARED title(s) were never enumerated'
+                    if real else
+                    f'all {len(srpt)} declared title(s) accounted for; {len(doors)} are second '
+                    f'doors onto material already claimed')
+            print(f'\n*** {head} ***' if real else f'\n{head}:')
             for m in missing:
                 print(f'    dvdvideo {m["title"]:>3}  VTS_{m["vts"]:02d}  {m["why"]}')
             if absent:

@@ -62,10 +62,43 @@ FFPROBE = str(Path(FFMPEG).parent / 'ffprobe.exe')
 SRC_OPTS = []
 
 
-COMMENTARY_HINTS = re.compile(
-    r'\b(we (shot|filmed|had|were|wanted)|the scene|this shot|the film|the movie|the director|'
-    r'the script|the sequence|originally|actually|you can see|i remember|the studio|the set|'
-    r'camera|takes?|edit|footage|screenplay|producer)\b', re.I)
+# WHAT SEPARATES A COMMENTARY FROM DIALOGUE IS VARIETY, NOT VOLUME - and some of these words are
+# simply ordinary English.
+#
+# This was one flat pattern counted with `len(findall(text)) >= 2`, and both halves of that were
+# wrong. On Farscape S1 D6 the EPISODE's dialogue hit `we take` and `we were`, reached 2, and was
+# excluded from the primary election - so the real commentary was elected primary and the 5.1
+# programme mix came out labelled `commentary`. assert-tracks-analysed.ps1 would have passed that
+# manifest; it was caught only by reading the transcripts.
+#
+# Measured over the labelled evidence files, `take` alone accounts for almost every false hit: the
+# S2 D6 EPISODE scores 5 on `Take`/`take`/`takes` and nothing else, already over the old threshold.
+# It escaped only because that disc's commentary scored 20, so both were hinted and the exclusion
+# was skipped - the right answer by luck.
+#
+# So: split the vocabulary by how much a hit is worth, and count DISTINCT phrases. A commentary
+# ranges over production vocabulary; dialogue repeats one common word. On the 9 labelled streams
+# available, distinct-counting separates all 9 with room to spare, where occurrence-counting
+# separates 7.
+COMMENTARY_STRONG = re.compile(
+    r'\b(we (shot|filmed|re-?shot)|the (director|script|screenplay|studio|sequence|set|scene)|'
+    r'this shot|the (film|movie)|footage|producers?|first take|another take|the edit)\b', re.I)
+# `the crew` was in this list for one run. The World's Fastest Indian extra says it in ordinary
+# narration and was classed as commentary talk - a film about a racing team naturally has a crew,
+# as do war and sea pictures. Anything a subject can plausibly have is not production vocabulary.
+
+# Words a commentary uses freely and a drama can use in passing. Never conclusive alone.
+COMMENTARY_WEAK = re.compile(
+    r'\b(we (had|were|wanted)|originally|actually|you can see|i remember|camera|takes?|edit)\b',
+    re.I)
+
+
+def commentary_talk(text):
+    """(distinct strong phrases, distinct weak phrases, is_commentary_talk) for a transcript."""
+    strong = {m.group(0).lower() for m in COMMENTARY_STRONG.finditer(text)}
+    weak = {m.group(0).lower() for m in COMMENTARY_WEAK.finditer(text)}
+    weak -= strong
+    return strong, weak, bool(strong) or len(weak) >= 3
 
 # Audio description narrates ACTION between lines of dialogue, in the third person present tense.
 AD_HINTS = re.compile(
@@ -543,7 +576,10 @@ def main():
     t_phase = time.monotonic()
     from faster_whisper import WhisperModel
     print(f'\nloading whisper "{a.model}"...', flush=True)
-    model = WhisperModel(a.model, device='cpu', compute_type='int8')
+    # cpu_threads=1 IS THE FAST SETTING - measured 4.6x faster than the default, with the full
+    # numbers in transcribe-wav.py. It is counter-intuitive, which is exactly why it was documented
+    # there and then missing here: this script does far more transcription than that one does.
+    model = WhisperModel(a.model, device='cpu', compute_type='int8', cpu_threads=1)
 
     for s in streams:
         # defaults, so every stream carries every key whatever path it takes below
@@ -659,12 +695,18 @@ def main():
     # structure break ties. Excluding hinted streams is safe in one direction only - a real feature
     # soundtrack does not discuss its own screenplay, camera or edit - and it never removes every
     # candidate, because that would leave nothing to elect.
-    hinted = [s for s in cand
-              if len(COMMENTARY_HINTS.findall(' '.join(s['samples']))) >= 2]
+    hintEv = {s['a']: commentary_talk(' '.join(s['samples'])) for s in cand}
+    hinted = [s for s in cand if hintEv[s['a']][2]]
     if hinted and len(hinted) < len(cand):
         for s in hinted:
+            strong, weak, _ = hintEv[s['a']]
+            # PRINT THE PHRASES, not just the verdict. This exclusion is what elected a commentary
+            # as primary on Farscape S1 D6, and the log said only "talks ABOUT the film" - true of
+            # nothing in that transcript. The evidence has to be visible to be disbelieved.
             print(f"  a:{s['a']} ({s['spokenLang']}) talks ABOUT the film - "
-                  f"excluded from the primary election")
+                  f"excluded from the primary election "
+                  f"[strong: {', '.join(sorted(strong)) or 'none'}; "
+                  f"weak: {', '.join(sorted(weak)) or 'none'}]")
         cand = [s for s in cand if s not in hinted]
 
     primary = None
@@ -703,7 +745,7 @@ def main():
             continue
         primaryLang = primary['spokenLang'] if primary else 'en'
         if silentFilm:
-            s['role'] = 'commentary' if len(COMMENTARY_HINTS.findall(text)) >= 2 else 'commentary?'
+            s['role'] = 'commentary' if commentary_talk(text)[2] else 'commentary?'
         elif s is primary:
             s['role'] = 'primary'
         # COMMENTARY AND AD ARE TESTED BEFORE THE LANGUAGE-BASED DUB TEST.
@@ -723,7 +765,7 @@ def main():
         #
         # Testing content first is safe: COMMENTARY_HINTS and AD_HINTS are English phrases, so a
         # foreign-language dub scores no hits and still falls through to the dub branch below.
-        elif len(COMMENTARY_HINTS.findall(text)) >= 2 and sim < 0.5:
+        elif commentary_talk(text)[2] and sim < 0.5:
             s['role'] = 'commentary'
         elif len(AD_HINTS.findall(text)) >= 3 and sim >= 0.35:
             s['role'] = 'audioDescription'
@@ -767,7 +809,7 @@ def main():
         for s in suspects:
             lang2, prob2, texts2, agreed2, status2 = transcribe(model, src, s['a'], extra, a.dur)
             merged = ' '.join(s['samples'] + list(texts2))
-            hits = len(COMMENTARY_HINTS.findall(merged))
+            hits = len(commentary_talk(merged)[0]) + len(commentary_talk(merged)[1])
             if hits >= 2:
                 s['role'] = 'commentary'
                 s['samples'] = s['samples'] + list(texts2)
