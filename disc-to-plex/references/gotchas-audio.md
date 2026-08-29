@@ -223,3 +223,24 @@ Worth noting the guard behaved correctly throughout in both cases: it refused th
 on the Dirty Dozen, and refused the truthful manifest on Edge of the World *because the evidence it
 was checking against was wrong*. The gate is only ever as good as the analysis behind it - which is
 the argument for reading the samples yourself rather than trusting a role label.
+
+## WHY the role election inverts: a music-only sample EXCLUDES the film's own track (2026-08-29)
+
+`analyze-tracks.py`'s role election has been recorded as "unreliable, inverted twice". Here is the
+mechanism, diagnosed on Withnail and I (1987):
+
+**The election only considers streams whose spoken language is reliable across BOTH offsets.** Sample
+the feature at a point where the film's own audio is music rather than speech, and the film mixes are
+excluded as unreliable — leaving the **commentary as the only candidate**, which then wins and is
+elected `primary`. The roles invert, and the gate correctly refuses a `commentary` tag on a track the
+evidence calls primary.
+
+On that disc t=100 s is nearly wall-to-wall King Curtis saxophone. Re-sampling at 2700 s and 3300 s —
+continuous film dialogue, free of the production vocabulary that trips the commentary-hint test — let
+the DTS-HD MA 5.1 film mix win on channel count.
+
+So: **choose offsets where the FEATURE is talking.** A title card, a montage, an overture or a music
+cue makes the primary track look unreliable, and "unreliable" is removed from the election rather
+than penalised in it. If the roles come back inverted, re-sample before doubting the tracks — and
+never hand-write the evidence file to match what you believe. Both commentaries here introduce
+themselves on-record, which is what settles it independently of the analyser.

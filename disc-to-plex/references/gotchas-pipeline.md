@@ -381,3 +381,22 @@ Two lessons beyond the fix:
 Decode is worth fixing too, but it is the smaller effect: `-hwaccel cuda` is ~2.3x on VC-1, whose
 ffmpeg decoder has no frame-level threading and pegs a single core.
 
+
+## A DARK SCENE can hand you a plausible, WRONG crop (2026-08-29)
+
+Withnail and I (1987): cropdetect voted `1920:1080:0:0` unanimously across the six sample points
+`transcode.ps1` uses — 888 votes, no runner-up, i.e. a full-frame 1.78:1 transfer with no bars.
+
+But a single 20 s probe taken in a **dark scene at 3600 s** returned `1806:1080:0:0`. That would have
+sliced **114 px off the right of the picture**, and it would have **passed `Get-Crop`'s sanity test**
+had it won the vote — it is a well-formed crop of a plausible width, not obvious garbage.
+
+Two things follow:
+
+- **The multi-point vote is the protection, not the sanity test.** A single probe is a sample of one
+  scene's luminance, and a dark or letterboxed-within-frame scene reads as bars.
+- **When the vote is unanimous at full frame, ship `crop: "none"`** rather than an explicit
+  `W:H:X:Y` — an explicit value can encode exactly this artefact, and `"none"` cannot.
+
+Never settle a crop from one probe, and treat a lone dissenting sample as evidence about the SCENE,
+not about the transfer.
