@@ -309,3 +309,26 @@ registration, and leaving evidence filed against the wrong titles with nothing t
 **Two processes must not hold the same catalogue open across a modification.** Where concurrent work
 is unavoidable, re-read immediately before writing and merge, rather than writing back a copy loaded
 earlier. This is why sequencing matters: run the proof, let it finish, then register evidence.
+
+## `Get-PSDrive` free space is CACHED - never measure a reclaim with it
+
+A reclaim of 24 episodes and six disc stagings reported:
+
+```
+removed 30 of 30 verified path(s)
+free: 72 GB -> 72 GB (released -0.0 GB)
+```
+
+Every path really was removed. `Get-PSDrive D` was called before and after **in the same
+PowerShell session**, and PowerShell serves the second call from its cached drive info, so both
+readings were identical. A fresh `Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='D:'"`
+immediately afterwards showed **137 GB** - 65 GB genuinely released.
+
+This is the dangerous direction: the delete SUCCEEDED and the measurement said it had done nothing.
+Believing the number would have meant re-running the reclaim, or hunting a phantom fault, or
+concluding the pipeline was still space-blocked when it had already unblocked itself. It was caught
+only because "30 paths removed, 0 bytes freed" is self-contradictory on its face.
+
+**Measure free space with `Get-CimInstance Win32_LogicalDisk`, and confirm the reclaim by LOOKING
+at the paths** (`Test-Path`, and a re-count of the folder) rather than by inferring it from a
+delta. Same rule as everywhere else here: verify the artifact, not a number that describes it.
