@@ -585,7 +585,19 @@ foreach($it in $items){
     Write-Output ("   STILLS GALLERY - holding each frame {0:N1}s (setpts+fps)" -f $hold)
   }
   if(-not $it.stillsHold){
-  if($it.kind -in @('DVD','MKV')){ $vf = 'bwdif=mode=send_frame' }   # SD interlaced source (DVD demuxer OR a MakeMKV-ripped .mkv): deinterlace only; aspect set via -aspect below (preserve source DAR)
+  if($it.kind -in @('DVD','MKV')){
+    $vf = 'bwdif=mode=send_frame'   # SD interlaced source (DVD demuxer OR a MakeMKV-ripped .mkv): deinterlace only; aspect set via -aspect below (preserve source DAR)
+    # SAY SO WHEN A CROP IS SET AND IGNORED.
+    #
+    # `crop` is documented "BD only" and this branch never reads it - so an author who sets it on a
+    # DVD item gets no filter, no error and no line in the log saying why. Documented-but-silent is
+    # how a field becomes believed: on As You Like It (2006), a 16:9 picture letterboxed inside a
+    # 4:3 PAL frame, cropdetect was effectively unanimous and an explicit crop would simply have
+    # vanished. Better to name it than to leave the author checking the output and guessing.
+    if($it.crop -and "$($it.crop)" -ne 'none'){
+      Write-Output ("   NOTE: crop='{0}' IGNORED - kind '{1}' takes the deinterlace-only path (crop is BD only)" -f $it.crop, $it.kind)
+    }
+  }
   else {
     if($it.crop -eq 'auto'){ $crop = Get-Crop $it.src; $vf = "crop=$crop"; Write-Output "   crop=$crop (auto)" }
     elseif("$($it.crop)" -match '^\d+:\d+:\d+:\d+$'){ $crop = "$($it.crop)"; $vf = "crop=$crop"; Write-Output "   crop=$crop (explicit)" }
