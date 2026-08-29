@@ -372,6 +372,7 @@ PUT /library/metadata/<ratingKey>/refresh?force=1
 | `commentary` | 0-based **source** audio index to tag as "Audio Commentary". A list tags several; `[idx,"Title"]` pairs name them |
 | `audioDescription` | 0-based **source** audio index of a narrated-visuals track for blind viewers. Same shapes as `commentary`; tagged "Audio Description" with the `visual_impaired` disposition (Matroska silently ignores `descriptions`). **Check for one on every disc** — it looks exactly like a second English 5.1 mix in ffprobe, and transcription is what identifies it ("*Q reaches into his pocket and takes out an envelope*") |
 | `chapterStart` / `chapterEnd` | DVD only — split a one-VTS disc into episodes |
+| `deinterlace` | DVD/MKV only. Omit to deinterlace (right for all DVD and MakeMKV SD rips). `"none"` for an already-progressive source such as a VHS→DivX capture; `"mixed"` when one file carries both field orders and no flags. State it from `ffmpeg -vf idet` **at several offsets**, never from taste — a single sample over titles or a static scene reads progressive |
 | `allowRawStream` | skip the preflight playlist check for this item (use only when you have proved the longer playlist is a different item) |
 
 ## Encode settings (baked into transcode.ps1)

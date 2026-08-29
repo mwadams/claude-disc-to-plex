@@ -546,8 +546,42 @@ def verify_claims(disc_dir, catalogue_path):
             failures.append((label, f'claim places dvdvideo {dv} in VTS_{vtsn:02d}, but TT_SRPT '
                                     f'puts it in VTS_{srpt[dv]["vtsn"]:02d}'))
         elif len(per_vts.get(vtsn, [])) != 1:
-            failures.append((label, f'VTS_{vtsn:02d} holds {len(per_vts[vtsn])} titles, so a byte '
-                                    f'total cannot single out dvdvideo {dv}'))
+            # SEVERAL TITLES IN THIS VTS. A byte total cannot single one out - UNLESS they are all
+            # doors onto identical cells, which is the shape prove() resolves above and describes
+            # as "their PGCs cover IDENTICAL cell sectors". That claim was being routed here and
+            # then refused by the uniqueness test below it, so the ONE branch that exists to handle
+            # multi-door discs emitted a proof this verifier could never accept: every such disc
+            # failed assert-accounted.ps1 with "a byte total cannot single out dvdvideo N", and the
+            # author's only ways out were to hand-write a different claim or to stop citing the
+            # proof at all. (Farscape S3 D2, 2026-08-29: three episodes, doors 2/3/4, 5/6 and
+            # 7/8/9.) A guard whose own tooling cannot satisfy it trains people to route around it.
+            #
+            # So re-derive the door claim properly, from the disc: every declared title in the VTS
+            # must play the SAME cell ranges, those cells must account for the VTS's title VOBs, and
+            # the claimed title must be the lowest declared entry - which is the one prove() picks.
+            # This asserts strictly less than the single-title form: not "the size identifies this
+            # door", but "the doors are interchangeable, so the choice cannot change the content".
+            # per_vts here maps vtsn -> list of dvdvideo title NUMBERS (not the TT_SRPT dicts that
+            # prove() works with), so go through srpt to reach each one's vts_ttn.
+            titles_here = per_vts[vtsn]
+            ranges_here = [title_ranges.get((vtsn, srpt[t]['vts_ttn'])) for t in titles_here]
+            first = ranges_here[0]
+            if 'IDENTICAL cell sectors' not in claim:
+                failures.append((label, f'VTS_{vtsn:02d} holds {len(titles_here)} titles, so a byte '
+                                        f'total cannot single out dvdvideo {dv}'))
+            elif not first or any(r != first for r in ranges_here):
+                failures.append((label, f'claim says VTS_{vtsn:02d}\'s titles cover IDENTICAL cell '
+                                        f'sectors, but the IFO gives them DIFFERENT ranges'))
+            elif covered.get(vtsn) != vob.get(vtsn):
+                failures.append((label, f"VTS_{vtsn:02d}'s declared titles cover "
+                                        f'{covered.get(vtsn):,} bytes but its title VOBs total '
+                                        f'{vob.get(vtsn):,} - unaccounted bytes'))
+            elif dv != min(titles_here):
+                failures.append((label, f'claim takes dvdvideo {dv} as the lowest entry of '
+                                        f'VTS_{vtsn:02d}, but that is dvdvideo '
+                                        f'{min(titles_here)}'))
+            else:
+                verified.append((label, dv, vtsn))
         else:
             verified.append((label, dv, vtsn))
     # WHICH TITLES DOES THE DISC DECLARE THAT THE CATALOGUE NEVER MENTIONS?

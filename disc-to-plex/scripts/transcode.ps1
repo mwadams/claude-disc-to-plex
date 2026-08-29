@@ -20,6 +20,15 @@
                                pillarboxed 4:3 -> 1440:1080:240:0 AND letterboxed widescreen ->
                                e.g. 1920:816:0:132). Stills/split-screen/full-frame -> "none".
                                Pass an explicit "W:H:X:Y" to override auto. DVD ignores (no crop).
+    deinterlace (str, opt.)    DVD/MKV only. Omit to deinterlace (bwdif), which is right for every
+                               DVD and every MakeMKV SD rip. "none" for a source that is already
+                               progressive — typically a VHS-to-DivX capture deinterlaced at capture
+                               time. "mixed" for a capture carrying BOTH field orders and no flags:
+                               idet marks each frame and bwdif repairs only the combed ones.
+                               State it from a MEASUREMENT, the same way `dar` is stated:
+                               `ffmpeg -i SRC -vf idet -frames:v 400 -f null -` AT SEVERAL OFFSETS —
+                               one sample over titles or a static scene reads progressive and is how
+                               a plainly interlaced episode was nearly shipped un-deinterlaced.
     title  (int)               DVD only, required. DVD title (PGC) number (see identification.md).
     chapterStart / chapterEnd  DVD only, optional. Extract a chapter RANGE = one episode when a
                                title holds several episodes as chapter ranges.
@@ -586,7 +595,47 @@ foreach($it in $items){
   }
   if(-not $it.stillsHold){
   if($it.kind -in @('DVD','MKV')){
-    $vf = 'bwdif=mode=send_frame'   # SD interlaced source (DVD demuxer OR a MakeMKV-ripped .mkv): deinterlace only; aspect set via -aspect below (preserve source DAR)
+    # SD source (DVD demuxer OR an already-demuxed SD file): deinterlace only; aspect set via
+    # -aspect below (preserve source DAR).
+    #
+    # `deinterlace: "none"` EXISTS FOR SOURCES THAT ARE ALREADY PROGRESSIVE. A DVD is interlaced
+    # PAL and always wants bwdif, which is why this was unconditional - but `kind: "MKV"` also
+    # takes VHS-to-DivX captures and other demuxed files, and those are routinely deinterlaced
+    # ALREADY, by the capture card, years ago. Running bwdif over progressive frames interpolates
+    # fields that are not there and softens real detail, silently: the encode succeeds and looks
+    # plausible, which is this pipeline's characteristic failure.
+    #
+    # Same precedent as `dar` directly below - the author states it per item from a MEASUREMENT
+    # (`ffmpeg -vf idet`), not from taste. Omitted means deinterlace, so every existing manifest
+    # behaves exactly as before.
+    # `deinterlace: "mixed"` IS FOR A CAPTURE THAT CARRIES BOTH FIELD ORDERS AND NO FLAGS.
+    #
+    # Some VHS-to-DivX captures contain combed frames in BOTH parities in one file, with
+    # `field_order=unknown` and every frame flagged progressive - the encoder recorded nothing, so
+    # the combing is simply baked into the pixels. Measured on IMITATION_GAME.avi: 80 BFF at one
+    # offset, 77 TFF at another, progressive dominant throughout.
+    #
+    # Neither plain answer is right there. Unconditional bwdif assumes TFF, so it repairs the TFF
+    # frames and MANGLES the BFF ones; skipping it leaves visible combing on a quarter of the
+    # frames. `idet` analyses each frame and sets the interlaced/parity flags the file lacks, and
+    # `bwdif=deint=interlaced` then touches ONLY the frames idet marked, at the parity it found -
+    # so genuinely progressive frames pass through untouched.
+    $di = if(Has $it 'deinterlace'){ "$($it.deinterlace)".Trim().ToLower() } else { 'yes' }
+    if($di -notin @('yes','none','mixed')){
+      throw "deinterlace must be 'none', 'mixed' or omitted, got '$di'"
+    }
+    # NOTE the shape: an `if` block ASSIGNED to a variable emits everything the block writes, so a
+    # Write-Output inside it lands in $vf as an array element and would be passed to ffmpeg as a
+    # filter. Log outside the assignment.
+    if($di -eq 'none'){
+      $vf = $null
+      Write-Output '   deinterlace=none (source stated progressive in the manifest)'
+    } elseif($di -eq 'mixed'){
+      $vf = 'idet,bwdif=mode=send_frame:deint=interlaced'
+      Write-Output '   deinterlace=mixed (idet flags each frame; bwdif touches only the combed ones)'
+    } else {
+      $vf = 'bwdif=mode=send_frame'
+    }
     # SAY SO WHEN A CROP IS SET AND IGNORED.
     #
     # `crop` is documented "BD only" and this branch never reads it - so an author who sets it on a
