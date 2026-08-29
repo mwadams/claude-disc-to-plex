@@ -461,7 +461,24 @@ The general rule, which is not specific to DVDs: **when two tools agree, ask whe
 implementation or a bug before treating the agreement as corroboration.** Independent corroboration
 has to come from a different KIND of evidence — here, bytes on disk against the disc's own tables.
 
-## Two PGCs over IDENTICAL cells = "play with commentary", not two episodes (2026-08-29)
+## Two PGCs over IDENTICAL cells = ONE item with two doors — but do NOT assume WHY (2026-08-29)
+
+> **CORRECTED the same day.** This entry first said identical cell ranges mean a *"play with
+> commentary"* entry point. That was true on the disc it was written from and **false on its
+> sibling**, and acting on it would have invented four commentaries. The reliable half is that the
+> two PGCs are ONE item; the PURPOSE of the second door varies per disc and must be measured.
+>
+> **Farscape S1 D2**: second door is the commentary entry — those VTSs declare a second audio
+> stream and the menu offers `PLAY WITH COMMENTARY`.
+> **Farscape S1 D5**: same identical-cell structure, but every VTS declares `audio=1`, there is no
+> commentary button, and both doors probe identically. Comparing the PGCs field by field —
+> cell_playback, cell_position, audio_control, next/prev/goup, still-time, mode, post-commands —
+> they differ in **one bit of one pre-command** (`GPRM 6 := 0xC100` vs `0xC180`), most likely a
+> breadcrumb recording which route the viewer took. Recorded as a hypothesis; not load-bearing,
+> because both doors provably carry identical bytes.
+>
+> **So: identical cells ⇒ one item. What the extra door is FOR ⇒ check the audio stream count and
+> the menu, on that disc.** Two discs of the same set differed here.
 
 `prove-dvd-mapping.py` reports UNPROVEN where a VTS holds several titles, because they share one VOB
 set and byte totals cannot separate them. That refusal is correct — but the disc often answers it
