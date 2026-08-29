@@ -38,7 +38,20 @@ def grab_non_blank(disc, dvd, mk_title, sec, frame_dir):
         at = sec + delta
         if at < 0:
             continue
-        out = os.path.join(frame_dir, 't%03d-%04d.png' % (mk_title, at))
+        # NAME THE FRAME AFTER WHAT IT IS, NOT AFTER WHO CITED IT.
+        #
+        # This used the MakeMKV title id (`t%03d`). That id is the ROW the frame was captured for,
+        # not the thing the frame shows - and `apply-proof.py` re-homes evidence bundles BETWEEN
+        # rows when the prover corrects a mapping. After a re-home, row t02 can legitimately cite a
+        # file called `t003-*.png`; capturing fresh evidence for t03 then wrote that exact filename
+        # and SILENTLY OVERWROTE the frames t02 was citing. `assert-accounted.ps1` still passed:
+        # the file existed and carried picture, it was just a different title's picture.
+        #
+        # Found on Farscape S1 D2 (2026-08-29). The dvdvideo title is what the frame is actually OF,
+        # it is 1:1 with the row after a proof, and it cannot collide across a re-home. Existing
+        # `tNNN-` frames stay valid and are not touched - the two schemes simply cannot clobber
+        # each other, which is the point.
+        out = os.path.join(frame_dir, 'dv%02d-%04d.png' % (dvd, at))
         subprocess.run([FFMPEG, '-hide_banner', '-loglevel', 'error',
                         '-f', 'dvdvideo', '-title', str(dvd), '-i', disc,
                         '-ss', str(at), '-frames:v', '1', out, '-y'],

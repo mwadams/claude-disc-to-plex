@@ -27,7 +27,16 @@ param(
   [Parameter(Mandatory)][string]$Table,
   [Parameter(Mandatory)][string]$ManifestOut,
   [Parameter(Mandatory)][string]$Show,
-  [Parameter(Mandatory)][int]$Year,
+  # YEAR IS OPTIONAL, because not every show in this library carries one.
+  #
+  # This was mandatory and `$Show ($Year)` was hard-coded into both the folder and every filename.
+  # That is right for most shows and WRONG where the existing NAS folder has no year - `Farscape`
+  # and `Survivors` are both bare. Generating `Farscape (1999)` would not fail; it would silently
+  # create a SECOND show beside the real one and split the series, which is the most expensive
+  # naming mistake available here and has been a near-miss twice in this batch.
+  #
+  # Omit -Year to match a bare folder. Match what is ALREADY ON THE NAS; do not decide from taste.
+  [int]$Year = 0,
   [ValidateSet('DVD','BD')][string]$Kind = 'DVD',
   [Parameter(Mandatory)][string]$SrcRoot,
   [Parameter(Mandatory)][string]$DiscFmt,
@@ -40,14 +49,16 @@ $cols = $lines[0].Trim() -split '\s*\|\s*'
 $rows = $lines[1..($lines.Count-1)]
 
 # forward slashes avoid JSON backslash-escaping headaches; ffmpeg/PowerShell accept them on Windows
-$base = ("$OutRoot/$Show ($Year)" -replace '\\','/')
+# One name for both the folder and every filename, so they cannot drift apart.
+$showName = if ($Year -gt 0) { "$Show ($Year)" } else { $Show }
+$base = ("$OutRoot/$showName" -replace '\\','/')
 $srcRootF = $SrcRoot -replace '\\','/'
 $man = foreach($r in $rows){
   $v = @{}; $f = $r.Trim() -split '\s*\|\s*'
   for($i=0;$i -lt $cols.Count;$i++){ $v[$cols[$i]] = $f[$i] }
   $S = '{0:D2}' -f [int]$v['season']; $E = '{0:D2}' -f [int]$v['ep']
   $disc = $v['disc']
-  $out  = "$base/Season $S/$Show ($Year) - S${S}E${E} - $($v['name']).mkv"
+  $out  = "$base/Season $S/$showName - S${S}E${E} - $($v['name']).mkv"
   $item = [ordered]@{ out = $out; kind = $Kind }
   if($Kind -eq 'DVD'){
     $item.src   = "$srcRootF/$($DiscFmt -replace '\{disc\}',$disc)"
@@ -59,7 +70,14 @@ $man = foreach($r in $rows){
     $item.crop = if($v['crop']){ $v['crop'] } else { 'auto' }
   }
   if($v['commentary'] -ne $null -and "$($v['commentary'])" -ne ''){ $item.commentary = [int]$v['commentary'] }
-  if($v['subTrack']   -ne $null -and "$($v['subTrack'])"   -ne ''){ $item.subTrack   = [int]$v['subTrack'] }
+  # subTrack is NOT always an integer. `[int]` here could only express an ordinal, so a disc with
+  # no subpicture streams at all - Farscape S1, every VTS, zero - could not be described, and the
+  # generator was unusable for it. The manifest format accepts a language tag ("eng") or "none";
+  # pass those through verbatim and only cast when it really is a number.
+  if($v['subTrack']   -ne $null -and "$($v['subTrack'])"   -ne ''){
+    $st = "$($v['subTrack'])".Trim()
+    $item.subTrack = if ($st -match '^\d+$') { [int]$st } else { $st }
+  }
   $item
 }
 $man | ConvertTo-Json | Set-Content $ManifestOut -Encoding UTF8

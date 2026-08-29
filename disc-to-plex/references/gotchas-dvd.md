@@ -460,3 +460,34 @@ stream that is populated everywhere costs nothing.
 The general rule, which is not specific to DVDs: **when two tools agree, ask whether they share an
 implementation or a bug before treating the agreement as corroboration.** Independent corroboration
 has to come from a different KIND of evidence — here, bytes on disk against the disc's own tables.
+
+## Two PGCs over IDENTICAL cells = "play with commentary", not two episodes (2026-08-29)
+
+`prove-dvd-mapping.py` reports UNPROVEN where a VTS holds several titles, because they share one VOB
+set and byte totals cannot separate them. That refusal is correct — but the disc often answers it
+anyway, one level down, and the answer is worth recognising on sight.
+
+Farscape S1 D2, VTS_02 and VTS_03, read from the PGC cell tables in each VTS IFO:
+
+```
+VTS_02  title 1 -> PGC 1   cells 0-230149  230150-534226  534227-735887  735888-1006960
+VTS_02  title 2 -> PGC 2   cells 0-230149  230150-534226  534227-735887  735888-1006960
+```
+
+**Byte-identical cell ranges, and their total is the whole VTS with no remainder.** So it is ONE
+episode authored twice, differing only in which PGC you enter by — a *"play with commentary"* entry
+point, not an alternate cut. The corroboration is that exactly those two VTSs carry an extra AC3 2.0
+stream beside the 5.1, and `ffprobe` shows **either** ordinal exposes **both** audio streams.
+
+Two consequences:
+
+- **The choice of ordinal cannot ship different content**, so the mapping ambiguity is harmless here
+  — and `mappingProvenBy` can say so in terms a reader re-derives from the disc, rather than as a
+  plausible sentence.
+- **Do not ship the pair as two items.** Two titles of identical length in one VTS look like a real
+  duplicate or an alternate version; the cell table is what tells them apart from a genuine
+  two-episode VTS, where the cell ranges are disjoint and sum to the VTS between them.
+
+Where the ranges are DISJOINT and sum to the VTS, it is genuinely two titles and the per-title
+cell-sector totals prove the mapping (see `vts_title_bytes()`). Identical ranges mean one title with
+two doors.
