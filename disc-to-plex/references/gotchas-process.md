@@ -254,3 +254,29 @@ So, before editing any pipeline behaviour:
 This is the same shape as the 2026-08-23 mangled-path incident, where a guard script could not load
 its config and so **the guard it implements silently never ran**. Editing an unused copy has exactly
 that signature: everything reports success and nothing changes.
+
+## GIT BASH REWRITES POSIX-LOOKING PATHS — the rule is wider than robocopy (2026-08-29)
+
+`CLAUDE.md` records this hazard scoped to two cases: run `robocopy` through the PowerShell tool, and
+pass MakeMKV `file:` sources the same way. **The underlying defect is not specific to either.** Any
+POSIX-looking argument handed to a child process through the Bash tool is subject to MSYS/Git-Bash
+path translation.
+
+Observed on the Farscape S1 identification work: a script launched with `/d/temp/...` received
+`/tmp/...` in the child, and one of two `.wav` inputs "did not exist".
+
+**Why it is worse than it sounds:** that one failed *loudly*, because the script happened to warn on
+a missing input. The same rewrite applied to a **filter argument, an output path, or an optional
+flag's value** produces no error at all — the tool runs, writes somewhere unexpected or silently
+drops the argument, and reports success. That is the same shape as the `robocopy` case the rule was
+written for, where the copy went to a local relative path and still verified.
+
+So, whenever an argument is a PATH and the callee is not a shell built-in:
+
+- **Prefer the PowerShell tool**, which does no such translation.
+- If Bash is genuinely the right tool, pass **Windows-style paths with forward slashes**
+  (`D:/video/...`), not `/d/video/...`.
+- **Echo back what the child actually received** when it matters — an argument that was rewritten
+  looks identical to one that was never passed.
+
+The existing narrower rule stays correct; it is simply an instance of this.
