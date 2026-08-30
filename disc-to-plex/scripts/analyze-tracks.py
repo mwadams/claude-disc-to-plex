@@ -101,9 +101,41 @@ def commentary_talk(text):
     return strong, weak, bool(strong) or len(weak) >= 3
 
 # Audio description narrates ACTION between lines of dialogue, in the third person present tense.
+#
+# THE VERB LIST ALONE IS NOT ENOUGH, AND IT MISSED A WHOLE TRACK. The Iron Lady's a:2 (2026-08-30)
+# is an audio description - "She smiles at Carol in the mirror", "Footage of masked IRA men firing
+# volleys over a coffin", "In the present, a troubled Margaret sleeps fitfully" - and scored ZERO
+# hits at the two offsets this script samples, because its narration uses plural subjects and verbs
+# outside the list ("Margaret and her ministers walk along the corridor", "protesters march
+# carrying a banner"). It fell through to `alternateMix` on similarity alone, and
+# assert-tracks-analysed.ps1 then correctly refused the truthful manifest that tagged it as AD.
+#
+# So the list gains the verbs that actually appeared, plus NARRATIVE FRAMING phrases - "footage
+# of", "flashbacks of", "in the present", "gets to their feet". Those describe the PICTURE and are
+# vanishingly rare in dialogue, which is what makes them worth more than another verb.
 AD_HINTS = re.compile(
     r'\b(he |she |they )?(walks|turns|looks|opens|closes|enters|leaves|smiles|nods|stares|reaches|'
-    r'steps|drives|watches)\b|\b(cut to|fade|on screen|in the distance|a man|a woman)\b', re.I)
+    r'steps|drives|watches|sleeps|stands|sits|holds|pulls|pushes|climbs|hands|carries|marches)\b|'
+    r'\b(cut to|fade|on screen|in the distance|a man|a woman)\b|'
+    r'\b(gets? to (his|her|their) feet|footage of|flashbacks? (of|to)|archive footage|a shot of|'
+    r'close-?up|in the present|the camera (pans|cuts|moves)|titles? appear|credits roll)\b', re.I)
+
+
+def ad_excess(text, ptext):
+    """AD hints in this track that the PRIMARY's transcript does not also carry.
+
+    COUNT THE EXCESS, NOT THE HITS. An `alternateMix` - a restored mono beside a 5.1 remix - speaks
+    the SAME WORDS as the primary, so any hint the primary's dialogue happens to contain appears in
+    the alternate mix too. Scoring raw hits therefore promotes an ordinary alternate mix to
+    "audio description" as soon as the film's own dialogue says "he turns" three times, and the
+    wider vocabulary above makes that materially more likely than it was.
+
+    An audio description is defined by what it says that the programme audio does NOT. Subtracting
+    the primary's own score keeps the widening safe: measured over every tracks.json on disk
+    (2026-08-30), this flips exactly one verdict - The Iron Lady's a:2, the true positive - and
+    leaves Land and Freedom's genuine alternateMix (sim 0.73, 0 hits either way) alone.
+    """
+    return max(0, len(AD_HINTS.findall(text)) - len(AD_HINTS.findall(ptext)))
 
 
 # whisper returns ISO 639-1 ("es"); disc tags are ISO 639-2 ("spa"). Comparing the first two
@@ -767,7 +799,7 @@ def main():
         # foreign-language dub scores no hits and still falls through to the dub branch below.
         elif commentary_talk(text)[2] and sim < 0.5:
             s['role'] = 'commentary'
-        elif len(AD_HINTS.findall(text)) >= 3 and sim >= 0.35:
+        elif ad_excess(text, ptext) >= 3 and sim >= 0.35:
             s['role'] = 'audioDescription'
         elif s['langReliable'] and s['spokenLang'] != primaryLang:
             s['role'] = 'dub'
