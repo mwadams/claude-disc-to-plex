@@ -335,6 +335,20 @@ function InSpec($it,[switch]$Hwaccel){   # ffmpeg/ffprobe input args (demuxer + 
   $hw = if($Hwaccel -and $it.kind -ne 'DVD'){ @('-hwaccel','cuda') } else { @() }
   if($it.kind -eq 'DVD'){
     $s = @('-f','dvdvideo','-title',[string]$it.title)
+    # A DVD still-set (gallery, biography, infopod page) is a chain of ~0.40 s padding cells, and
+    # the demuxer REFUSES such a title outright without this - "looks empty (may consist of padding
+    # cells)... disable the -trim option". So `-trim false` is required to open one at all.
+    #
+    # IT IS NOT SUFFICIENT, and do not assume it is. MEASURED on Farscape's Peacekeeper Wars extras
+    # disc (2026-08-30): with the flag, titles 10, 12 and 13 each yield exactly ONE frame, 0.04 s -
+    # the first-cell truncation this project already documents for this demuxer. MakeMKV is no help
+    # either; it skips them as sub-floor (MSG:3025). Getting the whole chain needs the cell range
+    # decoded out of the menu-domain VOBs. See follow-up.md.
+    #
+    # Scoped to `stillsHold` on purpose: `-trim false` on an ordinary title would admit padding the
+    # demuxer is right to drop. If a previously-shipped gallery is ever re-encoded, compare its
+    # still count against the original before replacing it.
+    if($it.stillsHold){ $s += @('-trim','false') }
     if(Has $it 'chapterStart'){ $s += @('-chapter_start',[string]$it.chapterStart) }
     if(Has $it 'chapterEnd'){   $s += @('-chapter_end',  [string]$it.chapterEnd) }
     return ($s + @('-i',$it.src))
