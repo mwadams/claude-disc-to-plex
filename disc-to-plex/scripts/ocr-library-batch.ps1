@@ -14,7 +14,17 @@ param(
   [ValidateSet('Film','TV','All')][string]$Kind = 'Film',
   [ValidateSet('pgs','dvd','all')][string]$Format = 'all',
   [int]$Limit = 0,
-  [switch]$IncludeLegacyMp4
+  [switch]$IncludeLegacyMp4,
+  # Pass the track guard's documented override down to ocr-subtitles.ps1.
+  #
+  # The guard refuses a hand-run of ocr-subtitles.ps1 while _ocr-loop.ps1 is alive, because
+  # the loop is stateless and a second worker DUPLICATES its work rather than sharing it -
+  # two writers raced on one sidecar on 2026-08-23. That reasoning is about the LOCAL tree:
+  # _ocr-loop.ps1 scans D:\video\Movies and D:\video\Television Shows. THIS script only ever
+  # touches \\NASTEAMV\Multimedia, so the two work lists are disjoint and cannot collide.
+  # Without this passthrough every single file here is refused and the campaign cannot run.
+  # Still leave it OFF by default, so the guard applies unless the operator asks for it.
+  [switch]$Manual
 )
 
 $ErrorActionPreference = 'Continue'
@@ -67,7 +77,9 @@ foreach ($r in $rows) {
   }
 
   Write-Host "[$n/$($rows.Count)] $($r.Work)  ($($r.SizeGB) GB)" -ForegroundColor Cyan
-  $out = & pwsh -File $ocr -Path $file -Mode Sidecar 2>&1
+  $ocrArgs = @('-File', $ocr, '-Path', $file, '-Mode', 'Sidecar')
+  if ($Manual) { $ocrArgs += '-Manual' }
+  $out = & pwsh @ocrArgs 2>&1
   $ok  = ($out | Select-String 'converted' | Select-Object -Last 1) -match '(\d+) converted'
   $res = if ($ok -and $Matches[1] -eq '1') { 'ok' } else { 'failed' }
   $out | Select-Object -Last 3 | ForEach-Object { "    $_" }

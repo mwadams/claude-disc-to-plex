@@ -257,3 +257,35 @@ bitmap track as a fallback.
   cues, so 10–25 minutes *per file*. A whole-library retro-fit is days of wall-clock, not hours —
   size the batches accordingly and run them when the encode lanes are otherwise idle.
 
+## Running the NAS-wide OCR campaign (`ocr-library-batch.ps1`)
+
+`_ocr-loop.ps1` scans the LOCAL tree (`D:/video/Movies`, `D:/video/Television Shows`) and OCRs
+files before they are published. It cannot touch anything already on the NAS whose local copy has
+been reclaimed — which is most of the library.
+
+`ocr-library-batch.ps1` covers that case: it works from `D:/video/_subs-survey.csv`, writes sidecar
+SRTs on the NAS, and is CREATE-ONLY, so it cannot collide with the E:/NAS protection guard.
+
+**It needs `-Manual`.** `lib-track-guard.ps1` refuses a hand-run of `ocr-subtitles.ps1` while
+`_ocr-loop.ps1` is alive, because that loop is stateless and a second worker duplicates its work
+rather than sharing it. That reasoning is about the LOCAL tree; this campaign only ever touches the
+NAS share, so the two work lists are disjoint and cannot race. Without the flag every file is
+refused and the campaign cannot run at all. It stays off by default so the guard still applies
+unless an operator asks for it.
+
+**Build the survey per-FILE, not by sampling.** `survey-subtitles.ps1` probes only a film's main
+feature and one episode per season, so it structurally cannot see film extras. On media2 that hid
+256 of 272 OCR candidates, which live in `Featurettes/`, `Trailers/` and `Extras/`.
+
+`ocr-library-batch.ps1` rebuilds each path as `Movies/<Work>/<File>` or
+`TV/<Work>/<Group>/<File>`, so `Work` and `Group` must absorb every intermediate folder. It
+`Test-Path`s each row and logs `MISSING`, so a bad row fails loudly instead of OCR-ing the wrong
+file — but verify the survey resolves 100% before launching, or the run is mostly no-ops.
+
+**Legacy `.mp4` are excluded by default** (decision 2026-08-16): their degraded VOBSUB reads back
+badly ("sick list" → "sick fist"). Those belong in a re-rip, which recovers the subtitles properly,
+not in an OCR pass. `-IncludeLegacyMp4` overrides.
+
+**A skip is not a failure.** "subtitle track is empty — N bytes extracted" means the stream exists
+but carries no cues (commonly a forced-subtitle placeholder). On the media2 campaign 23 of the
+first 48 items were legitimate skips of this kind.

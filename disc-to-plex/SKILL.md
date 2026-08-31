@@ -59,6 +59,10 @@ Before calling any unit done, confirm all six:
    while titles you never enumerated stay invisible. The script also refuses a catalogue taken
    above a 10 s floor, since completeness is unknowable from a pre-filtered list.
 2. **Identity verified from content** — not from the folder name, the disc label, or duration alone.
+   **And written to the identity register**, so it is never re-derived:
+   `pwsh -File scripts/disc-identity.ps1 -Action Record -Disc "<disc>" -OutFile "<published .mkv>"
+   -Source t<N>[:<ch>-<ch>] -Method title-card-ocr -Evidence "<what you saw>"`.
+   Look it up **first** — a disc already resolved needs no identification at all.
 3. **Audio identified** — every track named, no unlabelled commentary, no duplicate mixes.
    The postflight report flags candidates; confirm with `identify-audio.py` before acting.
 4. **Outputs size- and duration-checked** — a manifest can print `MANIFEST DONE` with failed or
@@ -149,9 +153,26 @@ box-set identity and extras list.
 
 ### 3. Identify content — from what it contains
 
+**Check the register before identifying anything.** Identification is the expensive step, and it
+was being repeated because the answer was never written down:
+
+```powershell
+pwsh -File scripts/disc-identity.ps1 -Action Lookup -Disc "E:\Movies\<disc>"
+```
+
+If the titles already carry outputs, the work is done — use them and skip to the manifest. If not,
+identify as below and **record the result** (step 2 of the per-unit gate). See
+`references/identification.md` § *The identity register*.
+
 Map each title to the right episode/feature and, for TV, the **Plex/TMDB episode number** (not
 IMDb, not on-disc order). See `references/identification.md` for the techniques (DVD menu "episode
 selection" screens, extracted frames, runtime matching, on-screen episode titles).
+
+⚠ **mymovies.xml numbering and the Plex agent OFTEN DISAGREE** (user, 2026-08-31). Neither is
+authoritative. Record both as *claims* and settle the conflict from content — on-screen title
+sniffing or audio matching. Runtime alone cannot break the tie where episodes share a length: all
+four Babylon 5 episodes on a disc run ~42:00, so only 70 of 292 episode-bearing titles across this
+drive could be tied to a MakeMKV title id unambiguously.
 
 **For TV, get the canonical structure from Plex FIRST — before naming anything:**
 
@@ -372,6 +393,7 @@ PUT /library/metadata/<ratingKey>/refresh?force=1
 | `commentary` | 0-based **source** audio index to tag as "Audio Commentary". A list tags several; `[idx,"Title"]` pairs name them |
 | `audioDescription` | 0-based **source** audio index of a narrated-visuals track for blind viewers. Same shapes as `commentary`; tagged "Audio Description" with the `visual_impaired` disposition (Matroska silently ignores `descriptions`). **Check for one on every disc** — it looks exactly like a second English 5.1 mix in ffprobe, and transcription is what identifies it ("*Q reaches into his pocket and takes out an envelope*") |
 | `chapterStart` / `chapterEnd` | DVD only — split a one-VTS disc into episodes |
+| `supersedes` | NAS path(s) this output REPLACES; a list, or `;`-separated in a `make-manifest.ps1` table. A re-rip lands `X.mkv` beside an existing `X.mp4`, and publishing is a robocopy whose `-Overwrite` only replaces a file of the **same name** — so both survive and Plex shows the work twice. Nothing here deletes on the NAS; `build-retire-list.ps1` turns this into a hand-over list once the replacement is byte-verified there. Inert at encode time (`transcode.ps1` ignores unknown keys) |
 | `deinterlace` | DVD/MKV only. Omit to deinterlace (right for all DVD and MakeMKV SD rips). `"none"` for an already-progressive source such as a VHS→DivX capture; `"mixed"` when one file carries both field orders and no flags. State it from `ffmpeg -vf idet` **at several offsets**, never from taste — a single sample over titles or a static scene reads progressive |
 | `allowRawStream` | skip the preflight playlist check for this item (use only when you have proved the longer playlist is a different item) |
 
@@ -395,6 +417,8 @@ Core pipeline, in the order you use them:
 | Script | Purpose |
 |---|---|
 | `install-tools.ps1` | fetch a driver-compatible ffmpeg, SupMover, mkvextract, seconv |
+| `disc-identity.ps1` | **the permanent identity register on the NAS** — `Lookup` a disc before identifying it, `Claim`/`Record` what you establish, `Index` to build the reverse .mkv→disc lookup |
+| `build-retire-list.ps1` | read-only; turns manifest `supersedes` entries into `_nas-retire.txt` once each replacement is byte-verified on the NAS. Lists only — **removal stays the user's** |
 | `assert-staged-complete.ps1` | **run BEFORE enumerating** — throws if the staging folder is still growing or short against source |
 | `scan-disc.ps1` | enumerate and classify DVD titles across a set of discs |
 | `prove-dvd-mapping.py` | prove tNN→dvdvideoTitle from TT_SRPT + VTS byte sizes, *without* duration |
@@ -443,6 +467,7 @@ Library-wide maintenance:
 - `references/naming.md` — Plex naming, library and Season-00 conventions.
 - `references/identification.md` — identifying episodes/features and the correct Plex order.
 - `references/extras-fixup.md` — the full Season 00 validate-then-lock process.
+- `references/identity-register.md` — the on-NAS record of disc→title/chapter→published file.
 
 ## Notes for a clean run
 
