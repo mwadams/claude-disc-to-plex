@@ -212,9 +212,24 @@ if(-not ($items | Where-Object { $_.allowRawStream -eq $true })){ Preflight-BDSt
 $pending = @($items | Where-Object { -not (Test-Path -LiteralPath $_.out) -or
                                      (Get-Item -LiteralPath $_.out -EA SilentlyContinue).Length -lt 5MB })
 if($pending.Count){
+  # COUNT EACH DISTINCT SOURCE ONCE, NOT ONCE PER ITEM.
+  #
+  # The estimate asks "how many bytes will this manifest WRITE" and derives it from source size,
+  # because an output has never exceeded ~0.75x its source. That reasoning holds PER SOURCE - but
+  # several items routinely share one `src`: every title of a DVD names the same VIDEO_TS folder,
+  # and a BD chapter-range split names the same .m2ts. Summing per ITEM counts the same bytes once
+  # per item, and the outputs of N titles of one disc still only add up to that one disc.
+  #
+  # Mugaritz Experiences, 2026-08-31: 61 titles of one 6.19 GB DVD, encoded as 61 parts to be
+  # appended into a single 61-chapter film. The guard demanded 289.4 GB (61 x 6.19 x 0.75 + 6)
+  # against 115 GB free and sent the manifest to _queue\failed before writing any per-item log -
+  # which reads like a broken manifest, not a mis-scaled check. Counting each distinct src once
+  # asks for 10.6 GB, which is the honest figure.
+  #
+  # This can only LOWER the estimate where sources repeat; where every src is distinct - the common
+  # case, and every manifest shipped so far - the figure is unchanged.
   $needBytes = 0
-  foreach($it in $pending){
-    $sp = "$($it.src)"
+  foreach($sp in (@($pending | ForEach-Object { "$($_.src)" }) | Sort-Object -Unique)){
     if(Test-Path -LiteralPath $sp -PathType Leaf){ $needBytes += (Get-Item -LiteralPath $sp).Length }
     elseif(Test-Path -LiteralPath $sp){
       $needBytes += (Get-ChildItem -LiteralPath $sp -Recurse -File -EA SilentlyContinue |
