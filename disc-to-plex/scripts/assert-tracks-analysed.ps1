@@ -130,6 +130,16 @@ foreach ($it in $items) {
   $byIdx = @{}                 # NOT $t/$T - PowerShell variables are case-insensitive and the
   foreach ($s in $a.streams) { $byIdx[[int]$s.a] = $s }   # natural pair collapses into one.
 
+  # WHAT THE MANIFEST DECLARES PER TRACK INDEX. audioLangs is positional against audioTracks, so
+  # this is the only way to ask "has the author already corrected the disc's tag for this stream?"
+  $declaredFor = @{}
+  if ($it.audioLangs) {
+    $dTracks = @($it.audioTracks); $dLangs = @($it.audioLangs)
+    for ($di = 0; $di -lt [Math]::Min($dTracks.Count, $dLangs.Count); $di++) {
+      $declaredFor[[int]$dTracks[$di]] = "$($dLangs[$di])"
+    }
+  }
+
   foreach ($idx in @($it.audioTracks)) {
     $s = $byIdx[[int]$idx]
     if (-not $s) { $problems += "$(Split-Path $out -Leaf): a:$idx not in the analysis"; continue }
@@ -151,8 +161,35 @@ foreach ($it in $items) {
                    "(lossy core or duplicate) - shipping it wastes space and invites a wrong label"
     }
     if ($s.tagMismatch) {
-      $problems += "$(Split-Path $out -Leaf): a:$idx is tagged '$($s.langTag)' but SPOKEN " +
-                   "'$($s.spokenLang)' - set audioLangs from the spoken language, not the tag"
+      # A MANIFEST THAT HAS ALREADY FIXED THIS MUST PASS - correcting the tag is what audioLangs
+      # is FOR, and this branch used to ignore it entirely.
+      #
+      # `tagMismatch` records that the DISC's tag disagrees with the measured spoken language. That
+      # is a fault only while the manifest still SHIPS the disc's wrong tag. When audioLangs already
+      # declares the spoken language, the fault is corrected and refusing anyway makes the item
+      # UNPASSABLE BY ANY MANIFEST - the identical "no value can satisfy this check" shape this file
+      # already warns about for music tracks a few lines below, reached through a different branch.
+      #
+      # Observed 2026-08-31 on Winter in Wartime's original Dutch trailer: a:0 tagged 'eng', spoken
+      # 'nl' at langProb 0.89, audioLangs already ["nld"] - refused. Its own FEATURE passed the same
+      # manifest shape purely because langProb there was 0.82, below the analyzer's reliability
+      # threshold, so tagMismatch never got set. A gate whose verdict turns on which side of a
+      # confidence threshold one sample landed - while the author's correction is ignored - is
+      # reporting noise, not evidence.
+      #
+      # The protection is unchanged in the dangerous direction: no audioLangs, or audioLangs still
+      # naming the disc's wrong language, leaves $fixed false and still refuses. The declared-vs-
+      # spoken comparison below independently enforces that the declaration is RIGHT.
+      $dec = "$($declaredFor[[int]$idx])"
+      $spk = "$($s.spokenLang)"
+      $fixed = $false
+      if ($dec.Length -ge 2 -and $spk.Length -ge 2) {
+        $fixed = ($dec.Substring(0, 2) -eq $spk.Substring(0, 2))
+      }
+      if (-not $fixed) {
+        $problems += "$(Split-Path $out -Leaf): a:$idx is tagged '$($s.langTag)' but SPOKEN " +
+                     "'$($s.spokenLang)' - set audioLangs from the spoken language, not the tag"
+      }
     }
   }
 
