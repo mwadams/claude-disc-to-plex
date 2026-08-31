@@ -49,7 +49,22 @@ def main():
         # available setting on a many-core box.
         #
         # If you ever raise this, re-measure. Do not raise it because a bigger number looks faster.
-        model = WhisperModel('base', device='cpu', compute_type='int8', cpu_threads=1)
+        # CPU ON PURPOSE - CUDA IS SLOWER FOR THIS SCRIPT. Measured 2026-08-31, base model:
+        #
+        #     cuda/float16   load 27.5s   transcribe 30s of audio  0.3s   total 27.7s
+        #     cpu/int8       load  2.4s   transcribe 30s of audio 10.8s   total 13.2s
+        #
+        # CUDA transcribes ~36x faster but pays ~25s of fixed start-up per PROCESS, and this
+        # script is invoked once per title on a short speech sample. Break-even is ~72s of
+        # audio; the samples here are well under that, so CUDA would make cataloguing slower.
+        # analyze-tracks.py transcribes far more per process and does use CUDA.
+        #
+        # Quiet, because this script's stdout is a PARSED CONTRACT (Resolve-TranscribeOutput)
+        # and an extra line would be read as transcript text.
+        import os as _os      # this module does not import os at top level
+        sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+        from whisper_device import load_model
+        model, _dev = load_model('base', prefer_cuda=False, verbose=False)
         segs, info = model.transcribe(sys.argv[1], beam_size=1)
         text = ' '.join(s.text for s in segs).strip()
         if text:

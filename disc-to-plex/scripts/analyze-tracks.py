@@ -606,12 +606,16 @@ def main():
 
     # --- transcription: only streams that could ship ----------------------------------------
     t_phase = time.monotonic()
-    from faster_whisper import WhisperModel
     print(f'\nloading whisper "{a.model}"...', flush=True)
-    # cpu_threads=1 IS THE FAST SETTING - measured 4.6x faster than the default, with the full
-    # numbers in transcribe-wav.py. It is counter-intuitive, which is exactly why it was documented
-    # there and then missing here: this script does far more transcription than that one does.
-    model = WhisperModel(a.model, device='cpu', compute_type='int8', cpu_threads=1)
+    # Device choice lives in whisper_device.load_model: it tries CUDA, PROVES it by running a
+    # tiny transcription (construction alone succeeds even when the CUDA runtime is missing, and
+    # transcribe() is a generator so the failure would otherwise surface far from here), and
+    # falls back to cpu/int8 with cpu_threads=1 - measured 4.6x faster than the all-cores
+    # default, with the numbers in transcribe-wav.py.
+    import os as _os          # this module does not import os at top level
+    sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    from whisper_device import load_model
+    model, _dev = load_model(a.model, verbose=True)
 
     for s in streams:
         # defaults, so every stream carries every key whatever path it takes below
