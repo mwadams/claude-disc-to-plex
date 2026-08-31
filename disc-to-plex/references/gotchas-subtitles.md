@@ -10,6 +10,7 @@ Part of the `disc-to-plex` gotchas set — see [gotchas.md](gotchas.md) for the 
 - [PGS subtitles drift when you crop](#pgs-subtitles-drift-when-you-crop)
 - [A disc's subtitle LANGUAGE TAG can simply be wrong — verify by rendering a cue](#a-discs-subtitle-language-tag-can-simply-be-wrong-verify-by-rendering-a-cue)
 - [Bitmap subtitles look oversized and blocky, and no Plex setting fixes it](#bitmap-subtitles-look-oversized-and-blocky-and-no-plex-setting-fixes-it)
+- [Appending subtitle tracks ALONE makes the drift accumulate — re-time from the chapter marks](#appending-subtitle-tracks-alone-makes-the-drift-accumulate--re-time-from-the-chapter-marks)
 - [SOURCING: OCR the disc, do not download — a wash-up](#sourcing-ocr-the-disc-do-not-download--a-wash-up)
 
 ## SOURCING: OCR the disc, do not download — a wash-up
@@ -133,6 +134,79 @@ ffmpeg -ss <t> -i file.mkv -filter_complex "[0:v][0:s:0]overlay" -frames:v 1 out
 Sample two or three cues from different episodes. If the text is another language, retag the
 stream (`-metadata:s:s:0 language=dut`, stream copy) rather than shipping it as English — and
 record that the show has no English subtitles instead of retrying the OCR.
+
+## Appending subtitle tracks ALONE makes the drift accumulate — re-time from the chapter marks
+
+**A part contributes as much timeline as its LAST CUE, not as much as its video.** So the moment
+you append subtitle-only files, every part after the first lands early, and the deficit is
+*cumulative*. This is not a constant offset that a delay can fix.
+
+Found on **Mugaritz Experiences (2011)** (2026-08-31), a Spanish cookery DVD shipped as one film of
+61 named chapters built from 61 separately-encoded parts. Chapter 1 (the sponsor reel) has no
+subtitles on the disc, and appending a file that lacks a track is awkward — so the 60 recipe parts'
+subtitle tracks were appended *on their own* and the result merged back delayed by chapter 2's
+start. That delay was correct, and chapter 2 checked out perfectly, which is exactly why it
+shipped. What actually happened:
+
+| | |
+|---|---|
+| chapter 2 | correct — first cue at 70.207 + 0.560 = **70.767**, matching the index |
+| chapter 29 (*Black Quinoa – Praline*) | on screen: the **Kaolin + Lactose** ingredient panel, i.e. chapters **44–45's** |
+| chapters 44–61 | **no subtitles at all** — the track ended at 4415.8 s against a 6339.7 s film |
+
+Nothing was lost, only mistimed: broken and rebuilt tracks hold the same 460 cues and the same
+2,177,024 bytes of subpicture data. **A truncated track is the visible end of a drift**, not a
+separate fault — if the subtitles stop early, suspect the accumulation before you suspect the rip.
+
+### Why it survives every structural check
+
+Cue count is right. Byte total is right. Duration, chapter count and chapter names are right. The
+first chapter after the join is right, because the drift has not accumulated yet. A spot-check of
+"do subtitles appear near the start" passes. Only a **per-chapter cue census** or a rendered frame
+from *late* in the film shows it.
+
+### The fix: re-time from the chapter marks, do not re-append
+
+The chapter marks are the real append joins, and the part durations sum to them (within 1 ms), so
+they are the authoritative per-part offsets. VOBSUB is trivially re-assemblable — the `.sub` is
+2 KB-sector-aligned MPEG-PS and the `.idx` is a text index of `timestamp:`/`filepos:` pairs:
+
+1. `mkvextract tracks p<NN>.mkv <id>:s<NN>.idx` for each part (ffmpeg cannot write VOBSUB — see
+   the toolchain traps below).
+2. Concatenate the `.sub` payloads; for each part add its **chapter start** to every timestamp and
+   its byte offset in the concatenation to every `filepos`.
+3. `mkvmerge -o out.mkv --no-subtitles <film>.mkv --language 0:eng --track-name 0:English merged.idx`
+   — video, audio and chapters are untouched (verify: byte counts, frame counts, chapter marks all
+   identical), and `mkvpropedit --edit track:s1 --set flag-default=0` restores the flag mkvmerge
+   sets on a fresh track.
+
+**Verify by reading the picture, not by whether OCR's score improves** — the score cannot see
+timing at all. It re-ran on the rebuilt Mugaritz file at exactly the same 70.4%, because the
+bitmaps had not changed. What proved the rebuild was: every recipe chapter opening with a cue at
+exactly +0.560 s, no cue crossing a chapter boundary, all 460 cue times matching the source parts
+(max delta 0.0000 s), and the title cards rendered at chapters 29/44/56/61 reading
+*Praline* / *Moss…* / *Candy* / *Ice cream* — matching the names independently proved from the
+disc's own DVD-VM navigation commands.
+
+### Check for it whenever a unit is assembled from parts
+
+Cheap census, no re-encode:
+
+```powershell
+# every chapter after the first should hold cues, and none should start suspiciously late
+$f = '<film>.mkv'
+$ch = & $ffprobe -v error -show_chapters -print_format json $f | ConvertFrom-Json
+$t  = @(& $ffprobe -v error -select_streams s:0 -show_entries packet=pts_time -of csv=p=0 $f) |
+        ForEach-Object { [double]$_ }
+foreach ($c in $ch.chapters) {
+  $a = [double]$c.start_time; $b = [double]$c.end_time
+  $n = @($t | Where-Object { $_ -ge $a -and $_ -lt $b }).Count
+  '{0,-46} {1,8:N2} cues={2}' -f $c.tags.title, $a, $n
+}
+```
+
+A run of trailing chapters with `cues=0`, or a first-cue offset that grows chapter by chapter, is
+this bug.
 
 ## Bitmap subtitles look oversized and blocky, and no Plex setting fixes it
 

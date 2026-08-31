@@ -261,6 +261,12 @@ remembers and it passes cleanly here — the join is fine, the length is exact, 
 count is wrong. Compare `ffprobe … | grep 'Stream #'` on the concat against one of its parts;
 they should match stream for stream.
 
+Related, and worse because it survives a stream census too: **never append subtitle tracks on
+their own** to work around a part that has none. A subtitle-only file's timeline ends at its LAST
+CUE, not at its video length, so the deficit accumulates part by part — cue count, byte total,
+duration and chapter marks all still check out. See
+[Appending subtitle tracks ALONE makes the drift accumulate](gotchas-subtitles.md#appending-subtitle-tracks-alone-makes-the-drift-accumulate--re-time-from-the-chapter-marks).
+
 ## Never stage a whole show folder while ANOTHER disc of that show is still encoding into it
 
 Staging is normally "copy the finished folder", but a multi-disc set breaks that: disc N's episodes
