@@ -17,7 +17,10 @@
   Required columns: season, ep, name, and a source key — `title` for DVD (dvdvideo PGC number)
   or `clip` for BD (m2ts basename, e.g. 00000). Optional columns, added only when present:
   chapterStart, chapterEnd (DVD chapter-range episodes), commentary (0-based source audio idx),
-  subTrack (0-based English subtitle idx), crop (BD: auto|none, default auto).
+  subTrack (0-based English subtitle idx), crop (BD: auto|none, default auto),
+  supersedes (NAS path this output replaces; ';'-separate several). Nothing is ever
+  deleted from the manifest - see build-retire-list.ps1, which turns supersedes into a
+  hand-over list once the replacement is verified on the NAS.
 
   -SrcRoot + -DiscFmt build the source: DVD -> "<SrcRoot>\<DiscFmt>" (the disc root a dvdvideo
   title lives in); BD -> "<SrcRoot>\<DiscFmt>\BDMV\STREAM\<clip>.m2ts". `{disc}` in DiscFmt is
@@ -77,6 +80,21 @@ $man = foreach($r in $rows){
   if($v['subTrack']   -ne $null -and "$($v['subTrack'])"   -ne ''){
     $st = "$($v['subTrack'])".Trim()
     $item.subTrack = if ($st -match '^\d+$') { [int]$st } else { $st }
+  }
+  # supersedes: the NAS file this output REPLACES.
+  #
+  # A re-rip lands as "X.mkv" beside an existing "X.mp4"; publishing is a robocopy, and
+  # -Overwrite only replaces a file of the SAME name. So both survive and Plex shows the
+  # work twice. Nothing in the pipeline may delete on the NAS, and nothing should - the
+  # decision is the user's. Recording the superseded path here lets build-retire-list.ps1
+  # produce a hand-over list AFTER the replacement is verified on the NAS, instead of that
+  # bookkeeping living in someone's head.
+  #
+  # Multiple paths may be given, separated by ';' (a re-rip can retire both a legacy .mp4
+  # and a subtitle sidecar that was derived from it).
+  if($v['supersedes'] -ne $null -and "$($v['supersedes'])" -ne ''){
+    $item.supersedes = @("$($v['supersedes'])".Split(';') |
+                         ForEach-Object { $_.Trim() } | Where-Object { $_ })
   }
   $item
 }
