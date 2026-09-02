@@ -77,7 +77,9 @@ foreach ($r in $rows) {
   }
 
   Write-Host "[$n/$($rows.Count)] $($r.Work)  ($($r.SizeGB) GB)" -ForegroundColor Cyan
-  $ocrArgs = @('-File', $ocr, '-Path', $file, '-Mode', 'Sidecar')
+  # -NoProfile: avoids the Terminal-Icons half-written-theme Import-Clixml noise on concurrent
+  # pwsh starts; ocr-subtitles.ps1 has no profile dependence (checked 2026-09-02).
+  $ocrArgs = @('-NoProfile', '-File', $ocr, '-Path', $file, '-Mode', 'Sidecar')
   if ($Manual) { $ocrArgs += '-Manual' }
   $out = & pwsh @ocrArgs 2>&1
   $ok  = ($out | Select-String 'converted' | Select-Object -Last 1) -match '(\d+) converted'

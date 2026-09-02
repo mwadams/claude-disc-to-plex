@@ -49,11 +49,29 @@ if ($left.Count -eq 0) { if (-not $Quiet) { Write-Output "below the floor, but n
 # (3) what could actually be reclaimed? A local file counts ONLY when the NAS holds the same
 # relative path at the SAME BYTE LENGTH - the identical test _release-published.ps1 applies. Size,
 # not timestamp: robocopy carries the source mtime across, so timestamps prove nothing here.
+#
+# ffprobe mirrors the reclaim gate's SECOND condition: a byte-matched .mkv that still carries an
+# un-OCR'd bitmap subtitle stream with no sidecar on the NAS will be HELD by _release-published.ps1
+# (the mkv is the only source its sidecar can be made from). Counting such a file here promises
+# space the reclaim will refuse - Harry Potter's two extras (24 MB) headed this list as
+# "reclaimable" on 2026-09-02 while confirming them would have freed nothing. If ffprobe is
+# unavailable, keep the old over-counting behaviour rather than dying: a monitor that stops
+# reporting is the exact failure this script exists to prevent.
+$ffprobe = $null
+try {
+  $tp = Get-Content 'D:/video/.transcode-tools/tool-paths.json' -Raw | ConvertFrom-Json
+  $cand = Join-Path (Split-Path $tp.ffmpeg) 'ffprobe.exe'
+  if (Test-Path -LiteralPath $cand) { $ffprobe = $cand }
+} catch { }
 $pairs = @(
   @{ Local = "$VideoRoot/Television Shows"; Nas = '\\NASTEAMV\Multimedia\Television Shows' }
   @{ Local = "$VideoRoot/Movies";           Nas = '\\NASTEAMV\Multimedia\Movies' }
 )
 $bytes = 0L; $files = 0; $works = @{}
+# Per-work byte totals, so the report can say WHICH confirmation is worth HOW MUCH. The aggregate
+# alone let the list lead with a 0.02 GB film while ~7 GB of Boston Legal scaffolding sat behind
+# the same gate, unattributed (2026-09-02) - the operator was asked to confirm the wrong unit.
+$workBytes = @{}
 foreach ($p in $pairs) {
   if (-not (Test-Path -LiteralPath $p.Local)) { continue }
   foreach ($f in Get-ChildItem -LiteralPath $p.Local -Recurse -File -EA SilentlyContinue) {
@@ -73,13 +91,25 @@ foreach ($p in $pairs) {
       $srtNas = [IO.Path]::ChangeExtension($nas, $null) + 'eng.srt'
       if ((Test-Path -LiteralPath $nas) -and (Test-Path -LiteralPath $srtNas)) {
         $bytes += $f.Length; $files++; $works[$workTop] = $true
+        $workBytes[$workTop] = [long]$workBytes[$workTop] + $f.Length
       }
       continue
     }
     if (-not (Test-Path -LiteralPath $nas)) { continue }
     if ((Get-Item -LiteralPath $nas).Length -ne $f.Length) { continue }
+    # Byte-matched is NOT sufficient for an .mkv the OCR track still needs - see the ffprobe note
+    # above. Only probe when the NAS lacks the sidecar, so the cost stays a handful of files.
+    if ($f.Extension -eq '.mkv' -and $ffprobe) {
+      $srtNas = [IO.Path]::ChangeExtension($nas, $null) + 'eng.srt'
+      if (-not (Test-Path -LiteralPath $srtNas)) {
+        $codecs = @(& $ffprobe -v error -select_streams s -show_entries stream=codec_name `
+                      -of csv=p=0 $f.FullName 2>$null)
+        if ($codecs -match 'dvd_subtitle|hdmv_pgs_subtitle|dvb_subtitle') { continue }
+      }
+    }
     $bytes += $f.Length; $files++
     $works[$workTop] = $true
+    $workBytes[$workTop] = [long]$workBytes[$workTop] + $f.Length
   }
 }
 $stageGB = 0.0
@@ -128,12 +158,20 @@ if (-not $Quiet) {
     }
   }
   if ($pending.Count -gt 0) {
-    Write-Output '    PUBLISHED AND AWAITING YOUR PLEX CONFIRMATION:'
-    foreach ($p in ($pending | Sort-Object When)) {
-      Write-Output ("       {0}   published {1}" -f $p.Work, $p.When)
+    # PER-UNIT FIGURES, BIGGEST FIRST. The aggregate figure above cannot answer the operator's
+    # actual question - "which confirmation clears the floor?". On 2026-09-02 this list led with
+    # Harry Potter (0.02 GB) while ~7 GB of Boston Legal subtitles-only scaffolding sat behind the
+    # same confirmation gate with no figure against its name, so the operator was effectively asked
+    # to confirm the wrong unit. Attribute the space to the unit that returns it.
+    Write-Output '    PUBLISHED AND AWAITING YOUR PLEX CONFIRMATION (biggest reclaim first):'
+    foreach ($p in ($pending | Sort-Object { [long]$workBytes[$_.Work] } -Descending)) {
+      Write-Output ("       {0}   published {1}   confirming returns ~{2:N2} GB" -f `
+                    $p.Work, $p.When, ([long]$workBytes[$p.Work] / 1GB))
     }
   } elseif ($works.Keys.Count -gt 0) {
-    Write-Output ("    Local copies belong to: {0} (published before the register existed - confirm by unit)" -f (($works.Keys | Sort-Object) -join ', '))
+    $legacy = ($works.Keys | Sort-Object { [long]$workBytes[$_] } -Descending |
+               ForEach-Object { '{0} (~{1:N2} GB)' -f $_, ([long]$workBytes[$_] / 1GB) }) -join ', '
+    Write-Output ("    Local copies belong to: {0} (published before the register existed - confirm by unit)" -f $legacy)
   }
   Write-Output '    Confirm those in Plex and the reclaim clears the floor; the fetch resumes by itself.'
 }

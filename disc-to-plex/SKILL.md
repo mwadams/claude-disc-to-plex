@@ -423,7 +423,7 @@ Core pipeline, in the order you use them:
 | `scan-disc.ps1` | enumerate and classify DVD titles across a set of discs |
 | `prove-dvd-mapping.py` | prove tNN→dvdvideoTitle from TT_SRPT + VTS byte sizes, *without* duration |
 | `apply-proof.py` | rewrite a catalogue onto that proven mapping, **moving each evidence bundle with it** |
-| `capture-evidence.py` | capture frames through a title's *proven* dvdvideo number and register them, refusing near-blank ones |
+| `capture-evidence.py` | capture frames and speech windows through a title's *proven* dvdvideo number and register them in the catalogue (refusing near-blank frames). **Take landmark windows with `--speech`, not ad-hoc ffmpeg** — an unrecorded transcript cannot be cited, so `assert-accounted.ps1` refuses the quote even when the identification is right |
 | `drop-blank-frames.py` | sweep blank and dangling frame references out of a catalogue |
 | `read-card.ps1` | OCR a DVD title's on-screen episode card and score it against the show's canonical episode list |
 | `audit-bd-titles.ps1` | compare MakeMKV's title list against what was shipped |

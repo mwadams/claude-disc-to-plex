@@ -14,6 +14,14 @@ Empty output therefore means exactly one thing: this script never ran at all (py
 faster-whisper not installed, process killed). Before the [no-speech] marker existed, that case
 was indistinguishable from "this title is silent", and a missing dependency silently recorded
 every title on a disc as speechless.
+
+IDENTIFYING A CATALOGUED DVD TITLE? DON'T CALL THIS DIRECTLY - USE capture-evidence.py --speech.
+A transcript produced here from an ad-hoc ffmpeg window is never written into the catalogue, so
+assert-accounted.ps1 refuses any `speech:` quote from it even when the identification is right -
+that mis-scoping cost 32 re-citations across 7 discs by 2026-09-02. capture-evidence.py extracts
+the same window through the row's PROVEN dvdvideo title, transcribes it with this very script, and
+records it on the row (speechSample + speechSamplesExtra) so the quote is citable. Direct use
+remains right for NAS-side comparison windows and anything else that is not a catalogued disc row.
 """
 import sys, io
 

@@ -148,7 +148,10 @@ while ($true) {
     # Thunderball's 'second commentary' was an ITALIAN DUB tagged eng, and its 'second mix' was a
     # LOSSY DTS CORE. Both were structurally perfect and would have shipped. analyze-tracks.py
     # measures each stream and writes <src>.tracks.json; this refuses when the two disagree.
-    $audit = & pwsh -File 'D:\video\.claude\skills\disc-to-plex\scripts\assert-tracks-analysed.ps1' -Manifest $claim 2>&1
+    # -NoProfile: the profile Import-Clixml's Terminal-Icons theme files on every pwsh start, and
+    # concurrent starts catch half-written files ("'Element' is an invalid XmlNodeType"). The gate
+    # script has no profile dependence (checked 2026-09-02).
+    $audit = & pwsh -NoProfile -File 'D:\video\.claude\skills\disc-to-plex\scripts\assert-tracks-analysed.ps1' -Manifest $claim 2>&1
     # ANY non-zero exit blocks, not just the documented refusal code 2. An exception inside
     # the gate exits 1, and treating that as 'fine' means a crashing guard silently approves
     # everything - which is exactly how the dot-source failure let publishes through earlier.
@@ -202,7 +205,7 @@ while ($true) {
     # the NAS labelled English: transcode.ps1 announced the fallback on a WARNING line, this filter
     # dropped it, and no log a human reads ever mentioned it. A filter that hides warnings turns a
     # noisy failure into a silent one.
-    & pwsh -File $transcode -Manifest $claim -LogDir $log 2>&1 |
+    & pwsh -NoProfile -File $transcode -Manifest $claim -LogDir $log 2>&1 |
       Select-String 'OK |FAILED|ABORT|REFUS|WARNING|MANIFEST DONE|AUDIO REVIEW' | ForEach-Object { "    $_" }
     if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) {
       Write-Output "    lane exit $LASTEXITCODE - moving to failed"

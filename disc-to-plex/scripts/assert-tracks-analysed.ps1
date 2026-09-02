@@ -77,13 +77,30 @@ foreach ($it in $items) {
   if (-not $hasClaim) { continue }
   $checked++
 
-  # EXEMPTION: a source with ONE audio stream, claimed as audioTracks [0] and nothing else.
+  # EXEMPTION: a source with ONE audio stream, claimed as audioTracks [0] and nothing else -
+  # and its mirror, a source with NO audio stream, claimed as audioTracks [].
   #
   # Every failure this gate exists to catch needs at least two streams to be possible: picking the
   # lossy core over its lossless parent, tagging a dub as the commentary, shipping a duplicate. With
   # a single stream there is no selection being asserted - "keep the only track" cannot be wrong.
   # Requiring a whisper analysis for each of 37 short extras would buy nothing and would push people
   # to bypass the gate, which is worse than a narrower gate.
+  #
+  # THE EMPTY CLAIM (2026-09-02, Danger Man Series 1 galleries). `audioTracks: []` asserts "this
+  # title has no audio at all" - stills galleries are video-only by authoring. That claim is
+  # decidable RIGHT HERE by the same probe the [0] exemption already runs: zero audio streams
+  # probed = the claim is measured true, and there is nothing whisper could add - it cannot
+  # transcribe streams that do not exist. Requiring a .tracks.json instead deadlocked: the analyse
+  # loop skips titles with fewer than two audio streams (nothing to choose between), so the
+  # evidence could NEVER arrive, and all five gallery manifests circled the queue until MaxDefer
+  # expired. A gate only satisfiable by a file no process will ever write is the same "no value can
+  # satisfy this check" shape documented twice below.
+  #
+  # The empty claim is verified in BOTH directions: probing MORE than zero streams is a positive
+  # REFUSAL, not a wait - the manifest would silently drop real audio (The Saint D8's mute-newsreel
+  # incident is why [] exists at all; a wrong [] is the same defect inverted). This branch is
+  # STRICTER than what it replaces: before it, an empty claim passed vacuously once any evidence
+  # file existed, because every per-track loop iterates zero times over [].
   #
   # NOT exempt: the LANGUAGE claim can still be wrong on one stream (Sleep Dealer shipped as `eng`
   # and is Spanish). That is now covered upstream instead - catalogue-disc.ps1 records a
@@ -92,7 +109,7 @@ foreach ($it in $items) {
   if (-not ($it.PSObject.Properties.Name -contains 'commentary') -and
       -not ($it.PSObject.Properties.Name -contains 'audioDescription')) {
     $claimed = @($it.audioTracks)
-    if ($claimed.Count -eq 1 -and [int]$claimed[0] -eq 0) {
+    if ($claimed.Count -eq 0 -or ($claimed.Count -eq 1 -and [int]$claimed[0] -eq 0)) {
       # PROBE A DVD THROUGH THE dvdvideo DEMUXER, NOT AS A FILE.
       #
       # For kind "DVD" the manifest's `src` is the FOLDER containing VIDEO_TS - that is the
@@ -117,7 +134,25 @@ foreach ($it in $items) {
       }
       $probeArgs += @('-i',"$($it.src)")
       $n = @(& $ffprobe @probeArgs 2>$null).Count
-      if ($n -eq 1) { $trivial = $true }
+      $probeRan = ($LASTEXITCODE -eq 0)
+      if ($claimed.Count -eq 1 -and $n -eq 1) {
+        $trivial = $true
+      } elseif ($claimed.Count -eq 0) {
+        # The empty claim (see the header note above). Decide it by measurement, both directions:
+        #   probe says 0 audio streams -> the claim is verified, nothing left for whisper to add;
+        #   probe says >0             -> POSITIVE REFUSAL - shipping [] here silently drops audio.
+        # A probe that itself FAILED (unreadable src, bad title) verifies nothing and must not
+        # approve the claim - fall through to the evidence requirement, which will report absence
+        # as a wait rather than let a broken probe read as "no audio".
+        if ($probeRan -and $n -eq 0) {
+          $trivial = $true
+        } elseif ($probeRan -and $n -gt 0) {
+          $problems += "$(Split-Path $out -Leaf): audioTracks [] claims this title has NO audio, " +
+                       "but the probe finds $n audio stream(s) - an empty claim here silently " +
+                       "drops real audio. Select the stream(s) or evidence why not"
+          continue
+        }
+      }
     }
   }
   if ($trivial) { continue }

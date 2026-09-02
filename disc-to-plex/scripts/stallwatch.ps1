@@ -284,6 +284,40 @@ if (Test-Path -LiteralPath $relaudit) { & pwsh -NoProfile -File $relaudit }
 $spaceaudit = 'D:/video/.claude/skills/disc-to-plex/scripts/audit-space-block.ps1'
 if (Test-Path -LiteralPath $spaceaudit) { & pwsh -NoProfile -File $spaceaudit }
 
+# AND THE RECLAIM QUEUE: a FAILED reclaim is a user confirmation that did NOT execute, and a
+# queued artefact with no loop behind it sits forever looking like it is being handled. Both are
+# invisible everywhere else - the release scripts only speak when invoked, and the whole point of
+# the reclaim track is that nobody invokes them by hand any more. (Added 2026-09-02 with
+# _reclaim-loop.ps1; the artefact format is documented in that loop's header.)
+$rqRoot = 'D:/video/_reclaim-queue'
+if (Test-Path -LiteralPath $rqRoot) {
+  $rqFailed  = @(Get-ChildItem "$rqRoot/failed/*.json"  -ErrorAction SilentlyContinue)
+  $rqPending = @(Get-ChildItem "$rqRoot/*.json"         -ErrorAction SilentlyContinue)
+  $rqRunning = @(Get-ChildItem "$rqRoot/running/*.json" -ErrorAction SilentlyContinue)
+  $rqAlive = $false
+  try {
+    $rqH = $null
+    $rqAlive = [System.Threading.Mutex]::TryOpenExisting(('Global' + [char]92 + 'video-reclaim-loop'), [ref]$rqH)
+    if ($rqH) { $rqH.Dispose() }
+  } catch { $rqAlive = $false }
+  foreach ($f in $rqFailed) {
+    Write-Output ("*** RECLAIM FAILED: {0} - a CONFIRMED reclaim did not complete. Read {1}/failed/{2}.result.txt, fix the cause, move the .json back into _reclaim-queue/ to retry." -f $f.Name, $rqRoot, $f.BaseName)
+  }
+  foreach ($f in $rqRunning) {
+    if (-not $rqAlive) {
+      Write-Output ("*** reclaim artefact {0} is stranded in running/ and _reclaim-loop is NOT RUNNING - it died mid-artefact. Restarting the loop requeues it automatically." -f $f.Name)
+    }
+  }
+  foreach ($f in $rqPending) {
+    $rqAge = (Get-Date) - $f.LastWriteTime
+    if (-not $rqAlive) {
+      Write-Output ("*** reclaim artefact {0} is QUEUED but _reclaim-loop is NOT RUNNING - nothing will drain it. Start-Process pwsh -ArgumentList '-NoProfile','-File','D:/video/_reclaim-loop.ps1' -WindowStyle Hidden" -f $f.Name)
+    } elseif ($rqAge.TotalHours -gt 6) {
+      Write-Output ("   reclaim artefact {0} has been retrying for {1:N1} h - upstream (publish/OCR) is not finishing what it holds; read its .status.txt in _reclaim-queue/" -f $f.Name, $rqAge.TotalHours)
+    }
+  }
+}
+
 # AND WHETHER ANYTHING FINISHED IS SITTING UNPUBLISHED.
 #
 # Every check above this line is UPSTREAM of the only outcome that matters - a file arriving on the

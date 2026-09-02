@@ -93,7 +93,11 @@ while ($true) {
     # `Select-Object -First N` lets the downstream cmdlet close the pipeline the moment it has
     # its N matches, which terminates the OCR child mid-run - so no sidecar is written, the next
     # pass finds the same file still needing one, and the loop spins on it forever.
-    $out = & pwsh -File 'D:\video\.claude\skills\disc-to-plex\scripts\ocr-subtitles.ps1' -Path $f.FullName 2>&1
+    # -NoProfile: the profile Import-Clixml's Terminal-Icons theme files on every pwsh start, and
+    # with many concurrent pwsh processes a reader catches a half-written file and prints
+    # "Import-Clixml: 'Element' is an invalid XmlNodeType" before the script even runs. The child
+    # script has no profile dependence (checked 2026-09-02: no coreutils-shim names used bare).
+    $out = & pwsh -NoProfile -File 'D:\video\.claude\skills\disc-to-plex\scripts\ocr-subtitles.ps1' -Path $f.FullName 2>&1
 
     # SHOW THE GATE LINE AND THE ERRORS SEPARATELY - they used to compete for the same two slots.
     # An ErrorRecord renders WITH its offending source line, and ocr-subtitles.ps1 is full of lines

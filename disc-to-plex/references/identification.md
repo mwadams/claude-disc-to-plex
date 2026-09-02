@@ -941,3 +941,26 @@ This closed the same hole that `mappingProvenBy` had: **the gate was checking th
 evidence rather than its content.** A dangling reference — listed in the catalogue, deleted from
 disk — was worse than a blank, because the evidence looks present right up until somebody opens it.
 `drop-blank-frames.py` sweeps both out of existing catalogues.
+
+---
+
+# A landmark window you don't record is a citation you can't make
+
+The two-landmark identity method is right: confirm an episode with a **second window deep in the
+title** (~600–700 s), not just the catalogue's ~90 s opening sample. But take that window through
+**`capture-evidence.py --speech <sec>`**, never with ad-hoc ffmpeg + `transcribe-wav.py`.
+
+The ad-hoc route produces a transcript that exists only in your context. `assert-accounted.ps1`
+verifies every `speech:` quote against the **catalogue's recorded transcripts**, so a quote from an
+unrecorded window is refused even when the identification is correct — and since the deep window is
+usually the *stronger* evidence, the gate ends up punishing whoever cited best. By 2026-09-02 this
+had produced **32 refused-but-correct citations across 7 discs** (Boston Legal S3 D4/D6, Danger Man
+S1 D1–D5), all needing re-citation against the weaker opening samples.
+
+`capture-evidence.py --speech` extracts through the row's **proven** dvdvideo title, transcribes
+with the same transcriber, and registers the result on that row in one act — inline in
+`speechSample` and structured in `speechSamplesExtra`. That single act is also what **binds the
+transcript to its title**: there is deliberately no way to register text captured elsewhere,
+because outside text is exactly the confident-wrong evidence the gate exists to stop. NAS-side
+comparison windows stay out of the catalogue — it records what the *disc* says; cite the disc-side
+window.

@@ -96,7 +96,9 @@ while ($true) {
       }
       if (-not $need) { continue }
 
-      $args = @('-File', 'D:\video\_publish.ps1', '-Work', $w.Name, '-Kind', $kind)
+      # -NoProfile: avoids the Terminal-Icons half-written-theme Import-Clixml noise on concurrent
+      # pwsh starts; _publish.ps1 has no profile dependence (checked 2026-09-02).
+      $args = @('-NoProfile', '-File', 'D:\video\_publish.ps1', '-Work', $w.Name, '-Kind', $kind)
       if ($stale) { $args += '-Overwrite'; "{0,-46} wrong-size copy on NAS -> republishing with -Overwrite" -f $w.Name }
 
       # SIDECARS ONLY, IF THE WORK SAYS SO. A `.subtitles-only` marker in the work folder means the

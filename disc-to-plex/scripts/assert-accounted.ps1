@@ -293,17 +293,24 @@ foreach($id in ($disp.Keys | Sort-Object)){
         # it appears in ANY recorded transcript. Every quote still has to be in a transcript that
         # lives in the catalogue and names how it was captured.
         #
-        # TWO SHAPES ARE READ, and only one is currently produced - corrected 2026-09-01 after an
-        # agent noticed this comment and the tool disagreed:
-        #   speechSample        a string. `capture-evidence.py` APPENDS re-samples into it inline,
-        #                       each prefixed `[re-sampled @<N>s]`. This is what actually exists.
-        #   speechSamplesExtra  a list of {offsetSec, lang, prob, text, capturedBy}. Richer - it
-        #                       keeps each sample's offset and language confidence - but NOTHING
-        #                       WRITES IT TODAY. The support below is kept because the structured
-        #                       form is the better one and a future capturer should emit it.
-        # The comment previously described only the array, which reads as though the inline form
-        # were a bug. It is not; it is the only form in the data. Do not "fix" capture-evidence.py
-        # to match a doc - if the array is wanted, change the tool deliberately and say so here.
+        # TWO SHAPES ARE READ, and since 2026-09-02 both are produced, by the same writer:
+        #   speechSample        a string. The sweep writes the original ~90 s sample;
+        #                       `capture-evidence.py --speech` APPENDS re-samples into it inline,
+        #                       each prefixed `[re-sampled @<N>s]`.
+        #   speechSamplesExtra  a list of {offsetSec, lang, prob, text, capturedBy, ...}. First
+        #                       written by hand-edited catalogue JSON (The Bill, Farscape,
+        #                       2026-08-27); written by `capture-evidence.py --speech` since
+        #                       2026-09-02, alongside the inline append (dual-write, deliberately:
+        #                       the inline form keeps existing readers whole, the array keeps
+        #                       per-sample provenance readable). Only .text is searched here.
+        #                       Older catalogues simply lack the field.
+        # This closed a real inversion: agents took second landmark windows (~600-700 s) with
+        # ad-hoc ffmpeg, the transcripts were never recorded, and a citation quoting the STRONGER
+        # landmark evidence was refused while one quoting the weaker opening sample passed - 32
+        # refused-but-correct citations across 7 discs by 2026-09-02. The fix was to record the
+        # landmark windows (take them via capture-evidence.py --speech), NEVER to loosen this
+        # check: every quote must still appear in a transcript that lives in the catalogue, on the
+        # row it was extracted from, naming how it was captured.
         $texts = @("$(if($title){ $title.speechSample })")
         if($title -and $title.speechSamplesExtra){
           $texts += @($title.speechSamplesExtra | ForEach-Object { "$($_.text)" })

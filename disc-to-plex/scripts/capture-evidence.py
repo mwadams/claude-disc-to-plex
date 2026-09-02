@@ -29,11 +29,33 @@ it, and APPENDS it to the row with its own provenance. Appending, never replacin
 original sample is evidence too, including when it is the evidence that the first offset was a bad
 one, and a tool that overwrites its own inputs cannot be audited afterwards.
 
+LANDMARK WINDOWS GO THROUGH HERE TOO - THIS IS NOT ONLY A REPAIR TOOL. The two-landmark
+identification method takes a second window deep in the title (~600-700 s) to confirm an identity.
+Doing that with ad-hoc ffmpeg + transcribe-wav.py produces a transcript that lives only in the
+agent's context: assert-accounted.ps1 verifies a `speech:` quote against the CATALOGUE, so a quote
+from an unrecorded window is refused even when the identification is right - which punishes exactly
+the agent who cited the stronger evidence. Measured 2026-09-02: 32 refused citations across 7 discs
+(Boston Legal S3 D4/D6, Danger Man S1 D1-D5), every one a correct identification quoting an
+unrecorded landmark. So: take the landmark window WITH `--speech <sec>` and it is recorded in the
+same act, both as an inline `[re-sampled @Ns]` append to `speechSample` and as a structured
+`speechSamplesExtra` entry that keeps the offset and provenance machine-readable. The gate has read
+`speechSamplesExtra` since before it was ever written; this tool is now its writer (2026-09-02).
+
+There is deliberately NO way to register a transcript you produced elsewhere. The recording is
+trustworthy only because extraction, transcription and registration happen in one act, through the
+row's proven dvdvideo title - accepting outside text would let a mistaken (or invented) transcript
+into the exact field the gate trusts. NAS-side comparison windows never belong in the catalogue at
+all: the catalogue records what the DISC says; cite the disc-side window.
+
 Usage: capture-evidence.py "D:/video/_stage/<disc>" <makemkvTitle> <sec> [<sec> ...]
-                           [--speech <sec>[,<sec>...]]
+                           [--speech <sec>[,<sec>...]] [--cat-dir <dir>]
+
+`--cat-dir` overrides where the catalogue is read and written (default D:/video/_catalogue).
+It exists so tests can run against a SCRATCH COPY of a catalogue instead of the live one.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import uuid
@@ -131,11 +153,18 @@ def main():
             sys.exit('--speech needs at least one offset in seconds')
         speech_at = [int(s) for s in argv[i + 1].replace(',', ' ').split()]
         argv = argv[:i] + argv[i + 2:]
+    cat_dir = CAT_DIR
+    if '--cat-dir' in argv:
+        i = argv.index('--cat-dir')
+        if i + 1 >= len(argv):
+            sys.exit('--cat-dir needs a directory')
+        cat_dir = argv[i + 1]
+        argv = argv[:i] + argv[i + 2:]
     disc, mk_title = argv[0], int(argv[1])
     seconds = [int(s) for s in argv[2:]]
 
     disc_name = os.path.basename(disc.rstrip('/\\'))
-    cat_path = os.path.join(CAT_DIR, disc_name + '.catalogue.json')
+    cat_path = os.path.join(cat_dir, disc_name + '.catalogue.json')
     with open(cat_path, encoding='utf-8') as fh:
         cat = json.load(fh)
 
@@ -146,7 +175,7 @@ def main():
     if dvd is None:
         sys.exit('t%02d has no dvdvideoTitle - prove the mapping first' % mk_title)
 
-    frame_dir = os.path.join(CAT_DIR, disc_name + '-frames')
+    frame_dir = os.path.join(cat_dir, disc_name + '-frames')
     os.makedirs(frame_dir, exist_ok=True)
 
     added = []
@@ -191,6 +220,36 @@ def main():
         stamps = ['disc=%s|dvdvideoTitle=%d|offset=%ds|wav=%s' % (disc, dvd, sec, wav)
                   for sec, _, wav in spoke]
         row['speechFrom'] = ' ;; '.join(([prior] if prior else []) + stamps)
+        # ...AND STRUCTURED, so the offset and provenance stay machine-readable per sample.
+        # assert-accounted.ps1 reads `speechSamplesExtra` (each entry's .text), and until
+        # 2026-09-02 the only writers were agents HAND-EDITING catalogue JSON (The Bill S1-S4,
+        # Farscape, capturedBy "assistant 2026-08-27: ffmpeg ..."); when that practice lapsed,
+        # landmark transcripts stopped being recorded and 32 correct citations across 7 discs were
+        # refused as unverifiable. This tool is now the writer, in the same entry shape the hand
+        # edits established: {offsetSec, lang, prob, text, capturedBy}. The inline append above is
+        # kept unchanged - readers of `speechSample` see exactly what they always saw - so this is
+        # additive, not a migration. The entry lives ON THE ROW it was extracted from, through
+        # that row's proven dvdvideoTitle: that is what ties a landmark transcript to its title,
+        # and why a quote can never verify against another title's window.
+        extra = list(row.get('speechSamplesExtra') or [])
+        for sec, text, _ in spoke:
+            entry = {
+                'offsetSec': sec,
+                'windowSec': SPEECH_SECONDS,
+                'dvdvideoTitle': dvd,
+                'capturedBy': 'capture-evidence.py --speech',
+            }
+            # transcribe-wav.py prefixes every transcript with its positive marker '[<lang> <prob>]'.
+            # Lift it into fields, matching the hand-written entries already in the data.
+            m = re.match(r'^\[(\w{2,3}) ([\d.]+)\]\s*', text)
+            if m:
+                entry['lang'] = m.group(1)
+                entry['prob'] = float(m.group(2))
+                entry['text'] = text[m.end():]
+            else:
+                entry['text'] = text
+            extra.append(entry)
+        row['speechSamplesExtra'] = extra
 
     frames = list(row.get('frames') or [])
     for p in added:
@@ -210,8 +269,14 @@ def main():
         'sweep either never opened this dvdvideo title, because its duration-pairing named a '
         'different one, or sampled it where there was nothing intelligible to hear'
         % (' and '.join(what).capitalize(), dvd, mk_title))
-    with open(cat_path, 'w', encoding='utf-8') as fh:
+    # ATOMIC REPLACE, never an in-place truncate-and-write. assert-accounted.ps1, apply-proof.py
+    # and disposition agents all read this file while discs are in flight; a reader that catches a
+    # half-written JSON sees a parse error at best and a short catalogue at worst. Write beside the
+    # target (same volume, so os.replace is atomic) and swap.
+    tmp_path = '%s.tmp-%d-%s' % (cat_path, os.getpid(), uuid.uuid4().hex[:8])
+    with open(tmp_path, 'w', encoding='utf-8') as fh:
         json.dump(cat, fh, indent=2)
+    os.replace(tmp_path, cat_path)
     print('registered %d frame(s) and %d transcript(s) on t%02d in %s'
           % (len(added), len(spoke), mk_title, cat_path))
 

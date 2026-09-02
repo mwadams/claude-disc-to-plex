@@ -20,7 +20,12 @@
 #
 # Both must pass. Neither can be satisfied by an encode "looking finished".
 #
-#   pwsh -Command "& D:/video/_release-completed.ps1 -Units @('Disc A','Disc B')"
+#   pwsh -NoProfile -Command "& D:/video/_release-completed.ps1 -Units @('Disc A','Disc B')"
+#
+# (-NoProfile because the profile Import-Clixml's Terminal-Icons theme files on every pwsh start;
+# with concurrent pwsh processes a reader catches a half-written file and prints "Import-Clixml:
+# 'Element' is an invalid XmlNodeType" before this script even runs. Harmless but alarming; this
+# script has no profile dependence.)
 #
 # NOT `pwsh -File ... -Units 'Disc A','Disc B'`. That is a NATIVE call, so the comma-separated list
 # expands into FOUR SEPARATE command-line arguments before the child process sees them. -File binds
