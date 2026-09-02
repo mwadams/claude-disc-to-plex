@@ -319,8 +319,19 @@ foreach ($id in ($byId.Keys | Sort-Object)) {
   if (-not $points -and $dur -gt 0) { $points = @([math]::Max(1, [int]($dur * 0.25))) }
   foreach ($sec in $points) {
     $png = Join-Path $frameDir ("t{0:D3}-{1:D4}.png" -f $id, $sec)
+    # BURN THE dvdvideo TITLE NUMBER, PROMINENTLY - the MakeMKV row only as a secondary label.
+    #
+    # WHY (2026-09-02). Evidence is keyed to the PHYSICAL dvdvideo title (the speechFrom stamp),
+    # and apply-proof.py re-homes whole bundles onto the row whose PROVEN dvdvideoTitle matches
+    # that stamp when it corrects a crossed mapping. The MakeMKV row number is exactly the number
+    # that becomes wrong after such a re-home - a frame captioned only 't2' sitting (correctly!)
+    # on row t01 reads as proof of a mix-up, and that caption misled a careful agent into
+    # concluding apply-proof.py had mislabelled evidence when it had not (Danger Man Disk 7).
+    # So caption both, clearly labelled, with the stable number first. Frames captured before
+    # 2026-09-02 carry the old 't<row> @ <sec>s' caption - do not re-generate them; read their
+    # provenance from the row's speechFrom stamp, never from the pixels or the filename.
     $vf = "yadif,scale=480:270:force_original_aspect_ratio=decrease,pad=480:270:(ow-iw)/2:(oh-ih)/2:black," +
-          "drawtext=text='t$id @ ${sec}s':x=8:y=8:fontsize=22:fontcolor=yellow:box=1:boxcolor=black@0.7"
+          "drawtext=text='dvdvideo $dv (mkv row t$id) @ ${sec}s':x=8:y=8:fontsize=22:fontcolor=yellow:box=1:boxcolor=black@0.7"
     & $ff -v error @src -ss $sec -frames:v 1 -vf $vf -y $png 2>$null
     if (Test-Path -LiteralPath $png) { $rec.frames += $png }
   }

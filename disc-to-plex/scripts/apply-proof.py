@@ -16,15 +16,26 @@ This script therefore:
 Usage: apply-proof.py "D:/video/_stage/<disc>" [--catalogue-dir D:/video/_catalogue] [--dry-run]
 """
 import argparse
+import contextlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import uuid
+
+import cat_lock          # beside this script; sys.path[0] is the script's own directory
 
 PROVER = 'D:/video/.claude/skills/disc-to-plex/scripts/prove-dvd-mapping.py'
-EVIDENCE_KEYS = ('frames', 'headStrip', 'speechSample', 'speechStatus', 'speechFrom')
+# speechSamplesExtra MUST travel with its bundle (added 2026-09-02): each entry is a transcript
+# extracted through a specific dvdvideo title, and assert-accounted.ps1 searches the ROW's extras
+# when verifying a speech: quote. While this key was left out, a re-home moved speechSample to the
+# proven row but stranded the extras on the old one - leaving text from ANOTHER title searchable
+# there, i.e. a quote could verify against the wrong episode. Rare while extras were hand-written;
+# capture-evidence.py --speech now writes them routinely, so the hole would only widen.
+EVIDENCE_KEYS = ('frames', 'headStrip', 'speechSample', 'speechStatus', 'speechFrom',
+                 'speechSamplesExtra')
 
 
 def evidence_source_title(row):
@@ -59,6 +70,16 @@ def main():
     proof = json.loads(run.stdout)
 
     proven = {m['makemkvTitle']: m for m in proof['mapping'] if m.get('dvdvideoTitle') is not None}
+
+    # READ-MODIFY-WRITE UNDER THE PER-CATALOGUE LOCK (shared with capture-evidence.py). This
+    # script rewrites the WHOLE catalogue from its own read; run while a capture-evidence
+    # registration lands on the same disc, one of the two writes would silently erase the other -
+    # the exact lost-update that cost Danger Man Disk 6 three transcripts (2026-09-02). The lock
+    # is taken BEFORE the read and released after the write; it is held for milliseconds (the
+    # prover already ran, above). A dry run never writes, so it does not take the lock.
+    lock = contextlib.ExitStack()
+    if not args.dry_run:
+        lock.enter_context(cat_lock.locked(cat_path))
 
     with open(cat_path, encoding='utf-8') as fh:
         cat = json.load(fh)
@@ -121,8 +142,13 @@ def main():
         shutil.copy2(cat_path, bak)
     cat['titleNumbering'] = ('dvdvideoTitle PROVEN by prove-dvd-mapping.py from TT_SRPT + VTS byte '
                              'totals; duration was not consulted. Evidence permuted with the mapping.')
-    with open(cat_path, 'w', encoding='utf-8') as fh:
+    # Atomic replace, never an in-place truncate-and-write: assert-accounted.ps1 and disposition
+    # agents read this file while discs are in flight, and a torn JSON reads as a short catalogue.
+    tmp_path = '%s.tmp-%d-%s' % (cat_path, os.getpid(), uuid.uuid4().hex[:8])
+    with open(tmp_path, 'w', encoding='utf-8') as fh:
         json.dump(cat, fh, indent=2)
+    os.replace(tmp_path, cat_path)
+    lock.close()
     print('rewritten: %s  (backup %s)' % (cat_path, os.path.basename(bak)))
 
 

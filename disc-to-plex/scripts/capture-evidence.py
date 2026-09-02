@@ -60,6 +60,8 @@ import subprocess
 import sys
 import uuid
 
+import cat_lock          # beside this script; sys.path[0] is the script's own directory
+
 CAT_DIR = 'D:/video/_catalogue'
 FFMPEG = ('D:/video/.transcode-tools/ffmpeg-n7.1/'
           'ffmpeg-n7.1-latest-win64-gpl-7.1/bin/ffmpeg.exe')
@@ -205,6 +207,65 @@ def main():
     if not added and not spoke:
         sys.exit('nothing captured - catalogue not touched')
 
+    # REGISTER UNDER A CROSS-PROCESS LOCK, AGAINST A FRESH READ. The read at the top of main()
+    # is only for finding the proven dvdvideoTitle; by the time the captures finish (minutes of
+    # ffmpeg + whisper), that copy is STALE whenever anything else wrote the catalogue meanwhile.
+    # This tool used to mutate that stale copy and write the whole file back: run concurrently on
+    # several titles of ONE disc, every process based its write on version N and the last writer
+    # won. Danger Man 1964-1968 Disk 6 (2026-09-02): four parallel captures, three silently
+    # vanished, all four printed "registered". The atomic os.replace below is NOT that fix - it
+    # only protects a concurrent reader from a torn file - so:
+    #   1. take the per-catalogue lock (held for the milliseconds of read+write, never for the
+    #      capture work, so N discs in parallel never queue and N titles of one disc queue
+    #      briefly);
+    #   2. RE-READ the catalogue inside it and mutate that fresh copy;
+    #   3. after writing, VERIFY OUR OWN ENTRIES ARE IN THE FILE before saying "registered" -
+    #      so even a writer that bypasses the lock (an old copy of this script, a hand edit)
+    #      can lose the update but can never make this tool report the loss as success.
+    with cat_lock.locked(cat_path):
+        with open(cat_path, encoding='utf-8') as fh:
+            cat = json.load(fh)
+        row = next((r for r in cat['titles'] if int(r['title']) == mk_title), None)
+        if row is None:
+            sys.exit('REGISTRATION FAILED: t%02d is no longer in %s - the catalogue changed '
+                     'between capture and registration; nothing was written' % (mk_title, cat_path))
+        if row.get('dvdvideoTitle') != dvd:
+            sys.exit('REGISTRATION REFUSED: t%02d was dvdvideo title %d when this evidence was '
+                     'captured, but the catalogue now maps it to %s (apply-proof.py ran '
+                     'mid-capture?). The frames/audio came through the OLD title, so registering '
+                     'them on this row would attach another title\'s evidence. Nothing was '
+                     'written - re-run the capture.' % (mk_title, dvd, row.get('dvdvideoTitle')))
+        expect = apply_registration(row, disc, dvd, mk_title, added, spoke, seconds)
+        # ATOMIC REPLACE, never an in-place truncate-and-write. assert-accounted.ps1,
+        # apply-proof.py and disposition agents all read this file while discs are in flight; a
+        # reader that catches a half-written JSON sees a parse error at best and a short
+        # catalogue at worst. Write beside the target (same volume, so os.replace is atomic).
+        tmp_path = '%s.tmp-%d-%s' % (cat_path, os.getpid(), uuid.uuid4().hex[:8])
+        with open(tmp_path, 'w', encoding='utf-8') as fh:
+            json.dump(cat, fh, indent=2)
+        os.replace(tmp_path, cat_path)
+
+    # "registered" MUST MEAN REGISTERED. Re-read the file we just wrote (outside the lock - if
+    # anything clobbered us even in this window, that too must surface) and refuse to report
+    # success unless every entry is actually present.
+    problems = verify_registration(cat_path, mk_title, expect)
+    if problems:
+        for p in problems:
+            print('LOST UPDATE: %s' % p)
+        sys.exit('REGISTRATION FAILED: wrote %s but the entries above are NOT in it - another '
+                 'writer clobbered this update. The evidence was NOT recorded; re-run this '
+                 'capture and find the concurrent writer.' % cat_path)
+    print('registered %d frame(s) and %d transcript(s) on t%02d in %s'
+          % (len(added), len(spoke), mk_title, cat_path))
+
+
+def apply_registration(row, disc, dvd, mk_title, added, spoke, seconds):
+    """Mutate `row` in place with everything this run captured.
+
+    Returns the exact values verify_registration() must later find in the file - built HERE, from
+    what was actually written, so the verification cannot drift from the write.
+    """
+    expect = {'seams': [], 'extras': [], 'frames': []}
     if spoke:
         # APPEND with a visible seam. The row may already hold the sweep's sample from a different
         # offset; a reader (and assert-accounted's quote search) must see one continuous text, but
@@ -213,7 +274,9 @@ def main():
         if row.get('speechSample'):
             parts.append(row['speechSample'].rstrip())
         for sec, text, _ in spoke:
-            parts.append('[re-sampled @%ds] %s' % (sec, text))
+            seam = '[re-sampled @%ds] %s' % (sec, text)
+            parts.append(seam)
+            expect['seams'].append(seam)
         row['speechSample'] = '\n'.join(parts)
         row['speechStatus'] = 'ok'
         prior = row.get('speechFrom')
@@ -249,6 +312,7 @@ def main():
             else:
                 entry['text'] = text
             extra.append(entry)
+            expect['extras'].append(entry)
         row['speechSamplesExtra'] = extra
 
     frames = list(row.get('frames') or [])
@@ -256,6 +320,7 @@ def main():
         p = p.replace('/', '\\')
         if p not in frames:
             frames.append(p)
+        expect['frames'].append(p)
     row['frames'] = frames
     # Say what was ACTUALLY captured. This note used to describe frames unconditionally, so a
     # speech-only run would have claimed frames it never took and listed an empty offset list.
@@ -269,16 +334,41 @@ def main():
         'sweep either never opened this dvdvideo title, because its duration-pairing named a '
         'different one, or sampled it where there was nothing intelligible to hear'
         % (' and '.join(what).capitalize(), dvd, mk_title))
-    # ATOMIC REPLACE, never an in-place truncate-and-write. assert-accounted.ps1, apply-proof.py
-    # and disposition agents all read this file while discs are in flight; a reader that catches a
-    # half-written JSON sees a parse error at best and a short catalogue at worst. Write beside the
-    # target (same volume, so os.replace is atomic) and swap.
-    tmp_path = '%s.tmp-%d-%s' % (cat_path, os.getpid(), uuid.uuid4().hex[:8])
-    with open(tmp_path, 'w', encoding='utf-8') as fh:
-        json.dump(cat, fh, indent=2)
-    os.replace(tmp_path, cat_path)
-    print('registered %d frame(s) and %d transcript(s) on t%02d in %s'
-          % (len(added), len(spoke), mk_title, cat_path))
+    return expect
+
+
+def verify_registration(cat_path, mk_title, expect):
+    """Re-read cat_path FROM DISK and report every expected entry that is not in it.
+
+    Presence, not equality: another (locked) writer may legitimately have added MORE entries
+    after ours - only OUR entries missing is a failure.
+    """
+    problems = []
+    try:
+        with open(cat_path, encoding='utf-8') as fh:
+            cat = json.load(fh)
+    except (OSError, ValueError) as e:
+        return ['could not re-read %s after writing it: %s' % (cat_path, e)]
+    row = next((r for r in cat['titles'] if int(r['title']) == mk_title), None)
+    if row is None:
+        return ['t%02d is not in the file just written' % mk_title]
+    sample = row.get('speechSample') or ''
+    for seam in expect['seams']:
+        if seam not in sample:
+            problems.append('t%02d speechSample is missing the appended window %r'
+                            % (mk_title, seam[:80]))
+    extras = row.get('speechSamplesExtra') or []
+    for e in expect['extras']:
+        if not any(x.get('offsetSec') == e['offsetSec']
+                   and x.get('text') == e.get('text')
+                   and x.get('capturedBy') == e.get('capturedBy') for x in extras):
+            problems.append('t%02d speechSamplesExtra is missing the entry for offset %ds'
+                            % (mk_title, e['offsetSec']))
+    frames = set(row.get('frames') or [])
+    for p in expect['frames']:
+        if p not in frames:
+            problems.append('t%02d frames is missing %s' % (mk_title, p))
+    return problems
 
 
 if __name__ == '__main__':

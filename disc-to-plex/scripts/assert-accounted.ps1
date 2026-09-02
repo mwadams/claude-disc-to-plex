@@ -162,6 +162,52 @@ if($badReason){
   exit 2
 }
 
+# ---- PROVENANCE STAMPS MUST NAME THEIR OWN ROW'S dvdvideo TITLE ------------------------------
+#
+# WHY (added 2026-09-02, from the apply-proof adjudication). Every wav-derived sample carries a
+# `dvdvideoTitle=N` stamp in its speechFrom (and, since 2026-09-02, in each speechSamplesExtra
+# entry): the PHYSICAL title the audio was decoded from. Evidence is only meaningful on the row
+# whose proven dvdvideoTitle equals that stamp - apply-proof.py re-homes bundles by exactly this
+# key when it corrects a crossed mapping. A bundle whose stamp names a DIFFERENT title than its
+# row is mislabelled: its transcript is another episode's dialogue, so a `speech:` citation could
+# verify against the WRONG episode - a false PASS of this gate, the dangerous direction. Known
+# real case: The Bill S4 V2 D1, whose mapping was hand-"REPAIRED" on 2026-08-27, relabelling rows
+# without moving the samples.
+#
+# This check runs BEFORE the citation checks because a mislabelled catalogue makes the speech
+# search below meaningless. Absence of a stamp is NOT a mismatch: older catalogues, silent titles
+# and BD catalogues carry no stamp, and they must not start failing here.
+$evMislabelled = @()
+foreach($t0 in $cat.titles){
+  $rowDvd = $t0.dvdvideoTitle
+  if($null -eq $rowDvd){ continue }   # unmapped row - no proven home for a stamp to disagree with
+  foreach($m0 in [regex]::Matches("$($t0.speechFrom)", 'dvdvideoTitle=(\d+)')){
+    $stamp = [int]$m0.Groups[1].Value
+    if($stamp -ne [int]$rowDvd){
+      $evMislabelled += ("t{0:D2}  speechFrom stamp says dvdvideoTitle={1} but the row's dvdvideoTitle is {2} - the sample was decoded from a DIFFERENT physical title" -f [int]$t0.title, $stamp, [int]$rowDvd)
+    }
+  }
+  foreach($e0 in @($t0.speechSamplesExtra)){
+    if($null -eq $e0){ continue }
+    if($e0.PSObject.Properties.Name -contains 'dvdvideoTitle' -and $null -ne $e0.dvdvideoTitle -and
+       [int]$e0.dvdvideoTitle -ne [int]$rowDvd){
+      $evMislabelled += ("t{0:D2}  speechSamplesExtra entry (offset {1}s) says dvdvideoTitle={2} but the row's dvdvideoTitle is {3} - the transcript belongs to a different physical title" -f [int]$t0.title, "$($e0.offsetSec)", [int]$e0.dvdvideoTitle, [int]$rowDvd)
+    }
+  }
+}
+if($evMislabelled){
+  Write-Output ""
+  Write-Output "*** MISLABELLED EVIDENCE: PROVENANCE STAMPS CONTRADICT THEIR ROWS ***"
+  $evMislabelled | ForEach-Object { Write-Output "  $_" }
+  Write-Output ""
+  Write-Output "Each sample's dvdvideoTitle= stamp names the physical title it was decoded from; it"
+  Write-Output "sits on a row mapped to a different title, so any speech: citation against that row"
+  Write-Output "could verify against the WRONG episode's transcript. Re-home the bundles onto the"
+  Write-Output "rows whose dvdvideoTitle matches their stamps (apply-proof.py does this correctly),"
+  Write-Output "or re-capture fresh with capture-evidence.py. Do NOT edit the stamps to match."
+  exit 2
+}
+
 # ---- EVIDENCE: is each NAME evidenced, and does the cited evidence actually check out? -------
 #
 # WHY. Until this existed, NOTHING between the dispositions file and the NAS asked how a name was
