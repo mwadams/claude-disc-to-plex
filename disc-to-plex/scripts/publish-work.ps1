@@ -65,6 +65,24 @@ $src = Join-Path (Join-Path $LocalRoot $Kind) $Work
 $dst = Join-Path (Join-Path $NasRoot   $Kind) $Work
 if (-not (Test-Path -LiteralPath $src)) { throw "no such local work: $src" }
 
+# THE MARKER IS AUTHORITATIVE, NOT THE CALLER'S FLAG.
+#
+# A `.subtitles-only` marker in the work folder means the media is already on the NAS and correct,
+# and only the .srt may travel. _publish-loop.ps1 translates the marker into -SubtitlesOnly - but a
+# RUNNING loop executes the code it was STARTED with, and on 2026-09-02 the live loop (started
+# 2026-09-01 21:04) predated the marker logic added at 06:43: it invoked a plain publish on a
+# marked work and robocopy shipped the marker file itself to the NAS. Had OCR sidecars existed, it
+# would have shipped the scaffolding re-encodes over the correct published episodes with
+# -Overwrite - the exact overwrite the marker exists to prevent.
+#
+# The marker belongs to the WORK so that the fact survives a loop restart and a context compaction;
+# enforcing it HERE, in the worker that every caller funnels through, is what actually delivers
+# that promise. A caller passing -SubtitlesOnly explicitly is unaffected.
+if (-not $SubtitlesOnly -and (Test-Path -LiteralPath (Join-Path $src '.subtitles-only'))) {
+  Write-Output '.subtitles-only marker in the work folder -> enforcing -SubtitlesOnly (marker is authoritative; the caller did not pass it)'
+  $SubtitlesOnly = $true
+}
+
 $local = @(Get-ChildItem -LiteralPath $src -Recurse -File)
 if (-not $local) { throw "nothing to publish in $src" }
 
