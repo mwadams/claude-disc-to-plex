@@ -38,29 +38,44 @@ $BaseUrl = $BaseUrl.TrimEnd('/')
 $h = @{ 'X-Plex-Token' = $Token; 'Accept' = 'application/json' }
 function Get-MC($p){ (Invoke-RestMethod ($BaseUrl + $p) -Headers $h).MediaContainer }
 
-# find show across show-type sections
-$show = $null
+# Find show across ALL show-type sections. Don't stop at the first section that returns
+# anything truthy: collect every candidate with a usable ratingKey, then prefer an exact
+# (case-insensitive) title match over a regex substring match, so e.g. -Show 'Danger Man'
+# can't be satisfied by a show called "Danger Man Returns".
+#
+# NOTE: local result variables are named $showObj/$seasonObj, NOT $show/$season. PowerShell
+# variable names are case-INSENSITIVE, so $show and $Show (the parameter) are literally the
+# same variable slot — assigning $show clobbers the $Show parameter. That was the actual bug:
+# `$show = $null` (and later `$show = $hit | Select-Object -First 1`) wiped out $Show, so every
+# subsequent `-match $Show` became `-match $null`, which matches EVERY title (an empty pattern
+# matches anywhere) — so the loop "found" whatever the first show-type section happened to
+# return, and later `[int]$Season` / "Season $Season" read back a metadata object instead of
+# the int, because `$season = ...` clobbered `$Season` the exact same way.
+$candidates = @()
 foreach ($s in ((Get-MC '/library/sections').Directory | Where-Object type -eq 'show')) {
-  $hit = (Get-MC "/library/sections/$($s.key)/all?type=2").Metadata | Where-Object { $_.title -match $Show }
-  if ($hit) { $show = $hit | Select-Object -First 1; break }
+  $items = (Get-MC "/library/sections/$($s.key)/all?type=2").Metadata |
+    Where-Object { $_.ratingKey -and $_.title -match $Show }
+  foreach ($item in $items) { $candidates += $item }
 }
-if (-not $show) { Write-Error "Show '$Show' not found."; exit 3 }
-$season = (Get-MC "/library/metadata/$($show.ratingKey)/children").Metadata | Where-Object { $_.index -eq $Season }
-if (-not $season) { Write-Error "Season $Season not found for $($show.title)."; exit 4 }
+$showObj = $candidates | Where-Object { $_.title -eq $Show } | Select-Object -First 1
+if (-not $showObj) { $showObj = $candidates | Select-Object -First 1 }
+if (-not $showObj -or -not $showObj.ratingKey) { Write-Error "Show '$Show' not found."; exit 3 }
+$seasonObj = (Get-MC "/library/metadata/$($showObj.ratingKey)/children").Metadata | Where-Object { $_.index -eq $Season }
+if (-not $seasonObj) { Write-Error "Season $Season not found for $($showObj.title)."; exit 4 }
 
 $lockVal = if ($Unlock) { 0 } else { 1 }
-$eps = (Get-MC "/library/metadata/$($season.ratingKey)/children").Metadata | Sort-Object index
+$eps = (Get-MC "/library/metadata/$($seasonObj.ratingKey)/children").Metadata | Sort-Object index
 $n = 0
 foreach ($e in $eps) {
   $file = $e.Media.Part.file | Select-Object -First 1
   if (-not $file) { continue }
   if ((Split-Path $file -Leaf) -notmatch 'S\d+E[\dE\-]+ - (.+)\.[^.]+$') { continue }
   $title = $Matches[1]
-  if ($PSCmdlet.ShouldProcess("$($show.title) S$([int]$Season)E$($e.index)", "set title='$title' locked=$lockVal")) {
+  if ($PSCmdlet.ShouldProcess("$($showObj.title) S$([int]$Season)E$($e.index)", "set title='$title' locked=$lockVal")) {
     $enc = [uri]::EscapeDataString($title)
     $url = "$BaseUrl/library/metadata/$($e.ratingKey)?type=4&title.value=$enc&title.locked=$lockVal"
     try { Invoke-RestMethod $url -Headers $h -Method Put -ErrorAction Stop | Out-Null; $n++; "E{0:D2}: {1}" -f $e.index,$title }
     catch { "FAIL E$($e.index): $($_.Exception.Message)" }
   }
 }
-"$(if($Unlock){'Unlocked'}else{'Locked'}) $n titles on $($show.title) Season $Season."
+"$(if($Unlock){'Unlocked'}else{'Locked'}) $n titles on $($showObj.title) Season $Season."
