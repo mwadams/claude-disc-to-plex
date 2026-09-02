@@ -1,6 +1,12 @@
 # Publish a finished work to the NAS: copy EVERY file (media + sidecar subtitles + artwork),
 # then verify count and bytes.
 #
+# THIS IS THE CANONICAL COPY. `D:\video\_publish.ps1` (what `_publish-loop.ps1` invokes) is a thin
+# forwarder to this file. It used to be a full second copy, and the two drifted: the edition/extras
+# guard existed only in the live copy while the robocopy failure logging existed only here, so each
+# path was missing a guard the other had (reconciled 2026-09-02). Edit THIS file; the forwarder
+# carries no logic to edit.
+#
 # WHY THIS EXISTS. Publishing used to be an ad-hoc robocopy naming "<title>.mkv" explicitly - a
 # habit picked up from the "never folder-copy while an encode is still writing" rule. That is
 # right about the danger and wrong about the remedy: naming one file silently leaves behind
@@ -72,6 +78,41 @@ if ($SubtitlesOnly) {
   }
 }
 
+# REFUSE A MOVIE FOLDER HOLDING BOTH AN EDITION AND LOCAL EXTRAS.
+#
+# Measured 2026-08-27: `M (1931)/` holds the feature, an {edition-...} file and `Interviews/`, and
+# Plex indexes ZERO local extras for it - the interview is on the NAS and invisible. The same film
+# laid out as two sibling folders (`Who Dares Wins (1982)` + `… {edition-Director's Commentary}`)
+# keeps all 4 of its extras. Multiple editions in one movie folder suppress that movie's local
+# extras; see references/naming.md.
+#
+# Checked HERE as well as at the gate because the two catch different things. The gate reads the
+# manifest, which is right when the manifest is authored wrongly - but Sunrise (1927) was already
+# ENCODING to the bad layout when the rule was established, so the only remaining place to stop it
+# was the copy. This reads the FOLDER AS IT ACTUALLY IS, which no authoring mistake can dodge.
+if ($Kind -eq 'Movies') {
+  $extraDirs = @('behind the scenes','featurettes','trailers','interviews','scenes',
+                 'shorts','deleted scenes','other','extras')
+  $topEdition = @($local | Where-Object {
+                   $_.DirectoryName -eq $src -and $_.Name -match '\{edition-' })
+  $localExtras = @($local | Where-Object {
+                   $rel = $_.FullName.Substring($src.Length).TrimStart([char]92)
+                   $seg = ($rel -split [regex]::Escape([string][char]92))
+                   $seg.Count -ge 2 -and $extraDirs -contains $seg[0].ToLowerInvariant() })
+  if ($topEdition.Count -gt 0 -and $localExtras.Count -gt 0) {
+    # PARENTHESISE THE CONCATENATION BEFORE -f.
+    # `"a" + "b" -f $x` binds -f to "b" ALONE, so the placeholders in "a" are emitted literally.
+    # The first version of this guard fired correctly and then reported
+    #   REFUSING: '{0}' holds an edition file AND {1} local extra(s) ...
+    # naming neither the film nor the count - a guard whose message cannot be acted on. Same shape
+    # as the New-Object precedence note in _publish-loop.ps1.
+    $edTag = $topEdition[0].BaseName -replace '^.*(\{edition-[^}]+\}).*$', '$1'
+    throw (("REFUSING: '{0}' holds an edition file AND {1} local extra(s) in the same folder - " +
+            "Plex will index NONE of the extras. Move the edition to its own top-level folder " +
+            "'{0} {2}' first. See references/naming.md.") -f $Work, $localExtras.Count, $edTag)
+  }
+}
+
 # refuse to publish anything that looks unfinished - a truncated mkv has no duration in its header
 $paths   = Get-Content 'D:\video\.transcode-tools\tool-paths.json' -Raw | ConvertFrom-Json
 $ffprobe = Join-Path (Split-Path $paths.ffmpeg) 'ffprobe.exe'
@@ -105,7 +146,7 @@ if ($partial.Count) {
   }
   # Drop them from this pass; the loop re-publishes when they finalise.
   $local = @($local | Where-Object { $partial.FullName -notcontains $_.FullName })
-  if (-not $local) { throw "every file in $src is still partial - nothing to publish yet" }
+  if (-not $local) { throw "REFUSING: every file in $src is still partial - nothing to publish yet" }
 }
 
 # Refuse to publish AHEAD of the OCR pass. The documented order is encode -> OCR -> publish, and
@@ -117,9 +158,10 @@ if ($partial.Count) {
 # A file with a BITMAP subtitle track (dvd_subtitle / hdmv_pgs_subtitle) and no matching sidecar is
 # the signature. Text subtitle tracks and files with no subtitles at all are fine.
 #
-# But wait only for a sidecar that CAN exist. A declared bitmap track carrying no packets (a silent
-# film's empty subtitle shell) can never produce one, and blocking on it strands the work here
-# permanently - see lib-subtitles.ps1.
+# Wait only for a sidecar that CAN exist. Two cases never produce one, and both used to strand a
+# work here permanently: a declared bitmap track with no packets (Camille (1921), a silent film),
+# and a track OCR has already run on and rejected (Knick Knack, a wordless short - the dictionary
+# gate refuses noise, correctly). Test-BitmapSubsPopulated answers both - see lib-subtitles.ps1.
 #
 # The load is VERIFIED for the same reason as the track guard above: if this dot-source fails,
 # Test-BitmapSubsPopulated is simply undefined, every call errors WITHOUT stopping the script,
@@ -201,12 +243,12 @@ if (-not $NoIndex) {
   $base  = [Environment]::GetEnvironmentVariable('PLEX_BASEURL','User')
   if (-not $token -or -not $base) {
     Write-Host '   (PLEX_TOKEN / PLEX_BASEURL not set - skipping reindex)'
-  } elseif (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'plex-index-work.ps1'))) {
-    Write-Warning "   reindex script not found: (Join-Path $PSScriptRoot 'plex-index-work.ps1')"
+  } elseif (-not (Test-Path -LiteralPath ($ixScript = Join-Path $PSScriptRoot 'plex-index-work.ps1'))) {
+    Write-Warning "   reindex script not found: $ixScript"
   } else {
     $plexKind = if ($Kind -eq 'Movies') { 'Movies' } else { 'TV' }
     # Never pipe this through Select-Object -First N: closing the pipe kills the child mid-run.
-    $ixOut = & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'plex-index-work.ps1') -Work $Work -Kind $plexKind 2>&1
+    $ixOut = & pwsh -NoProfile -File $ixScript -Work $Work -Kind $plexKind 2>&1
     $verdict = @($ixOut | Select-String 'OK - every shipped extra|NOT indexed|missing|NOT FOUND')
     if ($verdict) { $verdict | ForEach-Object { "   $_" } }
     else { Write-Warning "   reindex produced no verdict - check manually"; @($ixOut)[-3..-1] | ForEach-Object { "   $_" } }
