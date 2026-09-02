@@ -32,6 +32,30 @@
     title  (int)               DVD only, required. DVD title (PGC) number (see identification.md).
     chapterStart / chapterEnd  DVD only, optional. Extract a chapter RANGE = one episode when a
                                title holds several episodes as chapter ranges.
+    vts / vobSectors           DVD only, optional, TOGETHER. Read a raw CELL-SECTOR RANGE of a
+                               title set instead of going through the dvdvideo demuxer:
+                               vts = the title-set number, vobSectors = [first,last] INCLUSIVE
+                               2048-byte sectors into the concatenation of VTS_<vts>_1..9.VOB
+                               (VTS_<vts>_0.VOB is the MENU domain and is not part of that sector
+                               space - see dvd-still-cells.py). For content NAVIGATION HIDES: The
+                               Champions D1's alternate ending is cells 14-15 of a 15-cell PGC,
+                               the demuxer stops emitting after cell 13 (a cell command ends
+                               playback there), and no chapter covers those cells - so no demuxer
+                               option can reach them. The range is carved to a temp .vob (per-PID
+                               work dir) and byte-verified before use. `title` is still REQUIRED:
+                               audioTracks ordinals on such an item are declared in the DVDVIDEO
+                               TITLE'S stream order (= the order the .tracks.json evidence uses)
+                               and are translated to the cut's own order via MPEG stream ids -
+                               discovery order inside a mid-PGC cut is arbitrary (measured: the
+                               tail cut of The Champions D1 finds 0x81 BEFORE 0x80).
+    expectSeconds (num, opt.)  Post-encode guard, any kind: the OUTPUT's container duration must
+                               be within 2 s of this or the item FAILS and the file is moved
+                               aside as *.wrong-length. For titles where a default read path
+                               yields the WRONG length (the dvdvideo demuxer DECLARES The
+                               Champions D1 t2 as 3049.2s but EMITS 3179.6s; MakeMKV's title is
+                               2494s) - a wrong cut otherwise ships looking perfectly normal.
+    expectFrames (int, opt.)   Same guard on the OUTPUT's video packet count (tolerance 25 - a
+                               cell-seam discontinuity legitimately drops a frame or two).
     subTrack (int|str, opt.)   Which source subtitle to keep. Either a 0-based ordinal, or a
                                LANGUAGE TAG such as "eng" — prefer the tag. Disc subtitle order is
                                arbitrary and often merely alphabetical (dan,eng,fin,nor,swe puts
@@ -356,6 +380,47 @@ function Finalised-Output($path){
   $dv = 0.0; [void][double]::TryParse($d, [ref]$dv)
   return ($dv -gt 0)
 }
+function Extract-VobSectors($it,[string]$dest){
+  # Carve an INCLUSIVE 2048-byte-sector range out of a VTS's TITLE-domain VOB set.
+  # Sector 0 is the first sector of VTS_<vts>_1.VOB; the numbered VOBs concatenate into one
+  # sector space. VTS_<vts>_0.VOB is the MENU domain and is deliberately NOT included - counting
+  # it shifts every offset by the whole menu VOB and yields plausible garbage (dvd-still-cells.py
+  # documents the same trap). Returns $true only when the byte count written equals the byte
+  # count the range demands - a short carve decodes to a plausible-looking truncated clip, which
+  # is this pipeline's characteristic failure, so it is never returned as success.
+  $vts   = [int]$it.vts
+  $first = [long](@($it.vobSectors)[0]); $last = [long](@($it.vobSectors)[1])
+  if($last -lt $first -or $first -lt 0){ throw "vobSectors [$first,$last] is not a valid range" }
+  $vtDir = Join-Path "$($it.src)" 'VIDEO_TS'
+  if(-not (Test-Path -LiteralPath $vtDir)){ throw "no VIDEO_TS under $($it.src)" }
+  $parts = @()
+  foreach($n in 1..9){
+    $p = Join-Path $vtDir ('VTS_{0:D2}_{1}.VOB' -f $vts, $n)
+    if(Test-Path -LiteralPath $p){ $parts += Get-Item -LiteralPath $p }
+  }
+  if(-not $parts.Count){ throw ('no VTS_{0:D2}_n.VOB under {1}' -f $vts, $vtDir) }
+  $want = ($last - $first + 1) * 2048
+  $startByte = $first * 2048
+  $outFs = [IO.File]::Create($dest)
+  try {
+    $buf = New-Object byte[] 4194304
+    $pos = [long]0; $remaining = [long]$want
+    foreach($f in $parts){
+      $fileStart = $pos; $pos = $pos + $f.Length
+      if($pos -le $startByte -or $remaining -le 0){ continue }
+      $fs = [IO.File]::OpenRead($f.FullName)
+      try {
+        $fs.Position = [Math]::Max([long]0, $startByte - $fileStart)
+        while($remaining -gt 0){
+          $got = $fs.Read($buf, 0, [int][Math]::Min([long]$buf.Length, $remaining))
+          if($got -le 0){ break }
+          $outFs.Write($buf, 0, $got); $remaining -= $got
+        }
+      } finally { $fs.Close() }
+    }
+  } finally { $outFs.Close() }
+  return ((Get-Item -LiteralPath $dest).Length -eq $want)
+}
 function InSpec($it,[switch]$Hwaccel){   # ffmpeg/ffprobe input args (demuxer + -i) for this item
   # -hwaccel cuda decodes on the GPU and hands frames back in system memory, so the crop/bwdif
   # filters and PGS handling are unaffected. NOT applied to ffprobe calls (probing is cheap) and
@@ -363,6 +428,11 @@ function InSpec($it,[switch]$Hwaccel){   # ffmpeg/ffprobe input args (demuxer + 
   # decoder has no frame-level threading and pegs a single core).
   $hw = if($Hwaccel -and $it.kind -ne 'DVD'){ @('-hwaccel','cuda') } else { @() }
   if($it.kind -eq 'DVD'){
+    # A raw cell-range cut (vobSectors) was already carved to a plain MPEG-PS file in the work
+    # dir - read that. The mpeg demuxer flags TS_DISCONT, so ffmpeg rebases the timestamp reset
+    # at a cell seam instead of mangling it (measured: cells 14-15 of The Champions D1 encode to
+    # a continuous 147.92 s).
+    if(Has $it '_cutFile'){ return @('-i',$it._cutFile) }
     $s = @('-f','dvdvideo','-title',[string]$it.title)
     # A DVD still-set (gallery, biography, infopod page) is a chain of ~0.40 s padding cells, and
     # the demuxer REFUSES such a title outright without this - "looks empty (may consist of padding
@@ -493,6 +563,61 @@ foreach($it in $items){
     if($odv -gt 0){ Write-Output "   skip (exists)"; continue }
     Write-Output "   existing output is UNFINALISED (no duration) - re-encoding it"
     Remove-Item -LiteralPath $it.out -Force -ErrorAction SilentlyContinue
+  }
+
+  # --- DVD raw cell-range cut (vts + vobSectors) ----------------------------------------------
+  # Carve the stated sector range to a temp .vob, then TRANSLATE the manifest's audio ordinals.
+  # The manifest (and the .tracks.json evidence it was gated against) speaks in the DVDVIDEO
+  # TITLE'S stream order; a mid-PGC cut discovers streams in an arbitrary order (the tail cut of
+  # The Champions D1 finds 0x81 before 0x80), so ordinals are resolved via MPEG stream ids -
+  # measured on both ends, never assumed. Any id the cut does not carry is a hard per-item FAIL:
+  # falling back to "whatever a:N is" ships the wrong audio with a correct label.
+  if($it.kind -eq 'DVD' -and (Has $it 'vobSectors')){
+    if(-not (Has $it 'vts') -or -not (Has $it 'title') -or @($it.vobSectors).Count -ne 2){
+      Write-Output '   !! FAILED - vobSectors requires vts, title and a [firstSector,lastSector] pair'
+      $failCount++; continue
+    }
+    $cut = Join-Path $work ("cut$i.vob")
+    $cutOk = $false
+    try { $cutOk = Extract-VobSectors $it $cut }
+    catch { Write-Output "   !! FAILED - vobSectors carve: $_" }
+    if(-not $cutOk){
+      if(Test-Path -LiteralPath $cut){ Write-Output '   !! FAILED - carve wrote a SHORT range (would encode a plausible truncated clip)' }
+      $failCount++; continue
+    }
+    Write-Output ('   vobSectors {0}..{1} of VTS_{2:D2} -> {3:N0} bytes carved and byte-verified' -f `
+      [long](@($it.vobSectors)[0]), [long](@($it.vobSectors)[1]), [int]$it.vts, (Get-Item -LiteralPath $cut).Length)
+    if((Has $it 'audioTracks') -and @($it.audioTracks).Count -gt 0){
+      $titleIds = @(& $fp -v error -f dvdvideo -title ([string]$it.title) -select_streams a -show_entries stream=id -of csv=p=0 "$($it.src)" 2>$null | ForEach-Object { "$_".Trim().TrimEnd(',') } | Where-Object { $_ -match '^0x' })
+      $cutIds   = @(& $fp -v error -select_streams a -show_entries stream=id -of csv=p=0 $cut 2>$null | ForEach-Object { "$_".Trim().TrimEnd(',') } | Where-Object { $_ -match '^0x' })
+      $mapTC = @{}; $mapBad = $null
+      foreach($t in @($it.audioTracks | ForEach-Object { [int]$_ })){
+        if($t -ge $titleIds.Count){ $mapBad = "a:$t is not a stream of dvdvideo title $($it.title) (it has $($titleIds.Count) audio streams)"; break }
+        $id = $titleIds[$t]; $c = [array]::IndexOf($cutIds, $id)
+        if($c -lt 0){ $mapBad = "stream $id (title a:$t) is not present in the carved range - the cut cannot ship it"; break }
+        $mapTC[$t] = $c
+        Write-Output ("   audio title a:{0} ({1}) -> cut a:{2}" -f $t, $id, $c)
+      }
+      if(-not $mapBad){
+        foreach($fld in 'commentary','audioDescription'){
+          if(-not (Has $it $fld)){ continue }
+          $new = @()
+          foreach($e in @($it.$fld)){
+            if($e -is [array]){ $e2 = @($e); $ix = [int]$e2[0] } else { $ix = [int]$e }
+            if(-not $mapTC.ContainsKey($ix)){ $mapBad = "$fld a:$ix is not among the kept audioTracks, so it cannot be translated"; break }
+            if($e -is [array]){ $e2[0] = $mapTC[$ix]; $new += ,$e2 } else { $new += $mapTC[$ix] }
+          }
+          if($mapBad){ break }
+          $it.$fld = $new
+        }
+      }
+      if($mapBad){
+        Write-Output "   !! FAILED - vobSectors audio translation: $mapBad"
+        $failCount++; continue
+      }
+      $it.audioTracks = @($it.audioTracks | ForEach-Object { $mapTC[[int]$_] })
+    }
+    $it | Add-Member -NotePropertyName '_cutFile' -NotePropertyValue $cut -Force
   }
 
   $inspec = InSpec $it                       # probes: software decode, they only read headers
@@ -912,9 +1037,34 @@ foreach($it in $items){
   }
   # Success = ffmpeg said it succeeded AND the container is finalised. See Finalised-Output for why
   # a byte-size floor is wrong in both directions (danger-man-s1d6, 2026-09-02).
-  if(($ffExit -eq 0) -and (Finalised-Output $it.out)){ Write-Output ("   OK {0:N2}GB in {1}s" -f ((Get-Item -LiteralPath $it.out).Length/1GB),$secs) }
+  $itemOk = ($ffExit -eq 0) -and (Finalised-Output $it.out)
+  # expectSeconds / expectFrames: length verification for items where a DEFAULT read path yields
+  # the WRONG length while everything else looks normal - exit 0, finalised container, plausible
+  # size. The Champions D1 t2 is the founding case: the dvdvideo demuxer declares 3049.2 s, MakeMKV
+  # enumerates 2494 s, and the true published cut is 3179.6 s; a wrong cut here differs by MINUTES,
+  # so the 2 s / 25-frame tolerances are generous to seam effects and hostile to every known
+  # failure mode. The wrong-length file is MOVED ASIDE, not left in place - a finalised output at
+  # `out` is what the resume check trusts, so leaving it would make the failure permanent.
+  if($itemOk -and (Has $it 'expectSeconds')){
+    $gd = 0.0; [void][double]::TryParse("$(& $fp -v error -show_entries format=duration -of csv=p=0 $it.out 2>$null)".Trim().TrimEnd(','), [ref]$gd)
+    if([Math]::Abs($gd - [double]$it.expectSeconds) -gt 2.0){
+      Write-Output ("   !! WRONG LENGTH - output is {0:N2}s, manifest expects {1:N2}s; moved aside as .wrong-length" -f $gd, [double]$it.expectSeconds)
+      Move-Item -LiteralPath $it.out -Destination "$($it.out).wrong-length" -Force
+      $itemOk = $false
+    }
+  }
+  if($itemOk -and (Has $it 'expectFrames')){
+    $gfTxt = "$(& $fp -v error -count_packets -select_streams v:0 -show_entries stream=nb_read_packets -of csv=p=0 $it.out 2>$null)".Trim().TrimEnd(',')
+    $gf = 0; [void][int]::TryParse($gfTxt, [ref]$gf)
+    if([Math]::Abs($gf - [int]$it.expectFrames) -gt 25){
+      Write-Output ("   !! WRONG LENGTH - output has {0:N0} video frames, manifest expects {1:N0}; moved aside as .wrong-length" -f $gf, [int]$it.expectFrames)
+      Move-Item -LiteralPath $it.out -Destination "$($it.out).wrong-length" -Force
+      $itemOk = $false
+    }
+  }
+  if($itemOk){ Write-Output ("   OK {0:N2}GB in {1}s" -f ((Get-Item -LiteralPath $it.out).Length/1GB),$secs) }
   else { Write-Output "   !! FAILED ($secs s, ffmpeg exit $ffExit)"; $failCount++ }
-  Remove-Item "$work\s$i.sup","$work\s${i}_fixed.sup" -ErrorAction SilentlyContinue
+  Remove-Item "$work\s$i.sup","$work\s${i}_fixed.sup","$work\cut$i.vob" -ErrorAction SilentlyContinue
 }
 
 # ---------------------------------------------------------------------------------------------

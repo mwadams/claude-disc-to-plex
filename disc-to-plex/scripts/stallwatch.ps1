@@ -31,6 +31,10 @@ param(
   # `<disc>.authoring` markers for one currently being written - see below.
   [string]$Pending   = 'D:/video/_pending',
   [string]$Queue     = 'D:/video/_queue',
+  # Parameterised for the same reason as the directories above: the ships-nothing branch below is
+  # tested against a sandbox, and a hard-coded register would force every fixture disc to be
+  # written into the REAL verified-copies file to be seen at all.
+  [string]$FetchDoneFile = 'D:/video/_fetch-done.txt',
   [switch]$Quiet          # print nothing when every unit is either busy or held
 )
 
@@ -50,7 +54,7 @@ $queued     = @(Get-ChildItem "$Queue/*.json" -ErrorAction SilentlyContinue).Cou
 $running    = @(Get-ChildItem "$Queue/running/*.json" -ErrorAction SilentlyContinue).Count
 $units      = @(Get-ChildItem $Stage -Directory -ErrorAction SilentlyContinue)
 # Only VERIFIED copies appear here - _fetch-one.ps1 writes a line after matching count and bytes.
-$fetchDone  = @(Get-Content 'D:/video/_fetch-done.txt' -ErrorAction SilentlyContinue |
+$fetchDone  = @(Get-Content -LiteralPath $FetchDoneFile -ErrorAction SilentlyContinue |
                 Where-Object { $_ -and $_.Trim() } | ForEach-Object { $_.Trim() })
 
 $stalls = @()
@@ -155,6 +159,45 @@ foreach ($u in $units) {
   $pathRx = '_stage[\\/]' + [regex]::Escape($name) + '(?=["\\/])'
   $mentioned = @(Get-ChildItem $manifestDirs -ErrorAction SilentlyContinue |
                  Where-Object { (Get-Content -LiteralPath $_.FullName -Raw) -match $pathRx })
+
+  # A DISC THAT LEGITIMATELY SHIPS NOTHING IS CLOSED, NOT WAITING ON A MANIFEST.
+  #
+  # The Champions Disk 3 (2026-09-03): fully dispositioned, assert-accounted -RequireEvidence
+  # exit 0, and its dispositions' verdict is that NOTHING on it is worth shipping (no subtitles,
+  # no second audio, no tail cells, no quality gain - all already published). Correct, useful,
+  # and unrepresentable: with no output there is no manifest, so this board said "needs MANIFEST"
+  # forever - a PERMANENT false positive, the one failure this tool's header says it cannot
+  # afford, and several sister discs are expected to repeat it.
+  #
+  # The closure is a POSITIVE RECORD, never an absence: close-ships-nothing.ps1 writes
+  # <disc>.ships-nothing.json into _catalogue only after the dispositions carry the verdict, no
+  # manifest anywhere references the disc, and the accounting gate passes with evidence. A disc
+  # with no record still reads "needs MANIFEST" below - absence of a manifest must NEVER quietly
+  # become "nothing to ship"; that is exactly how a disc whose manifest was simply never written
+  # gets dropped (_fetch-done.txt's header records losing one that way).
+  #
+  # Two ways the record can be WRONG are stalls, reported louder than they'd be ignored:
+  #   - the dispositions changed after closure (hash mismatch) - the record's evidence is stale;
+  #   - a manifest now references the disc - "ships nothing" is contradicted by the pipeline.
+  $snPath = Join-Path $Catalogue "$name.ships-nothing.json"
+  if (Test-Path -LiteralPath $snPath) {
+    $sn = $null
+    try { $sn = Get-Content -LiteralPath $snPath -Raw | ConvertFrom-Json } catch { }
+    $dispShaNow = if (Test-Path -LiteralPath $disp) { (Get-FileHash -LiteralPath $disp -Algorithm SHA256).Hash } else { '' }
+    if (-not $sn -or -not $sn.dispositionsSha256) {
+      $stalls += "{0,-28} ships-nothing record UNREADABLE -> inspect {1}" -f $name, $snPath
+    } elseif ($sn.dispositionsSha256 -ne $dispShaNow) {
+      $stalls += "{0,-28} ships-nothing record is STALE - the dispositions changed after closure -> re-run close-ships-nothing.ps1" -f $name
+    } elseif ($mentioned.Count -gt 0) {
+      $stalls += "{0,-28} closed SHIPS NOTHING yet {1} manifest(s) reference it ({2}) - contradiction, investigate" -f $name, $mentioned.Count, (($mentioned.Name) -join ', ')
+    } else {
+      $why = "$($sn.because)"
+      if ($why.Length -gt 90) { $why = $why.Substring(0, 90) + '...' }
+      $moving += "{0,-28} closed: SHIPS NOTHING ({1}) - {2}; staging releases via a user-confirmed reclaim artefact" -f $name, "$($sn.closedAt)", $why
+    }
+    continue
+  }
+
   if ($mentioned.Count -eq 0) {
     # A RIP FOLDER THAT NO MANIFEST READS IS REDUNDANT, NOT UNFINISHED.
     #
