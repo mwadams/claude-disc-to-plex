@@ -19,6 +19,23 @@ param(
   [ValidateSet('Movies','Television Shows')][string]$Kind = 'Movies',
   [switch]$Overwrite,
   [switch]$SkipSubtitleCheck,   # publish a work whose bitmap subs are deliberately not being OCR'd
+  # SHIP THE SIDECARS AND LEAVE THE VIDEO ALONE.
+  #
+  # For a work whose media is ALREADY on the NAS and correct, but which was published by a legacy
+  # encode that muxed no subtitle stream. Boston Legal Seasons 1 and 3 are 41 such episodes: the
+  # picture is fine and matches the disc (verified at two landmarks 38 minutes apart), and the only
+  # thing missing is the subtitles - which the library OCR campaign can never supply, because it
+  # reads tracks from INSIDE files that are already published and these have none.
+  #
+  # Re-encoding is how the subtitle gets made; this switch is about not SHIPPING the result twice.
+  # It avoids pushing ~5.6 GB per episode back over SMB, avoids disturbing a published file that is
+  # already correct, and avoids the supersedes/retire-list machinery entirely.
+  #
+  # The local output must therefore be named to match the file ALREADY on the NAS, because Plex
+  # matches a sidecar on the media basename. That is the manifest's job, not this script's - set
+  # `out` to the existing published name (e.g. `Boston Legal  S01E01.mkv`, two spaces and no
+  # episode title) so OCR writes `Boston Legal  S01E01.eng.srt` and it lands beside its media.
+  [switch]$SubtitlesOnly,
   [string]$LocalRoot = 'D:\video',
   [string]$NasRoot   = '\\NASTEAMV\Multimedia',
   [switch]$NoIndex,   # skip the Plex reindex (copy only)
@@ -44,6 +61,16 @@ if (-not (Test-Path -LiteralPath $src)) { throw "no such local work: $src" }
 
 $local = @(Get-ChildItem -LiteralPath $src -Recurse -File)
 if (-not $local) { throw "nothing to publish in $src" }
+
+if ($SubtitlesOnly) {
+  # Narrow the REPORTING/VERIFICATION list here; the copy itself is narrowed at the robocopy call
+  # below. Both are required - see the /XF comment there for why filtering this list alone is not
+  # enough, and would put the video on the NAS while the report counted only the sidecars.
+  $local = @($local | Where-Object { $_.Extension -eq '.srt' })
+  if (-not $local) {
+    throw "-SubtitlesOnly but no .srt in $src - OCR has not run yet, or its sidecars are named differently. Refusing rather than publishing nothing and calling it success."
+  }
+}
 
 # refuse to publish anything that looks unfinished - a truncated mkv has no duration in its header
 $paths   = Get-Content 'D:\video\.transcode-tools\tool-paths.json' -Raw | ConvertFrom-Json
@@ -136,7 +163,11 @@ if (-not $Overwrite) { $flags += @('/XC','/XN','/XO') }
 # half-file on the server, which is strictly worse than the stall this change fixes. /XF takes full
 # paths and is the only thing that actually keeps them back.
 if ($partial.Count) { $flags += '/XF'; $flags += @($partial | ForEach-Object { $_.FullName }) }
-robocopy $src $dst @flags | Out-Null
+# SAME REASONING FOR -SubtitlesOnly. robocopy's file spec is positional, before the switches, and
+# it is the only thing that stops /E dragging the .mkv along. Narrowing $local above governs what
+# is REPORTED and VERIFIED; this governs what actually moves.
+$fileSpec = if ($SubtitlesOnly) { @('*.srt') } else { @() }
+robocopy $src $dst @fileSpec @flags | Out-Null
 $rcExit = $LASTEXITCODE
 if ($rcExit -ge 8) {
   Write-Warning "robocopy exit $rcExit - the >=8 bit means at least one item failed. Log: $rcLog"

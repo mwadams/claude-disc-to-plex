@@ -53,6 +53,7 @@ if (-not (Get-Command Test-BitmapSubsAttemptable -ErrorAction SilentlyContinue) 
 
 while ($true) {
   $did = $false
+
   foreach ($f in Get-ChildItem 'D:\video\Movies','D:\video\Television Shows' -Recurse -File -Filter *.mkv -ErrorAction SilentlyContinue) {
     # skip anything still being written - no duration in the header yet
     $d = "$(& $ffprobe -v error -show_entries format=duration -of csv=p=0 $f.FullName 2>$null)".Trim()

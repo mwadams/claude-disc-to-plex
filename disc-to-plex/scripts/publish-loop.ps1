@@ -87,6 +87,21 @@ while ($true) {
 
       $args = @('-File', 'D:\video\_publish.ps1', '-Work', $w.Name, '-Kind', $kind)
       if ($stale) { $args += '-Overwrite'; "{0,-46} wrong-size copy on NAS -> republishing with -Overwrite" -f $w.Name }
+
+      # SIDECARS ONLY, IF THE WORK SAYS SO. A `.subtitles-only` marker in the work folder means the
+      # media is ALREADY on the NAS and correct, and only the .srt should travel - the case where a
+      # legacy encode published the episodes with no subtitle stream, so the library OCR campaign
+      # can never reach them (it reads tracks from inside files that are already published).
+      # The local encode exists solely to produce the subtitle; shipping it again would push GBs
+      # back over SMB and disturb a published file that is already right.
+      #
+      # A MARKER FILE, not a flag here, because the fact belongs to the WORK and must survive a
+      # loop restart, a context compaction and whoever looks next. Dropped by whoever authors the
+      # manifest - which is already the one manual step in this pipeline.
+      if (Test-Path -LiteralPath (Join-Path $w.FullName '.subtitles-only')) {
+        $args += '-SubtitlesOnly'
+        "{0,-46} .subtitles-only marker -> publishing sidecars only, leaving the NAS media alone" -f $w.Name
+      }
       $out = & pwsh @args 2>&1
       # MATCH THE MESSAGE, NOT THE SOURCE LINE THAT RAISED IT.
       #
