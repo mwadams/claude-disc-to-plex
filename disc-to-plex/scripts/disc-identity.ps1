@@ -98,6 +98,18 @@ function Get-TitleRec($rec, [int]$n) {
   $t[0]
 }
 
+# SET-OR-ADD. Assigning to a property a ConvertFrom-Json object has not got THROWS under
+# ErrorActionPreference='Stop' - the same defect as the `updated` stamp below, and it bit again
+# on 2026-09-02: every record written by sweep-drive.ps1 (all 201 on the drive) carries title
+# objects with claims but NO `resolved`/`method`/`evidence`/`confidence`/`resolvedOn`, so
+# `-Action Resolve` failed on ALL of them with "property 'resolved' cannot be found" and four
+# proven Boston Legal identities could not be written. Adding the property upgrades the record
+# in place on the next save; every field the old record already had is untouched.
+function Set-Prop($obj, [string]$name, $value) {
+  if ($obj.PSObject.Properties.Name -contains $name) { $obj.$name = $value }
+  else { $obj | Add-Member -NotePropertyName $name -NotePropertyValue $value -Force }
+}
+
 switch ($Action) {
 
   'Lookup' {
@@ -133,8 +145,11 @@ switch ($Action) {
   'Claim' {
     if ($Title -lt 0) { throw '-Title is required' }
     $t = Get-TitleRec $rec $Title
-    $t.claims.$ClaimSource = [pscustomobject]@{ season=$Season; episode=$Episode; name=$Name
-                                           matchedBy='operator'; recorded=(Get-Date -Format 'yyyy-MM-dd') }
+    if ($t.PSObject.Properties.Name -notcontains 'claims' -or $null -eq $t.claims) {
+      Set-Prop $t 'claims' ([pscustomobject]@{})
+    }
+    Set-Prop $t.claims $ClaimSource ([pscustomobject]@{ season=$Season; episode=$Episode; name=$Name
+                                           matchedBy='operator'; recorded=(Get-Date -Format 'yyyy-MM-dd') })
     Write-Host "recorded $ClaimSource claim for t$Title"
   }
 
@@ -183,11 +198,11 @@ switch ($Action) {
         clip         = if ($m.Groups['clip'].Success) { $m.Groups['clip'].Value } else { $null }
       }
     }
-    $rec.outputs = @($rec.outputs | Where-Object { $_.outFile -ne $OutFile }) + @([pscustomobject]@{
+    Set-Prop $rec 'outputs' (@($rec.outputs | Where-Object { $_.outFile -ne $OutFile }) + @([pscustomobject]@{
       outFile = $OutFile; kind = $Kind; work = $Work; season = $Season; episode = $Episode
       name = $Name; sources = $srcs; method = $Method; evidence = $Evidence
       confidence = $Confidence; resolvedOn = (Get-Date -Format 'yyyy-MM-dd')
-    })
+    }))
     foreach ($src in 'mymovies','plex') {
       foreach ($s in $srcs) {
         $t = @($rec.titles | Where-Object { $_.makemkvTitle -eq $s.makemkvTitle })[0]
@@ -195,8 +210,9 @@ switch ($Action) {
         if ($c -and $Season -ge 0 -and ($c.season -ne $Season -or $c.episode -ne $Episode)) {
           $detail = "{0} claimed t{1} = S{2:D2}E{3:D2}, recorded as S{4:D2}E{5:D2} by {6}" -f `
                     $src, $s.makemkvTitle, $c.season, $c.episode, $Season, $Episode, $Method
-          $rec.disagreements += [pscustomobject]@{ title=$s.makemkvTitle; source=$src
-                                                   detail=$detail; recorded=(Get-Date -Format 'yyyy-MM-dd') }
+          Set-Prop $rec 'disagreements' (@($rec.disagreements | Where-Object { $null -ne $_ }) +
+            @([pscustomobject]@{ title=$s.makemkvTitle; source=$src
+                                 detail=$detail; recorded=(Get-Date -Format 'yyyy-MM-dd') }))
           Write-Host "  DISAGREEMENT FILED: $detail" -ForegroundColor Yellow
         }
       }
@@ -214,11 +230,11 @@ switch ($Action) {
       throw "-Evidence is required for $Method - a resolution with no evidence is an assertion"
     }
     $t = Get-TitleRec $rec $Title
-    $t.resolved   = [pscustomobject]@{ kind=$Kind; work=$Work; season=$Season; episode=$Episode; name=$Name }
-    $t.method     = $Method
-    $t.evidence   = $Evidence
-    $t.confidence = $Confidence
-    $t.resolvedOn = (Get-Date -Format 'yyyy-MM-dd')
+    Set-Prop $t 'resolved'   ([pscustomobject]@{ kind=$Kind; work=$Work; season=$Season; episode=$Episode; name=$Name })
+    Set-Prop $t 'method'     $Method
+    Set-Prop $t 'evidence'   $Evidence
+    Set-Prop $t 'confidence' $Confidence
+    Set-Prop $t 'resolvedOn' (Get-Date -Format 'yyyy-MM-dd')
 
     # preserve any conflict rather than quietly overwriting it
     foreach ($src in 'mymovies','plex') {
@@ -226,8 +242,9 @@ switch ($Action) {
       if ($c -and ($c.season -ne $Season -or $c.episode -ne $Episode)) {
         $detail = "{0} claimed S{1:D2}E{2:D2}, resolved to S{3:D2}E{4:D2} by {5}" -f `
                   $src, $c.season, $c.episode, $Season, $Episode, $Method
-        $rec.disagreements += [pscustomobject]@{ title=$Title; source=$src; detail=$detail
-                                                 recorded=(Get-Date -Format 'yyyy-MM-dd') }
+        Set-Prop $rec 'disagreements' (@($rec.disagreements | Where-Object { $null -ne $_ }) +
+          @([pscustomobject]@{ title=$Title; source=$src; detail=$detail
+                               recorded=(Get-Date -Format 'yyyy-MM-dd') }))
         Write-Host "  DISAGREEMENT FILED: $detail" -ForegroundColor Yellow
       }
     }
