@@ -24,6 +24,23 @@ $items = Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json
 if ($items -isnot [array]) { $items = @($items) }
 
 $problems = @()
+
+# ABSENT EVIDENCE IS A "NOT YET", NOT A REFUSAL - and the two must not share an exit code.
+#
+# A manifest is authored as soon as its dispositions are settled, but the per-title audio evidence
+# is produced afterwards by _analyse-loop.ps1's dvdvideo pass, which takes minutes per title. So a
+# DVD TV manifest ALWAYS arrives before its evidence and, when both conditions were exit 2,
+# lane-runner moved every one of them to _queue\failed on first sight. Babylon 5 Season 4 Disk 5
+# did exactly that on 2026-09-01: the analyse loop was mid-way through title 2 at the moment the
+# lane rejected it, and the manifest needed a human to put it back.
+#
+# This is the same distinction _ocr-loop.ps1 and _rip-loop.ps1 both had to learn:
+#     exhausted / refused - a positive finding: stop
+#     (nothing there yet) - a resource we do not have YET: wait and retry
+# So absences are collected separately and reported as exit 4. Deciding it by EXIT CODE rather
+# than by matching the message text is deliberate: this project has been bitten repeatedly by
+# reading an outcome out of anticipated strings.
+$absent = @()
 $checked = 0
 
 # HOW MANY GATED ITEMS SHARE EACH `src`?
@@ -114,15 +131,15 @@ foreach ($it in $items) {
     if (Test-Path -LiteralPath $titleEv) {
       $ev = $titleEv
     } elseif ([int]$gatedPerSrc["$($it.src)"] -gt 1) {
-      $problems += "$(Split-Path $out -Leaf): AMBIGUOUS EVIDENCE - $([int]$gatedPerSrc[""$($it.src)""]) " +
-                   "gated items share this DVD folder, so '$(Split-Path $ev -Leaf)' cannot be " +
-                   "evidence for title $($it.title) specifically. Write " +
-                   "'$(Split-Path $titleEv -Leaf)' (analyze-tracks.py --out) and re-run."
+      $absent += "$(Split-Path $out -Leaf): AMBIGUOUS EVIDENCE - $([int]$gatedPerSrc[""$($it.src)""]) " +
+                 "gated items share this DVD folder, so '$(Split-Path $ev -Leaf)' cannot be " +
+                 "evidence for title $($it.title) specifically. Awaiting " +
+                 "'$(Split-Path $titleEv -Leaf)' (_analyse-loop.ps1 writes it)."
       continue
     }
   }
   if (-not (Test-Path -LiteralPath $ev)) {
-    $problems += "$(Split-Path $out -Leaf): NO EVIDENCE - run analyze-tracks.py on $($it.src)"
+    $absent += "$(Split-Path $out -Leaf): NO EVIDENCE yet for $($it.src) (_analyse-loop.ps1 writes it)"
     continue
   }
 
@@ -265,6 +282,39 @@ foreach ($it in $items) {
     }
   }
 
+  # AN UNRESOLVED `commentary?` MUST NOT PASS SILENTLY.
+  #
+  # This gate's founding limitation was that it only checks claims that are MADE: an item that
+  # never mentions a commentary makes no claim, so there was nothing to verify and it passed.
+  # That is exactly how Babylon 5 S01E13 shipped without its Straczynski commentary - the manifest
+  # said `audioTracks: [0]`, which was internally consistent and completely wrong.
+  #
+  # analyze-tracks.py now KEEPS an uncertain track in its proposal and names it in
+  # `commentaryUncertain`. This closes the other half: if the evidence says "there is a stream here
+  # that might be a commentary", the manifest must SAY WHICH IT IS. Two ways to satisfy it -
+  #   tag it:   commentary: [[<n>, "Audio Commentary with ..."]]
+  #   reject it: notCommentary: [<n>]        (a dub, a duplicate mix, a second language)
+  # Either is a decision. Silence is not, and silence is what loses commentaries.
+  if ($a.proposal -and $a.proposal.PSObject.Properties.Name -contains 'commentaryUncertain') {
+    $tagged = @()
+    if ($it.PSObject.Properties.Name -contains 'commentary') {
+      foreach ($e in @($it.commentary)) { $tagged += if ($e -is [array]) { [int]$e[0] } else { [int]$e } }
+    }
+    $rejected = @()
+    if ($it.PSObject.Properties.Name -contains 'notCommentary') {
+      foreach ($e in @($it.notCommentary)) { $rejected += [int]$e }
+    }
+    foreach ($u in @($a.proposal.commentaryUncertain)) {
+      $ui = [int]$u
+      if ($tagged -notcontains $ui -and $rejected -notcontains $ui) {
+        $problems += "$(Split-Path $out -Leaf): a:$ui is flagged `commentaryUncertain` in the " +
+                     "evidence and the manifest neither tags it nor rejects it. LISTEN TO IT, " +
+                     "then either add commentary: [[$ui, `"...`"]] or notCommentary: [$ui]. " +
+                     "Ignoring it is how S01E13 shipped without its commentary"
+      }
+    }
+  }
+
   if ($it.PSObject.Properties.Name -contains 'audioDescription') {
     foreach ($e in @($it.audioDescription)) {
       $di = if ($e -is [array]) { [int]$e[0] } else { [int]$e }
@@ -285,13 +335,26 @@ if ($checked -eq 0) {
   exit 0
 }
 
-if ($problems.Count -eq 0) {
+if ($problems.Count -eq 0 -and $absent.Count -eq 0) {
   Write-Output "audio evidence OK - $checked item(s) verified against their .tracks.json"
   exit 0
 }
 
-Write-Warning "AUDIO CLAIMS NOT SUPPORTED BY EVIDENCE ($($problems.Count)):"
-$problems | ForEach-Object { Write-Warning "   $_" }
+if ($problems.Count -gt 0) {
+  Write-Warning "AUDIO CLAIMS NOT SUPPORTED BY EVIDENCE ($($problems.Count)):"
+  $problems | ForEach-Object { Write-Warning "   $_" }
+  if ($absent.Count -gt 0) {
+    Write-Warning "and $($absent.Count) item(s) have no evidence yet:"
+    $absent | ForEach-Object { Write-Warning "   $_" }
+  }
+  if ($WarnOnly) { exit 0 }
+  Write-Warning "Refusing. Correct the manifest to match the evidence, or re-run analyze-tracks.py."
+  exit 2
+}
+
+# Only absences: nothing CONTRADICTS the manifest, the evidence simply has not been written yet.
+# Exit 4 so lane-runner can put this back in the queue instead of failing it.
+Write-Warning "EVIDENCE NOT WRITTEN YET ($($absent.Count)) - this is a WAIT, not a refusal:"
+$absent | ForEach-Object { Write-Warning "   $_" }
 if ($WarnOnly) { exit 0 }
-Write-Warning "Refusing. Re-run analyze-tracks.py, or correct the manifest to match the evidence."
-exit 2
+exit 4

@@ -22,6 +22,7 @@
 
 param(
   [string]$Stage     = 'D:/video/_stage',
+  [string]$Catalogue = 'D:/video/_catalogue',
   [string]$Analyzer  = 'D:/video/.claude/skills/disc-to-plex/scripts/analyze-tracks.py',
   [string]$ToolPaths = 'D:/video/.transcode-tools/tool-paths.json',
   [switch]$Once      # one pass then exit - for tests; production runs without it
@@ -146,6 +147,88 @@ while ($true) {
       } finally {
         $fileMutex.ReleaseMutex()
         $fileMutex.Dispose()
+      }
+      $did = $true
+    }
+  }
+
+  # ---- DVD TITLES. The rip folders above cannot cover these, BY DESIGN. ----------------------
+  #
+  # A DVD dispositioned `episode` is deliberately never ripped: the manifest reads the disc FOLDER
+  # through `-f dvdvideo -title N`, so a MakeMKV rip would be pure waste. The consequence was that
+  # NO loop produced audio evidence for those titles - and assert-tracks-analysed.ps1 REQUIRES it,
+  # keyed `<disc>.title<N>.tracks.json`, whenever several gated items share one disc folder.
+  #
+  # So every DVD TV disc reached the queue needing an analysis nothing ran. On 2026-09-01 that was
+  # hand-driven again (Babylon 5 Disk 6, titles 1 and 37) - and WORKING-AGREEMENT.md's answer to
+  # "no script does it" is to write the script, not to run it by hand once. This is that script.
+  #
+  # KEYED BY DVDVIDEO NUMBER, WHICH IS WHY IT IS SAFE TO DRIVE FROM THE CATALOGUE.
+  # The catalogue's `dvdvideoTitle` column is matched by duration and is sometimes ROTATED against
+  # the MakeMKV numbering (flagged `mappingAmbiguous`; observed on Disks 1, 4 and 5 of this very
+  # set). That does not endanger the evidence: the file is named for the dvdvideo title actually
+  # analysed, and the manifest cites the same dvdvideo number. A mapping error can therefore only
+  # make us analyse a title nobody wanted - wasted minutes - never file one title's audio under
+  # another's name. It FAILS CLOSED: the missing evidence stops the manifest at the gate, loudly.
+  foreach ($discDir in @(Get-ChildItem $Stage -Directory -ErrorAction SilentlyContinue |
+                         Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'VIDEO_TS') })) {
+    if (Test-Path -LiteralPath (Join-Path $discDir.FullName '.HOLD')) { continue }
+    $disc = $discDir.Name
+    $dispPath = Join-Path $Catalogue "$disc.dispositions.txt"
+    $catPath  = Join-Path $Catalogue "$disc.catalogue.json"
+    if (-not (Test-Path -LiteralPath $dispPath) -or -not (Test-Path -LiteralPath $catPath)) { continue }
+
+    # Which MakeMKV titles are KEPT? Unfinished dispositions ('?') mean the answer is not settled.
+    $lines = @(Get-Content -LiteralPath $dispPath -ErrorAction SilentlyContinue)
+    if ($lines | Where-Object { $_ -match '^t\d+\|\?\|' }) { continue }
+    $keep = @()
+    foreach ($l in $lines) { if ($l -match '^t(\d+)\|(feature|extra|episode)\|') { $keep += [int]$Matches[1] } }
+    if ($keep.Count -eq 0) { continue }
+
+    $cj = Get-Content -LiteralPath $catPath -Raw | ConvertFrom-Json
+    $dvdTitles = @()
+    foreach ($t in $cj.titles) {
+      if (($keep -contains [int]$t.title) -and $t.dvdvideoTitle) { $dvdTitles += [int]$t.dvdvideoTitle }
+    }
+    foreach ($n in ($dvdTitles | Sort-Object -Unique)) {
+      $evidence = Join-Path $Stage "$disc.title$n.tracks.json"
+      if (Test-Path -LiteralPath $evidence) { continue }
+
+      # ONE audio stream needs no evidence - assert-tracks-analysed exempts a lone `audioTracks:[0]`
+      # because there is nothing to choose between. Skip those rather than burn whisper on them.
+      $na = @(& $ffprobe -v error -f dvdvideo -title $n -i $discDir.FullName -select_streams a `
+                 -show_entries stream=index -of csv=p=0 2>$null | Where-Object { $_ -match '^\d+$' }).Count
+      if ($na -le 1) { continue }
+
+      $handRun = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+                   Where-Object { $_.CommandLine -and $_.CommandLine -match 'analyze-tracks' -and
+                                  $_.CommandLine.Contains($disc) -and $_.CommandLine -match "--dvd-title\s+$n\b" })
+      if ($handRun.Count -gt 0) {
+        Say "$disc title ${n}: already being analysed by pid $($handRun[0].ProcessId) - leaving it alone"
+        continue
+      }
+      $tMutex = New-Object System.Threading.Mutex($false, ('Global\analyse-' + ("$disc-title$n" -replace '[^\w\-\.]', '_')))
+      $tOwned = $false
+      try { $tOwned = $tMutex.WaitOne(0) }
+      catch [System.Threading.AbandonedMutexException] { $tOwned = $true }
+      if (-not $tOwned) { $tMutex.Dispose(); continue }
+
+      try {
+        Say "ANALYSE: $disc dvdvideo title $n ($na audio streams)"
+        $out = & python $Analyzer $discDir.FullName --dvd-title $n 2>&1
+        $code = $LASTEXITCODE
+        # Same rule as above: the ARTIFACT is the verdict. The analyzer writes its json last, so a
+        # failed run leaves nothing and can never read as done.
+        if ($code -eq 0 -and (Test-Path -LiteralPath $evidence)) {
+          Say ("  evidence written -> {0}" -f $evidence)
+          @($out | Where-Object { "$_" -match '^\s*!!' }) | Select-Object -First 6 | ForEach-Object { Say ("    " + $_) }
+        } else {
+          Say ("  ANALYSIS FAILED for $disc title $n (exit {0}) - NO evidence recorded; will retry next pass. Output tail:" -f $code)
+          @($out | Where-Object { "$_" -match '\S' }) | Select-Object -Last 4 | ForEach-Object { Say ("    " + $_) }
+        }
+      } finally {
+        $tMutex.ReleaseMutex()
+        $tMutex.Dispose()
       }
       $did = $true
     }

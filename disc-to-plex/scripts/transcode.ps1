@@ -794,7 +794,11 @@ foreach($it in $items){
   if($nk -gt 0){
     if($ch0 -ge 6){
       $a += @("-c:a:$aacIdx",'aac',"-b:a:$aacIdx",'160k',"-ac:a:$aacIdx",'6',"-ar:a:$aacIdx",'48000',"-metadata:s:a:$aacIdx",'title=Surround 5.1 (AAC)',"-metadata:s:a:$aacIdx","language=$lang0","-disposition:a:$aacIdx",'default'); $aacIdx++
-      $a += @("-c:a:$aacIdx",'aac',"-b:a:$aacIdx",'160k',"-ac:a:$aacIdx",'2',"-ar:a:$aacIdx",'48000',"-metadata:s:a:$aacIdx",'title=Stereo (AAC)',"-metadata:s:a:$aacIdx","language=$lang0"); $aacIdx++
+      # `-disposition 0` IS REQUIRED, NOT REDUNDANT. ffmpeg carries the INPUT stream's disposition
+      # onto its output even when re-encoding, so this stereo downmix silently inherits `default`
+      # whenever the source track had it - which every MakeMKV rip does. See the block comment on
+      # the passthru loop below; this is the same defect on the encoded track.
+      $a += @("-c:a:$aacIdx",'aac',"-b:a:$aacIdx",'160k',"-ac:a:$aacIdx",'2',"-ar:a:$aacIdx",'48000',"-metadata:s:a:$aacIdx",'title=Stereo (AAC)',"-metadata:s:a:$aacIdx","language=$lang0","-disposition:a:$aacIdx",'0'); $aacIdx++
     } else {
       $a += @("-c:a:$aacIdx",'aac',"-b:a:$aacIdx",'160k',"-ac:a:$aacIdx",'2',"-ar:a:$aacIdx",'48000',"-metadata:s:a:$aacIdx",'title=Stereo (AAC)',"-metadata:s:a:$aacIdx","language=$lang0","-disposition:a:$aacIdx",'default'); $aacIdx++
     }
@@ -804,6 +808,24 @@ foreach($it in $items){
       # ("No wav codec tag for pcm_bluray"); re-encode those to FLAC (lossless, MKV-native) instead.
       if((Audio-Codec $inspec $keep[$j]) -match '^pcm'){ $a += @("-c:a:$oi",'flac') } else { $a += @("-c:a:$oi",'copy') }
       $a += @("-metadata:s:a:$oi","language=$(& $langOf $j)")
+      # CLEAR THE INHERITED `default` FLAG. ffmpeg copies the INPUT stream's disposition to the
+      # output, and MakeMKV flags EVERY audio track it writes as `default` - so every kind:"MKV"
+      # encode shipped with all of its audio streams flagged default, while kind:"DVD" encodes came
+      # out correct because the dvdvideo demuxer sets no disposition at all. Verified 2026-09-01 by
+      # probing both source types side by side, not inferred from the outputs.
+      #
+      # What it cost: 658 published files of 5161 scanned - all of them TV, none of the films -
+      # including whole runs of The Newsroom, Spartacus, Thriller, Band of Brothers and Rome. With
+      # every stream flagged default, which track a client selects is UNDEFINED: it may land on the
+      # AC3 passthru instead of the AAC compatibility track, or on a commentary. Nothing errors,
+      # nothing looks wrong in a file listing, and any player that happens to pick first-match
+      # behaves perfectly - which is why it survived so long. Found by an independent validation
+      # pass over one disc, never by a gate.
+      #
+      # Emitted BEFORE the commentary / audio-description blocks below on purpose: ffmpeg takes the
+      # LAST -disposition for a stream, so those correctly override this to `comment` /
+      # `visual_impaired`. The AAC track built above carries the only `default`.
+      $a += @("-disposition:a:$oi",'0')
       # commentary accepts a single ordinal OR a list - discs often carry two or three separate
       # commentaries (Life of Brian has two), and tagging only the first leaves the rest looking
       # like alternate language mixes in Plex. A list may also be [idx,"Title"] pairs to name them.

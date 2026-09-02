@@ -7,13 +7,47 @@
 # So the judgement (which title, what language, how named) is made up front and written into the
 # manifest, but the manifest only becomes runnable once source and staged copies match on BOTH
 # file count and total bytes.
+#
+# THIS IS THE ONLY SANCTIONED ROUTE INTO `_queue`. lane-runner.ps1 refuses a manifest that is not
+# recorded in the ledger this script writes. See "THE LEDGER" below.
+#
+#   pwsh -File _gate-queue.ps1 -Disc 'Babylon 5 Season 1 Disk 6' -Manifest D:/video/b5d6.json
+#   pwsh -File _gate-queue.ps1 -SourceDir E:/Movies/X -StageDir D:/video/_stage/X -Manifest ...
+#
+# WHY `-Disc` EXISTS (added 2026-09-01).
+# The two-directory form was the only form, and it made the gate UNUSABLE for the common case:
+# a disc that was staged and verified days ago, whose source drive has since been swapped out.
+# `Get-ChildItem` on a detached E: returns nothing, the counts never match, and the gate polls
+# for ever. Faced with that, the main session wrote manifests straight into `_queue` instead -
+# three times on 2026-09-01 alone, and "went unused all of 2026-08-23" before that. A guard that
+# is cheaper to bypass than to satisfy will be bypassed; that is not a discipline problem, it is
+# a design defect.
+#
+# `-Disc` closes it. `_fetch-done.txt` records ONLY copies already verified on count AND bytes -
+# it is the same check, already performed and written down. When the disc is listed there, the
+# gate's condition is DISCHARGED, not waived, and the manifest queues immediately.
 param(
-  [Parameter(Mandatory)][string]$SourceDir,     # e.g. E:\DIE_HARD_1_F1
-  [Parameter(Mandatory)][string]$StageDir,      # e.g. D:\video\_stage\DIE_HARD_1_F1
-  [Parameter(Mandatory)][string]$Manifest,      # a .json written but NOT yet in the queue
-  [string]$Queue = 'D:\video\_queue',
-  [int]$PollSec = 30
+  # Either -Disc (preferred), or the explicit pair. -Disc resolves both and short-circuits on
+  # _fetch-done.txt; the pair is kept for a disc mid-copy that is not yet recorded anywhere.
+  [string]$Disc,
+  [string]$SourceDir,
+  [string]$StageDir,
+  [Parameter(Mandatory)][string]$Manifest,       # a .json written but NOT yet in the queue
+  [string]$Queue     = 'D:/video/_queue',
+  [string]$Stage     = 'D:/video/_stage',
+  [string]$SrcRoot   = 'E:/Movies',
+  [string]$FetchDone = 'D:/video/_fetch-done.txt',
+  [int]$PollSec      = 30
 )
+
+$ErrorActionPreference = 'Stop'
+
+if (-not $Disc -and -not ($SourceDir -and $StageDir)) {
+  throw 'give either -Disc <name>, or both -SourceDir and -StageDir.'
+}
+if (-not (Test-Path -LiteralPath $Manifest -PathType Leaf)) {
+  throw "-Manifest '$Manifest' does not exist. Author it first, then gate it."
+}
 
 # LAYOUT CHECKS FIRST - fail fast, before waiting on a copy.
 #
@@ -29,12 +63,52 @@ if (Test-Path -LiteralPath $editionGuard) {
   }
 }
 
+# THE LEDGER. Record WHICH manifest passed and WHAT IT CONTAINED when it did.
+#
+# The hash matters, not just the name: without it, gating an empty placeholder and then writing the
+# real manifest over it would satisfy the check. With it, any edit after gating reads as ungated -
+# which is the correct answer, because the thing that was checked is not the thing being run.
+function Add-LedgerEntry($manifestPath, $how) {
+  $ledger = Join-Path $Queue '.gated.jsonl'
+  $entry = [ordered]@{
+    name   = Split-Path $manifestPath -Leaf
+    sha256 = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash
+    gated  = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss')
+    how    = $how
+  }
+  Add-Content -LiteralPath $ledger -Value ($entry | ConvertTo-Json -Compress)
+}
+
+function Complete-Gate($manifestPath, $how, $note) {
+  Add-LedgerEntry $manifestPath $how
+  $dest = Join-Path $Queue (Split-Path $manifestPath -Leaf)
+  Move-Item -LiteralPath $manifestPath -Destination $dest -Force
+  Write-Output ("gate passed ({0}): {1} - queued {2}" -f $how, $note, (Split-Path $manifestPath -Leaf))
+}
+
+# -Disc: is the copy ALREADY verified? _fetch-done.txt is written only after a count-and-bytes
+# match, so a line there is the gate's own condition, already met and recorded.
+if ($Disc) {
+  $done = @(Get-Content -LiteralPath $FetchDone -ErrorAction SilentlyContinue |
+            Where-Object { $_ -and $_.Trim() } | ForEach-Object { $_.Trim() })
+  $StageDir = Join-Path $Stage $Disc
+  if (-not $SourceDir) { $SourceDir = Join-Path $SrcRoot $Disc }
+
+  if (-not (Test-Path -LiteralPath $StageDir -PathType Container)) {
+    throw "-Disc '$Disc' is not staged at $StageDir. Fetch it before gating a manifest against it."
+  }
+  if ($done -contains $Disc) {
+    Complete-Gate $Manifest 'fetch-verified' "$Disc (already verified in _fetch-done.txt)"
+    exit 0
+  }
+  Write-Output ("$Disc is not in _fetch-done.txt yet - waiting on the copy to match on count and bytes")
+}
+
 while ($true) {
   $s = Get-ChildItem -LiteralPath $SourceDir -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum
   $t = Get-ChildItem -LiteralPath $StageDir  -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum
   if ($s.Count -gt 0 -and $s.Count -eq $t.Count -and $s.Sum -eq $t.Sum) {
-    Move-Item -LiteralPath $Manifest -Destination (Join-Path $Queue (Split-Path $Manifest -Leaf)) -Force
-    Write-Output ("gate passed: {0} ({1} files / {2} GB) - queued {3}" -f (Split-Path $StageDir -Leaf), $s.Count, [math]::Round($s.Sum/1GB,2), (Split-Path $Manifest -Leaf))
+    Complete-Gate $Manifest 'bytes-match' ("{0} ({1} files / {2} GB)" -f (Split-Path $StageDir -Leaf), $s.Count, [math]::Round($s.Sum/1GB,2))
     break
   }
   Start-Sleep -Seconds $PollSec

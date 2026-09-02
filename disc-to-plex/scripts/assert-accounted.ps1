@@ -200,7 +200,25 @@ function Get-LumaRange([string]$path){
 $evFalse = @()      # cited evidence that FAILED verification, or an unknown class -> always fatal
 $evMissing = @()    # named titles with no citation at all -> warn, fatal under -RequireEvidence
 $evBlind = @()      # named titles for which the catalogue captured NOTHING -> always shown
-$evNote  = @()      # ambiguous mappings ACCEPTED on a recorded proof -> always shown, never silent
+# TWO LISTS, NOT ONE - THE LABEL WAS LYING ABOUT WHAT IT COUNTED.
+#
+# `$evNote` began life as "ambiguous mappings accepted on a recorded proof" and the summary at the
+# bottom is worded that way. Two later additions then pushed entries of a completely different kind
+# into the SAME list - the mapping-proof re-derivation notice (~line 424) and the
+# declared-vs-catalogued titles the disc declares but the catalogue never listed (~line 438) - while
+# the header kept the ambiguity wording. The Seeds of Doom D2 (2026-09-02) therefore printed
+# "3 ambiguous mapping(s) accepted on a recorded proof" for a disc on which EVERY row carries
+# mappingAmbiguous=false: the three entries were one re-derivation notice and two
+# declared-vs-catalogued lines.
+#
+# That is worse than untidy. The comment at the summary says an ambiguity waived on a proof must be
+# VISIBLE - and a count inflated by unrelated notices destroys exactly that visibility: a disc with
+# one genuine waiver and four notices reads "5 ambiguous mapping(s)", and a reader who checks the
+# number against the disc finds it wrong and stops trusting the line. So keep the waivers in their
+# own list, with their own count, and report the informational notices separately.
+# Nothing about what this script GATES on changes - neither list has ever affected an exit code.
+$evAmbig = @()      # ambiguous mappings ACCEPTED on a recorded proof -> always shown, never silent
+$evNote  = @()      # informational notices about the mapping/catalogue -> always shown, never silent
 foreach($id in ($disp.Keys | Sort-Object)){
   $d0 = $disp[$id]
   if($d0.kind -notin @('feature','extra','episode')){ continue }
@@ -247,7 +265,7 @@ foreach($id in ($disp.Keys | Sort-Object)){
     continue
   }
   if($title -and $title.mappingAmbiguous -and $proven){
-    $evNote += ("t{0:D2}  mapping was ambiguous; accepted because mappingProvenBy says: {1}" -f $id, "$($title.mappingProvenBy)".Trim())
+    $evAmbig += ("t{0:D2}  mapping was ambiguous; accepted because mappingProvenBy says: {1}" -f $id, "$($title.mappingProvenBy)".Trim())
   }
   if($blind -and $cls.ToLower() -notin @('card','frame','speech')){
     # card/frame/speech citations on a blind title fail hard in the switch below; external
@@ -271,10 +289,21 @@ foreach($id in ($disp.Keys | Sort-Object)){
         #
         # Refusing those quotes was correct while the transcripts were not recorded: an unverifiable
         # quote is exactly the confident-wrong evidence this gate exists to stop. The fix is to
-        # RECORD the deeper transcripts rather than to relax the check - so a title may carry
-        # `speechSamplesExtra`, a list of {offsetSec, lang, prob, text, capturedBy}, and a quote is
-        # accepted if it appears in ANY recorded transcript. Every quote still has to be in a
-        # transcript that lives in the catalogue and names how it was captured.
+        # RECORD the deeper transcripts rather than to relax the check, and a quote is accepted if
+        # it appears in ANY recorded transcript. Every quote still has to be in a transcript that
+        # lives in the catalogue and names how it was captured.
+        #
+        # TWO SHAPES ARE READ, and only one is currently produced - corrected 2026-09-01 after an
+        # agent noticed this comment and the tool disagreed:
+        #   speechSample        a string. `capture-evidence.py` APPENDS re-samples into it inline,
+        #                       each prefixed `[re-sampled @<N>s]`. This is what actually exists.
+        #   speechSamplesExtra  a list of {offsetSec, lang, prob, text, capturedBy}. Richer - it
+        #                       keeps each sample's offset and language confidence - but NOTHING
+        #                       WRITES IT TODAY. The support below is kept because the structured
+        #                       form is the better one and a future capturer should emit it.
+        # The comment previously described only the array, which reads as though the inline form
+        # were a bug. It is not; it is the only form in the data. Do not "fix" capture-evidence.py
+        # to match a doc - if the array is wanted, change the tool deliberately and say so here.
         $texts = @("$(if($title){ $title.speechSample })")
         if($title -and $title.speechSamplesExtra){
           $texts += @($title.speechSamplesExtra | ForEach-Object { "$($_.text)" })
@@ -439,9 +468,14 @@ if($evFalse){
 }
 # An ambiguity waived on a proof must be VISIBLE. A gate that quietly stops objecting is
 # indistinguishable from a gate that was removed, and the whole value of `mappingProvenBy` is that
-# a reader can go and check the claim it carries.
+# a reader can go and check the claim it carries. So this count must name ONLY genuine waivers -
+# see the note at $evAmbig's declaration for what padding it with unrelated notices cost.
+if($evAmbig){
+  Write-Output ("{0} ambiguous mapping(s) accepted on a recorded proof - verify these claims if anything downstream looks wrong:" -f $evAmbig.Count)
+  $evAmbig | ForEach-Object { Write-Output "   $_" }
+}
 if($evNote){
-  Write-Output ("{0} ambiguous mapping(s) accepted on a recorded proof - verify these claims if anything downstream looks wrong:" -f $evNote.Count)
+  Write-Output ("{0} mapping/catalogue notice(s) - informational, NOT ambiguities:" -f $evNote.Count)
   $evNote | ForEach-Object { Write-Output "   $_" }
 }
 if($evBlind){

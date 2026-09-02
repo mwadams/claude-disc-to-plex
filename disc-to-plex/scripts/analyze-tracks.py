@@ -711,6 +711,44 @@ def main():
     #
     # This is a heuristic about AUDIO LAYOUT only. It says nothing about the film's identity, which
     # is settled from content elsewhere and by the Plex/TMDB match.
+    # RESCUE STREAMS THAT WERE SILENT AT BOTH OFFSETS, BEFORE THEY ARE STRUCK FROM THE BALLOT.
+    #
+    # Candidacy below requires `langReliable`, which a stream earns from two 30-second windows. A
+    # stream that happens to be near-silent in BOTH is not evidence of anything - but it is treated
+    # as though it were, by being excluded from the election entirely.
+    #
+    # Pyramids of Mars title 9 (2026-09-02): the PROGRAMME track a:0 sampled at 518s over a quiet
+    # passage, whisper returned "... ... ..." as `la` at 0.44, langReliable went false, and a:0 was
+    # struck. That left the COMMENTARY as the only candidate, so the commentary was elected primary
+    # and the real soundtrack was written up as `commentary?`. The manifest that told the truth then
+    # failed assert-tracks-analysed.ps1 with exit 2 - and no manifest could have passed, because the
+    # guard was comparing against inverted evidence. One unlucky offset inverted the whole file, and
+    # the disc could not self-heal: the DVD arm skips any title whose evidence file already exists.
+    #
+    # Same lesson this file already records for the `dub` re-sample below: when the CONSEQUENCE of
+    # thin evidence is destructive, buy more evidence instead of acting on the thinness. The cost is
+    # bounded - it fires only for streams that produced no usable language, which on a healthy disc
+    # is none.
+    mute = [s for s in streams if s['role'] is None and not s['langReliable']]
+    if mute:
+        extra = [int(dur_total * f) for f in (0.15, 0.5, 0.8)]
+        print('')
+        print(f're-sampling {len(mute)} stream(s) with no reliable language at offsets {extra} -'
+              f' silence at two offsets is not evidence, and exclusion here inverts the election:')
+        for s in mute:
+            lang2, prob2, texts2, agreed2, status2 = transcribe(model, src, s['a'], extra, a.dur)
+            if lang2 and prob2 >= LANG_CONFIDENCE_FLOOR and agreed2:
+                s['spokenLang'], s['langProb'] = lang2, prob2
+                s['samples'] = s['samples'] + list(texts2)
+                s['langReliable'] = True
+                s['rescuedOnResample'] = True
+                s['tagMismatch'] = bool(s['langTag'] and not same_language(lang2, s['langTag']))
+                print(f"  a:{s['a']} -> {lang2} {prob2:.2f} on re-sample; it would otherwise have "
+                      f"been excluded from the primary election")
+            else:
+                print(f"  a:{s['a']} still unreliable ({lang2 or 'none'} {prob2:.2f}) - "
+                      f"genuinely a score, a phantom or an empty track")
+
     cand = [s for s in streams if s['role'] is None and s['langReliable'] and s['spokenLang']]
 
     # A STREAM THAT TALKS ABOUT THE FILM CANNOT BE THE FILM. Score the commentary hints BEFORE the
@@ -862,8 +900,28 @@ def main():
               f"  \"{(' '.join(s['samples']))[:90]}\"")
 
     # --- proposed manifest fields -------------------------------------------------------------
+    # `commentary?` IS KEPT. It used to be absent from this list, which did not merely leave the
+    # track untagged - it dropped the track from `audioTracks` altogether, so a manifest copied
+    # from the proposal SHIPPED WITHOUT IT.
+    #
+    # That is a one-way failure. Losing a real commentary costs a re-fetch of a released disc, a
+    # re-encode and a republish, and is invisible until a human happens to look for it - Babylon 5
+    # S01E13 shipped that way and had to be rebuilt. Keeping a dub or a duplicate mix by mistake
+    # costs one extra audio track in the output, which is visible in any probe and cheap to drop.
+    # The costs are nowhere near symmetric, so the uncertain case must fail TOWARD keeping.
+    #
+    # Measured record before this change: the `proposal` omitted a real commentary FIVE times on
+    # this project (Thunderball, Metropolis, Babylon 5 S01E13, S02E16, S03E10) and its `warnings`
+    # were right every time. Every brief written for this pipeline had to carry "read the warnings,
+    # not just the proposal" to compensate. A tool that needs a standing instruction to be read
+    # against itself is the thing to fix, not the instruction.
+    #
+    # It is deliberately NOT auto-tagged as `commentary` below: labelling a dub as a commentary is
+    # its own defect. It ships as a kept track that the manifest author must name, and
+    # `commentaryUncertain` says which ones need that decision.
     keep = [s['a'] for s in streams
-            if s['role'] in ('primary', 'commentary', 'audioDescription', 'alternateMix', 'music')]
+            if s['role'] in ('primary', 'commentary', 'commentary?',
+                             'audioDescription', 'alternateMix', 'music')]
     # Map whisper's ISO 639-1 to the 639-2 code the manifest/mkv wants via the SAME table the
     # tag comparison uses. The old `.replace('en', 'eng')[:3]` was a single-sample shortcut:
     # right for English, and it silently left every other language as a 2-letter code
@@ -883,6 +941,12 @@ def main():
             proposal['commentary'] = s['a']
         if s['role'] == 'audioDescription':
             proposal['audioDescription'] = s['a']
+    # Named separately from `commentary` so the distinction survives into the evidence file: these
+    # are KEPT but UNLABELLED, and someone must listen before deciding what they are. The matching
+    # warning below carries the same ordinals.
+    uncertain = [s['a'] for s in streams if s['role'] == 'commentary?']
+    if uncertain:
+        proposal['commentaryUncertain'] = uncertain
 
     warnings = []
     for s in streams:
@@ -895,7 +959,9 @@ def main():
                             f"do not ship it under the disc's tag")
         if s['role'] == 'commentary?':
             warnings.append(f"a:{s['a']} differs from the primary but shows few commentary cues - "
-                            f"listen before shipping; it may be a second commentary or a dub")
+                            f"KEPT in audioTracks so it cannot be lost, but NOT tagged. Listen to "
+                            f"it and decide: a commentary needs `commentary: [[{s['a']}, \"...\"]]`, "
+                            f"a dub or duplicate mix should be removed from audioTracks")
         if s['role'] == 'alternateMix':
             warnings.append(f"a:{s['a']} is a DIFFERENT MIX of the same dialogue "
                             f"({s['channels']}ch) - usually the restored original. Confirm it is "

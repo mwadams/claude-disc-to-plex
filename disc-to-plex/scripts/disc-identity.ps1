@@ -236,7 +236,14 @@ switch ($Action) {
 }
 
 if ($Action -in @('Resolve','Claim','Record')) {
-  $rec.updated = Get-Date -Format 'yyyy-MM-dd'
+  # ADD the property if the record has not got one. Records written by sweep-drive.ps1 carry
+  # `sweptOn` and no `updated`, and assigning to a missing property on a ConvertFrom-Json object
+  # THROWS - which, with ErrorActionPreference='Stop', aborted before the save. Eight
+  # identifications reported "recorded ..." and none of them reached the disc: the success line
+  # is printed by the action, the persistence happens here, and nothing tied the two together.
+  $stamp = Get-Date -Format 'yyyy-MM-dd'
+  if ($rec.PSObject.Properties.Name -contains 'updated') { $rec.updated = $stamp }
+  else { $rec | Add-Member -NotePropertyName updated -NotePropertyValue $stamp -Force }
   $rec | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $file -Encoding UTF8
   Write-Host "saved $file"
 }

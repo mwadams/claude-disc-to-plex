@@ -210,6 +210,35 @@ function Resolve-OcrOutcome {
       )
     }
   }
+  if ($OutputText -match 'produced no OCR text and were dropped|No subtitles recognised in VobSub') {
+    # EVERY image OCR'd to nothing, on a track that demonstrably HAS text.
+    #
+    # Babylon 5 S00E26 "The Universe of Babylon 5 (Season 3)": tesseract returned nothing for all
+    # 118 images, while its sibling on the same disc, with a byte-identical palette, read 61 of 62.
+    # Rendering the subpicture shows exactly why - these cues are set in an ITALIC face
+    # ("Subject: Zack Allan.") where the sibling's are upright. The text is perfectly legible to a
+    # human; our OCR path cannot read this face.
+    #
+    # This is 'blocked', NOT 'exhausted'. The distinction is the whole point of this function:
+    # exhausted asserts THERE IS NO TEXT, which here is false and would ship an extra as
+    # subtitle-less while recording that its subtitles had been checked. Blocked says the opposite
+    # - there IS text and we failed to read it - so publishing stays held until someone fixes the
+    # OCR path or decides the extra ships without.
+    #
+    # Before this pattern existed the message matched nothing and fell to the catch-all, so the
+    # loop retried the same file forever while holding twelve finished files behind it.
+    return [pscustomobject]@{
+      Status = 'ocr-unreadable-face'; Verdict = 'blocked'
+      BlockReason = 'every subtitle image OCRd to nothing though the track carries visible text - usually an italic or stylised face our tesseract path cannot read'
+      Lines = @(
+        '*** OCR READ NOTHING FROM ANY IMAGE, but the track is not empty. Look at the subpicture'
+        '    before believing it is blank - render it with:'
+        '      ffmpeg -i <file> -filter_complex "color=gray:s=720x576[bg];[bg][0:s:0]overlay" -ss <t> -frames:v 1 out.png'
+        '    An ITALIC or stylised face defeats this OCR path while a human reads it easily.'
+        '    Publishing stays blocked on purpose - this is NOT a finding that the track is empty.'
+      )
+    }
+  }
   if (-not $SourceExists) {
     # A rename or reclaim between the directory scan and the OCR attempt is not a verdict about
     # the file's subtitles. Record NOTHING (recording anything would pin a verdict to a path that

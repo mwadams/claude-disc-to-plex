@@ -489,10 +489,25 @@ foreach ($f in $targets) {
       if ($repair) { Write-Host "  vobsub palette: $repair" }
     }
 
-    & $seconv $bmp subrip --ocr-engine:tesseract --ocr-language:$Lang `
-        --output-folder:$work --overwrite 2>&1 | Out-Null
+    # CAPTURE seconv's OUTPUT - do NOT discard it. This was `| Out-Null`, so the only thing that
+    # ever reached the caller was the bare string below, and Resolve-OcrOutcome had nothing to
+    # classify. Babylon 5 S00E26 then failed 36 times in a row, each time recorded as "produced no
+    # sidecar and gave no reason", retrying forever and holding twelve finished files behind it -
+    # while seconv had been saying precisely what was wrong every single time:
+    #     "Note: 118 image(s) produced no OCR text and were dropped."
+    #     "error: No subtitles recognised in VobSub file"
+    # A tool that explains itself into /dev/null is indistinguishable from one that says nothing,
+    # and the classifier's careful branches are dead code without this.
+    $seconvOut = & $seconv $bmp subrip --ocr-engine:tesseract --ocr-language:$Lang `
+        --output-folder:$work --overwrite 2>&1
     $srt = [IO.Path]::ChangeExtension($bmp, '.srt')
-    if (-not (Test-Path $srt)) { throw "seconv produced no SRT" }
+    if (-not (Test-Path $srt)) {
+      # Fold seconv's own words into the failure so the classifier upstream can read them. Trimmed
+      # to the lines that carry meaning - the tool draws a parameter table first.
+      $why = (@($seconvOut | ForEach-Object { "$_" } |
+                Where-Object { $_ -match 'produced no OCR text|No subtitles recognised|error|Tesseract not found|recognition' }) -join ' ').Trim()
+      if ($why) { throw "seconv produced no SRT - $why" } else { throw 'seconv produced no SRT' }
+    }
 
     # Shift cues if asked. Done here rather than via seconv's --offset because that takes an
     # hh:mm:ss:ms string and cannot express a NEGATIVE shift, which is the direction usually needed.

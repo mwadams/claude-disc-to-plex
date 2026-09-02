@@ -419,11 +419,24 @@ def prove(disc_dir, info_text):
                         f"one out and does not need to: every door is the same material, and "
                         f"{entries[0]} is its lowest entry")
                 else:
-                    row['note'] = ('byte total %d matches %d declared titles over identical cells '
-                                   '(%s) - the two-door shape; size cannot separate them, and they '
-                                   'are the same material' %
+                    # THIS IS THE PATH THAT JUST FAILED THE `doors` TEST, so it must NOT reuse the
+                    # doors wording. It did, and said the candidates played "identical cells" and
+                    # "are the same material" - the exact opposite of what had been established.
+                    # On Babylon 5 Season 5 Disk 2 it printed that for two previews whose cells are
+                    # DISJOINT (sectors 9363-18739 vs 18740-28116). A reader who believed it would
+                    # have shipped THREE previews instead of four.
+                    #
+                    # A tool that fails is recoverable; a tool that asserts the opposite of its own
+                    # evidence, in confident language, on the one question it exists to answer, is
+                    # not. Say which of the two genuine reasons applies and leave it unproven.
+                    why = ('they lie in different VTSs' if len({c[0] for c in cand}) > 1
+                           else 'their PGCs play DIFFERENT cell sectors')
+                    row['note'] = ('byte total %d matches %d declared titles (%s) and %s, so this is '
+                                   'REAL ambiguity between different material - not the two-door '
+                                   'shape. Size cannot separate them; settle it from content or '
+                                   'from proven neighbours in TT_SRPT order' %
                                    (want, len(cand),
-                                    ', '.join('VTS_%02d title %d' % c for c in sorted(cand))))
+                                    ', '.join('VTS_%02d title %d' % c for c in sorted(cand)), why))
                     unproven.append(row)
             else:
                 near = sorted(vob.items(), key=lambda kv: abs(kv[1] - want))[:1]

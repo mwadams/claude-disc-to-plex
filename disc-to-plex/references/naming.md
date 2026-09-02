@@ -323,3 +323,26 @@ M as healthy on the first pass.
 
 **Check the `out` DIRECTORIES when authoring a manifest, not just the filenames.** A filename-level
 review sails straight past a wrong folder — every filename in the M manifest was correct.
+
+## Doctor Who (1963) — decided 2026-09-02
+
+**Use the modern form for everything new:**
+
+    Doctor Who (1963) - S13E21 - The Seeds of Doom (1).mkv
+
+Show folder `Doctor Who (1963)`; episode title is Plex's canonical one, with the part number as a
+bracketed suffix `(1)`, `(2)` … exactly as the provider names them. Classic Who is numbered by
+INDIVIDUAL EPISODE within a season (Season 13 has 26), never by serial — so a four-part story
+occupies four consecutive slots. Establish the numbers from Plex section 5 with the ordering this
+server matches (`showOrdering=aired` → `episodeOrder=tvdbAiring`), and corroborate against the
+disc's own `mymovies.xml` and the on-screen PART ONE… card. Never from duration: every classic
+episode is ~25 minutes, which makes runtime worthless here and actively misleading (see
+`follow-up.md` on the false `supersedes` matches).
+
+**The legacy form is being retired, not preserved.** Season 12 currently holds six files named
+`Doctor Who - s12e11 - Genesis of the Daleks Episode One.mp4` — old naming AND the wrong container.
+The user's decision: *"We would like to use the recent one. You will be replacing those broken
+Genesis of the Daleks episodes."* So do not copy that pattern, and do not rename those files: they
+are to be **superseded by a re-rip** when the Genesis disc is found (it is NOT on the media2 drive).
+That will be a GENUINE `supersedes` — established from episode identity, one part at a time — and
+it is the only Doctor Who supersession currently known to be real.

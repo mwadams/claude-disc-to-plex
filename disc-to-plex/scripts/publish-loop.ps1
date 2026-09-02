@@ -113,7 +113,35 @@ while ($true) {
         "{0,-46} PUBLISH CRASHED (exit {1}) - last output:" -f $w.Name, $LASTEXITCODE
         @($out | Where-Object { "$_" -match '\S' })[-3..-1] | ForEach-Object { "    $_" }
       }
-      if ($line -match 'verified') { $published++ }
+      if ($line -match 'verified') {
+        $published++
+
+        # A COMPLETED PUBLISH IS THE MOMENT TO ASK FOR A VERIFICATION - and while the disk is
+        # below the fetch floor, it is the ONLY thing that can unblock the line.
+        #
+        # Reclaiming a published local copy is gated on the user confirming the unit in Plex, and
+        # nothing was asking. On 2026-09-01, 48.74 GB of already-confirmed Babylon 5 accumulated
+        # locally, the fetch sat under its floor for over an hour, and _stallwatch.ps1 reported
+        # "no unit is waiting on the operator" throughout. The user had to ask why they were not
+        # notified. The consequence was visible; the REQUEST never was.
+        #
+        # This is the request, raised at the event that creates it. The register is what
+        # audit-space-block.ps1 reads to name units rather than guess at them, and it is the queue
+        # the reclaim drains: a work leaves it when its disc is written to _completed.txt.
+        $reg = 'D:/video/_awaiting-verification.txt'
+        $already = @()
+        if (Test-Path -LiteralPath $reg) {
+          $already = @(Get-Content -LiteralPath $reg | ForEach-Object { ($_ -split '\|')[-1].Trim() })
+        }
+        if ($already -notcontains $w.Name) {
+          Add-Content -LiteralPath $reg -Value ("{0}|{1}" -f (Get-Date -Format s), $w.Name)
+        }
+        $freeGB = [math]::Round([IO.DriveInfo]::new('D').AvailableFreeSpace / 1GB, 1)
+        if ($freeGB -lt 120) {
+          Write-Output ("    *** {0} IS PUBLISHED AND THE DISK IS BELOW THE FETCH FLOOR ({1} GB)." -f $w.Name, $freeGB)
+          Write-Output  '        Confirm it in Plex so its local copy can be reclaimed - the line is waiting on this.'
+        }
+      }
     }
   }
   if ($published -eq 0) { Start-Sleep -Seconds 90 }

@@ -27,6 +27,9 @@ param(
   [string]$Stage     = 'D:/video/_stage',
   [string]$Catalogue = 'D:/video/_catalogue',
   [string]$Manifests = 'D:/video/_manifests',
+  # Where subagents write a finished manifest before the main session gates it. Also holds
+  # `<disc>.authoring` markers for one currently being written - see below.
+  [string]$Pending   = 'D:/video/_pending',
   [string]$Queue     = 'D:/video/_queue',
   [switch]$Quiet          # print nothing when every unit is either busy or held
 )
@@ -107,7 +110,16 @@ foreach ($u in $units) {
       continue
     }
     if (-not (Test-Path -LiteralPath $disp)) {
-      $stalls += "{0,-28} needs DISPOSITIONS -> write {1}" -f $name, (Split-Path $disp -Leaf)
+      # SAME MARKER RULE AS MANIFESTS. A disposition subagent takes MINUTES - on a 35-title extras
+      # disc it took forty - and writes nothing until it finishes. Without a marker that is
+      # indistinguishable from "nobody has started", so the monitor reported discs as blocked on a
+      # four-minute cycle while agents were actively working them. A monitor that cries wolf gets
+      # skimmed, and then the one real stall is skimmed too.
+      if (Test-Path -LiteralPath (Join-Path $Pending ($name + '.dispositioning'))) {
+        $moving += "{0,-28} dispositions being written (subagent working)" -f $name
+      } else {
+        $stalls += "{0,-28} needs DISPOSITIONS -> write {1}" -f $name, (Split-Path $disp -Leaf)
+      }
       continue
     }
     $unresolved = @(Get-Content -LiteralPath $disp -ErrorAction SilentlyContinue |
@@ -133,7 +145,12 @@ foreach ($u in $units) {
   # bare substring match on one letter hits EVERY manifest containing an "m" - which reported M as
   # having failed four unrelated manifests. Require the name to sit where a staged path puts it:
   # after `_stage/` and followed by a separator or the closing quote.
-  $manifestDirs = @("$Manifests/*.json", "$Queue/*.json", "$Queue/running/*.json",
+  # `_pending` IS PART OF THE SEARCH. A manifest authored by a subagent lands there and waits for
+  # the main session to validate and gate it - work that is DONE, not work that is missing. Without
+  # this the monitor reported four discs as "needs MANIFEST" while their manifests sat in _pending,
+  # every four minutes. A monitor that cries wolf gets ignored, which is the one failure it cannot
+  # afford.
+  $manifestDirs = @("$Manifests/*.json", "$Pending/*.json", "$Queue/*.json", "$Queue/running/*.json",
                     "$Queue/done/*.json", "$Queue/failed/*.json")
   $pathRx = '_stage[\\/]' + [regex]::Escape($name) + '(?=["\\/])'
   $mentioned = @(Get-ChildItem $manifestDirs -ErrorAction SilentlyContinue |
@@ -170,7 +187,14 @@ foreach ($u in $units) {
     if ($viaRip.Count -gt 0) {
       $moving += "{0,-28} its RIP carries the manifest ({1})" -f $name, (($viaRip.Name) -join ', ')
     } else {
-      $stalls += "{0,-28} needs MANIFEST     -> author one and drop it in _queue" -f $name
+      # IS SOMEONE ALREADY WRITING IT? A manifest subagent takes minutes, and during that time
+      # nothing exists to find - so this looked exactly like "nobody has started", and the monitor
+      # said so on a four-minute cycle. The marker is dropped when the agent is briefed.
+      if (Test-Path -LiteralPath (Join-Path $Pending ($name + '.authoring'))) {
+        $moving += "{0,-28} manifest being authored (subagent working)" -f $name
+      } else {
+        $stalls += "{0,-28} needs MANIFEST     -> author one and drop it in _queue" -f $name
+      }
     }
     continue
   }
@@ -227,3 +251,44 @@ if ($held.Count   -gt 0 -and -not $Quiet) { $held   | ForEach-Object { Write-Out
 if ($units.Count -eq 0 -and -not $busy) {
   Write-Output "[$stamp] NOTHING STAGED and nothing running - start a fetch (_fetch-one.ps1 -Discs <list>)"
 }
+
+# WHAT DOES THE WORK LIST SAY IS LEFT?
+#
+# This runs LAST and unconditionally, because the failure it exists to catch does not look like a
+# stall at all: on 2026-09-01 the batch list ran dry, every track drained correctly, every loop
+# reported healthy - and the pipeline was simply finished with everything it had been told about.
+# The operator read "queue empty" four times as a clean resting state, and then chose the next work
+# by looking at the NAS instead of at updates_media2.txt.
+#
+# So the entry point now always says which work list is in force, whether the batch is exhausted,
+# and which categories of work have nothing pointing at them. A reminder that only fires when
+# someone remembers to ask for it is not a reminder.
+$worklist = 'D:/video/worklist-status.ps1'
+if (Test-Path -LiteralPath $worklist) { & pwsh -NoProfile -File $worklist }
+else { Write-Output 'worklist-status.ps1 is MISSING - the work list is not being checked at all' }
+
+# And whether anything was released WITHOUT the confirmation being written down. The release
+# scripts gate on _completed.txt, but a hand-deletion walks straight past that gate leaving no
+# trace - which is what happened on 2026-09-01. This is the trace.
+$relaudit = 'D:/video/.claude/skills/disc-to-plex/scripts/audit-release-records.ps1'
+if (Test-Path -LiteralPath $relaudit) { & pwsh -NoProfile -File $relaudit }
+
+# AND WHETHER THE LINE IS STOPPED FOR SPACE ONLY THE OPERATOR CAN RELEASE.
+#
+# This script printed "no unit is waiting on the operator" for over an hour on 2026-09-01 while the
+# fetch loop sat below its floor with 16 discs waiting, blocked on nothing but a Plex confirmation.
+# The user asked "why did you not notify me?" and the answer was that nothing did: the monitor
+# watches THIS script's output for operator-blocked units, so a condition named nowhere here is a
+# condition nobody is ever told about. Silence through a real stop is worse than a false alarm,
+# because it actively reassures.
+$spaceaudit = 'D:/video/.claude/skills/disc-to-plex/scripts/audit-space-block.ps1'
+if (Test-Path -LiteralPath $spaceaudit) { & pwsh -NoProfile -File $spaceaudit }
+
+# AND WHETHER ANYTHING FINISHED IS SITTING UNPUBLISHED.
+#
+# Every check above this line is UPSTREAM of the only outcome that matters - a file arriving on the
+# NAS. On 2026-09-01 manifests gated, encodes completed, nine loops held their mutexes and this
+# script said "nothing waiting on the operator" while nothing had shipped for two hours. The user
+# found it by looking at Plex, which was the only place the outcome was visible.
+$freshaudit = 'D:/video/.claude/skills/disc-to-plex/scripts/audit-publish-freshness.ps1'
+if (Test-Path -LiteralPath $freshaudit) { & pwsh -NoProfile -File $freshaudit }

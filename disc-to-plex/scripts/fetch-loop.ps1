@@ -52,6 +52,22 @@ if (-not $mutex.WaitOne(0)) {
   exit 0
 }
 
+# LOG FOR YOURSELF - never depend on how you were launched.
+#
+# This loop was started as `pwsh -File _fetch-loop.ps1` with NO redirection, so everything it
+# printed went to a console nobody was attached to. _fetch-loop.log then sat a full day stale, and
+# on 2026-09-01 it was read as live: the last entries named list8a.txt, so the loop was declared
+# "pointed at the wrong list" and told to the user as fact. It was doing exactly the right thing -
+# idling because free space was under the floor - and the list selection below had never been
+# wrong. A loop that cannot be observed gets misdiagnosed, and the misdiagnosis is what leads to
+# restarting or "fixing" loops that were working.
+#
+# Transcript rather than a launcher redirect, so it holds however the loop is started.
+$logDir = 'D:/video/_logs'
+if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path $logDir | Out-Null }
+try { Start-Transcript -Path (Join-Path $logDir '_fetch-loop.log') -Append | Out-Null } catch { }
+Write-Output ("=== fetch loop up {0} ===" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
+
 while ($true) {
   $listFile = Get-ChildItem 'D:/video/list*.txt' -ErrorAction SilentlyContinue |
               Sort-Object { $m = [regex]::Match($_.BaseName, '\d+'); if ($m.Success) { [int]$m.Value } else { 0 } } |
@@ -73,8 +89,17 @@ while ($true) {
   $complete = @(Get-Content -LiteralPath 'D:/video/_completed.txt' -ErrorAction SilentlyContinue |
                 Where-Object { $_ -and $_.Trim() -and -not $_.Trim().StartsWith('#') } |
                 ForEach-Object { $_.Trim() })
-  $left = @($all | Where-Object { $done -notcontains $_ -and $complete -notcontains $_ -and
-                                 -not (Test-Path -LiteralPath (Join-Path 'D:/video/_stage' $_)) })
+  # A STAGED FOLDER IS NOT A STAGED DISC. This used to also skip anything merely PRESENT in
+  # _stage, which meant a half-copied folder was skipped FOR EVER. On 2026-09-01 discs 4 and 5 of
+  # Babylon 5 Season 4 sat at 12/24 and 13/24 files after their copies were interrupted, and the
+  # loop walked past both because the directory existed - so the batch would have gone on to
+  # catalogue and rip two partial discs. That is precisely the defect the header above warns
+  # about ("a half-copied disc folder that looks staged"), left unguarded in the code beneath it.
+  #
+  # _fetch-done.txt is the ONLY record of a copy verified on count AND bytes, so it is the only
+  # thing entitled to retire a disc from the list. Re-entering _fetch-one.ps1 on a partial folder
+  # is safe and is the point: robocopy resumes it, and the name is appended only once it matches.
+  $left = @($all | Where-Object { $done -notcontains $_ -and $complete -notcontains $_ })
 
   if ($left.Count -eq 0) {
     Write-Output ("[{0}] every disc in {1} is staged or fetched - idling" -f (Get-Date -Format 'HH:mm:ss'), $listFile.Name)
