@@ -226,8 +226,23 @@ if ($partial.Count) { $flags += '/XF'; $flags += @($partial | ForEach-Object { $
 # SAME REASONING FOR -SubtitlesOnly. robocopy's file spec is positional, before the switches, and
 # it is the only thing that stops /E dragging the .mkv along. Narrowing $local above governs what
 # is REPORTED and VERIFIED; this governs what actually moves.
-$fileSpec = if ($SubtitlesOnly) { @('*.srt') } else { @() }
-robocopy $src $dst @fileSpec @flags | Out-Null
+#
+# THE FILE SPEC IS A LITERAL, NOT A SPLATTED VARIABLE. The first version wrote
+#     $fileSpec = if ($SubtitlesOnly) { @('*.srt') } else { @() }
+#     robocopy $src $dst @fileSpec @flags
+# and on its FIRST live execution (2026-09-02, Boston Legal) robocopy received FIVE file specs -
+# `*`, `.`, `s`, `r`, `t` - and `*` copied EVERYTHING, shipping six scaffolding re-encodes over
+# published episodes with -Overwrite. Two PowerShell behaviours compound: assignment from an `if`
+# EXPRESSION unrolls a one-element array to a bare string, and splatting a bare STRING to a native
+# command enumerates it CHARACTER BY CHARACTER. The else-branch `@()` becomes $null and splats
+# nothing, so every plain publish worked and the bug waited in the sidecars-only branch untested.
+# The /XF *.mkv/*.mp4 is layered defence: even a mangled file spec cannot drag media with it.
+if ($SubtitlesOnly) {
+  $flags += @('/XF','*.mkv','*.mp4')
+  robocopy $src $dst '*.srt' @flags | Out-Null
+} else {
+  robocopy $src $dst @flags | Out-Null
+}
 $rcExit = $LASTEXITCODE
 if ($rcExit -ge 8) {
   Write-Warning "robocopy exit $rcExit - the >=8 bit means at least one item failed. Log: $rcLog"
