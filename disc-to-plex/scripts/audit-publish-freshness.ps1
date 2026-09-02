@@ -58,6 +58,27 @@ foreach ($area in 'Television Shows', 'Movies') {
     if ($ageMin -lt $SettleMin) { continue }                    # still being written
     $rel = $f.FullName.Substring($base.Length).TrimStart('\', '/')
     $nas = Join-Path (Join-Path $NasRoot $area) $rel
+    # SUBTITLES-ONLY WORK: the .mkv is never published - the SIDECAR is the deliverable, and the
+    # local mkv is deliberately a different encode from the NAS file of the same name (same root
+    # cause as the publish-loop churn fixed 2026-09-02). Measure the sidecar, or this monitor
+    # flags the work as overdue forever and teaches the reader to ignore it.
+    if (Test-Path -LiteralPath (Join-Path (Join-Path $base (($rel -split '[\\/]')[0])) '.subtitles-only')) {
+      $srtLocal = [IO.Path]::ChangeExtension($f.FullName, $null) + 'eng.srt'
+      if (Test-Path -LiteralPath $srtLocal) {
+        $srtItem = Get-Item -LiteralPath $srtLocal
+        $srtNas  = [IO.Path]::ChangeExtension($nas, $null) + 'eng.srt'
+        if ((Test-Path -LiteralPath $srtNas) -and (Get-Item -LiteralPath $srtNas).Length -eq $srtItem.Length) { continue }
+        $srtAge = ($now - $srtItem.LastWriteTime).TotalMinutes
+        if ($srtAge -ge $SettleMin) {
+          $waiting += [pscustomobject]@{ File = $rel; WaitedMin = [int]$srtAge
+                                         Why = 'subtitles-only: sidecar made but not on the NAS yet - waiting on the publish loop' }
+        }
+      } else {
+        $waiting += [pscustomobject]@{ File = $rel; WaitedMin = [int]$ageMin
+                                       Why = 'subtitles-only: NO OCR SIDECAR yet - the mkv exists solely to produce one' }
+      }
+      continue
+    }
     if ((Test-Path -LiteralPath $nas) -and (Get-Item -LiteralPath $nas).Length -eq $f.Length) { continue }
 
     # WHY is it waiting? MEASURE IT - do not infer it from the absence of a sidecar.

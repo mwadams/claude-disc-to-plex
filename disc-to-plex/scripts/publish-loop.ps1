@@ -62,7 +62,18 @@ while ($true) {
       $nas = Join-Path (Join-Path '\\NASTEAMV\Multimedia' $kind) $w.Name
       $need = $false
       $stale = $false
+      # SUBTITLES-ONLY: COMPARE ONLY WHAT CAN TRAVEL. For a marked work the .srt sidecars are the
+      # ONLY files a publish may ship, so they are the only files whose absence or staleness can
+      # mean "work to do". The local .mkv is scaffolding - a fresh re-encode that exists solely to
+      # give OCR a source, under the SAME NAME as the published legacy file but with DIFFERENT
+      # BYTES, permanently and by design (~750 MB local vs ~400 MB on the NAS). Comparing it can
+      # only ever answer "stale", and before this test the loop re-published Boston Legal every
+      # pass forever (78 lines in the last 200 of this log, 2026-09-02) - harmless on the NAS,
+      # since only sidecars travel, but the track never moved past the work and the fetch-floor
+      # nag re-fired each pass. Measure the deliverable, not the scaffolding.
+      $subsOnly = Test-Path -LiteralPath (Join-Path $w.FullName '.subtitles-only')
       foreach ($f in Get-ChildItem -LiteralPath $w.FullName -Recurse -File -ErrorAction SilentlyContinue) {
+        if ($subsOnly -and $f.Extension -ne '.srt') { continue }
         $t = $f.FullName.Replace($w.FullName, $nas)
         if (-not (Test-Path -LiteralPath $t)) { $need = $true; continue }
         $ti = Get-Item -LiteralPath $t
@@ -98,7 +109,7 @@ while ($true) {
       # A MARKER FILE, not a flag here, because the fact belongs to the WORK and must survive a
       # loop restart, a context compaction and whoever looks next. Dropped by whoever authors the
       # manifest - which is already the one manual step in this pipeline.
-      if (Test-Path -LiteralPath (Join-Path $w.FullName '.subtitles-only')) {
+      if ($subsOnly) {
         $args += '-SubtitlesOnly'
         "{0,-46} .subtitles-only marker -> publishing sidecars only, leaving the NAS media alone" -f $w.Name
       }

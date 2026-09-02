@@ -59,10 +59,27 @@ foreach ($p in $pairs) {
   foreach ($f in Get-ChildItem -LiteralPath $p.Local -Recurse -File -EA SilentlyContinue) {
     $rel = $f.FullName.Substring((Resolve-Path $p.Local).Path.Length).TrimStart('\', '/')
     $nas = Join-Path $p.Nas $rel
+    $workTop = ($rel -split '[\\/]')[0]
+    # SUBTITLES-ONLY WORK: the .mkv never byte-matches the NAS copy BY DESIGN (fresh local encode,
+    # legacy NAS encode, same name), so the test below would exclude it from "reclaimable" forever
+    # while ~12 GB of scaffolding sat behind the operator's confirmation. Mirror the gate
+    # _release-published.ps1 applies to such a file: it is reclaimable once its sidecar is ON THE
+    # NAS - that is the purpose the mkv exists to serve.
+    if ($f.Extension -eq '.mkv' -and
+        (Test-Path -LiteralPath (Join-Path (Join-Path $p.Local $workTop) '.subtitles-only'))) {
+      # Both conditions mirror _release-published.ps1: the NAS must hold media at this path (any
+      # bytes - it is the legacy encode) AND the sidecar. A path with no NAS media at all is an
+      # unpublished picture, not scaffolding, and is not reclaimable.
+      $srtNas = [IO.Path]::ChangeExtension($nas, $null) + 'eng.srt'
+      if ((Test-Path -LiteralPath $nas) -and (Test-Path -LiteralPath $srtNas)) {
+        $bytes += $f.Length; $files++; $works[$workTop] = $true
+      }
+      continue
+    }
     if (-not (Test-Path -LiteralPath $nas)) { continue }
     if ((Get-Item -LiteralPath $nas).Length -ne $f.Length) { continue }
     $bytes += $f.Length; $files++
-    $works[($rel -split '[\\/]')[0]] = $true
+    $works[$workTop] = $true
   }
 }
 $stageGB = 0.0

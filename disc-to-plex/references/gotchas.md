@@ -154,3 +154,42 @@ So when the two disagree, believe the measurement. And do not use the hint list 
 decide a track's role — it is a tiebreak, not a test. This is the same lesson as the M fix, where a
 commentary was nearly dropped because its sampled minute said "Uli Lomo's film" rather than "the
 film".
+
+## Never put `-ss` before `-i` on the dvdvideo demuxer
+
+Its input seek is **approximate**: measured landing errors ran **0.8–10.5 s**, varying per seek
+target and per title on the same disc, and `-preindex 1` does not fix it (identical −10.464 s at
+one probe with and without). The error is **silent** — the output decodes normally, looks right,
+and carries no hint of where it actually starts. To read a disc title at time T, put `-ss T`
+**after** `-i` (output-side seek, verified sample-exact), or decode from the title's start and
+index within the decoded stream. Input-side `-ss` on an indexed `.mkv` is fine — this is a
+dvdvideo (and raw-VOB) problem, not an ffmpeg one.
+
+What it manufactures is a **"drifting offset / different cut" finding**. Boston Legal S3 Disk 1
+(2026-09-02): disc↔NAS audio windows cut with input-side `-ss` cross-correlated to lags of
+−1.96 s at one landmark and −10.35 s at another on the same episode, different again on each of
+the other three — recorded as fact, as "the NAS legacy encodes are cut differently", with a
+per-episode resync or a re-encode as the consequence. A seek-free re-measure (both sides decoded
+start-to-finish at 16 kHz mono, FFT xcorr at 6–11 probe points per episode) found a **constant**
++0.117–0.149 s on all four episodes, zero drift — and the input seek's landing errors reproduce
+the false figures to 0.01 s. Same session, the "7 s longer" duration discrepancy that seemed to
+corroborate the different-cut story came from the catalogue's `duration` field, which ran
+**6–9 s short** on all four titles. So, to measure a disc↔published offset: decode **both** audio
+streams start-to-finish at 16 kHz mono, cross-correlate windows at several probe points, and take
+durations from decoded sample counts — never from the catalogue's `duration` field.
+
+This was the **third** derivation of the same quirk. Babylon 5 S5 D5/D6 ("capture-evidence.py
+seeks without `-preindex` and that offset is not constant on this set, so each title was decoded
+FROM ITS START at 1 fps") and Harry Potter Azkaban ("NOT sought with -ss, whose offset is not
+constant on these discs") had both already hit it and worked around it — but the knowledge lived
+only inside those dispositions files, so the next agent re-derived the method wrongly and this
+time recorded a false finding as fact. That is why the rule now lives here.
+
+Related, from the same session — the second false alarm manufactured by a measurement *method*
+rather than the media: `ffprobe ... 2>&1 | Select-Object -First N`. `-First` terminates the
+pipeline once satisfied, which **kills the still-running native process**, and the truncated
+output reads exactly like a tool failure — it manufactured a phantom "libdvdread cannot open any
+disc" regression that cost hours. The lane-launch variant of the same defect (the pipe closing
+early makes a live encode report *completed*) is in
+[pipelines.md](pipelines.md#launching-a-lane-so-its-completion-is-reported-honestly); the rule is
+one rule: **never filter a live pipe with an early-closing cap — capture first, filter after.**

@@ -107,9 +107,16 @@ if (-not $nasBusy) {
     if (-not (Test-Path -LiteralPath $lroot)) { continue }
     foreach ($w in Get-ChildItem -LiteralPath $lroot -Directory -ErrorAction SilentlyContinue) {
       $needs = $false; $hold = $false
+      # SUBTITLES-ONLY WORK: only the .srt sidecars ever travel, so only a missing/short sidecar
+      # on the NAS is publishable work. The local .mkv NEVER byte-matches the NAS copy (different
+      # encode, same name, by design) and would count the work "READY to publish" forever - the
+      # same root cause as the publish-loop churn fixed 2026-09-02.
+      $subsOnly = Test-Path -LiteralPath (Join-Path $w.FullName '.subtitles-only')
       foreach ($f in Get-ChildItem -LiteralPath $w.FullName -Recurse -File -ErrorAction SilentlyContinue) {
         $t = $f.FullName.Replace($lroot, $nroot)
-        if (-not (Test-Path -LiteralPath $t) -or (Get-Item -LiteralPath $t).Length -ne $f.Length) { $needs = $true }
+        if (-not ($subsOnly -and $f.Extension -ne '.srt')) {
+          if (-not (Test-Path -LiteralPath $t) -or (Get-Item -LiteralPath $t).Length -ne $f.Length) { $needs = $true }
+        }
         if ($f.Extension -ne '.mkv') { continue }
         $d = "$(& $ffprobe -v error -show_entries format=duration -of csv=p=0 $f.FullName 2>$null)".Trim()
         if (-not $d -or $d -eq 'N/A') { $hold = $true; continue }        # still encoding
