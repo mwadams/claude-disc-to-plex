@@ -342,6 +342,20 @@ if($badDar){
 }
 
 function Has($o,$n){ $o.PSObject.Properties.Name -contains $n -and $null -ne $o.$n -and "$($o.$n)" -ne '' }
+function Finalised-Output($path){
+  # Is this output a FINALISED container? A finished Matroska reports a duration; one whose encode
+  # died mid-write reports N/A. SIZE IS NOT A PROXY FOR SUCCESS IN EITHER DIRECTION, and the old
+  # "-gt 1MB" success floor was wrong both ways at once: a 37 s video-only stills extra encodes to
+  # 959 KB, so a PERFECT four-item manifest was filed under _queue\failed (danger-man-s1d6,
+  # 2026-09-02) - while a LARGE unfinalised file from a killed encode would have passed the same
+  # floor and been reported OK, which is the dangerous direction. Judge by what the container says
+  # about itself, plus ffmpeg's own exit code at the call site.
+  if(-not (Test-Path -LiteralPath $path)){ return $false }
+  if((Get-Item -LiteralPath $path).Length -le 0){ return $false }
+  $d = "$(& $fp -v error -show_entries format=duration -of csv=p=0 $path 2>$null)".Trim()
+  $dv = 0.0; [void][double]::TryParse($d, [ref]$dv)
+  return ($dv -gt 0)
+}
 function InSpec($it,[switch]$Hwaccel){   # ffmpeg/ffprobe input args (demuxer + -i) for this item
   # -hwaccel cuda decodes on the GPU and hands frames back in system memory, so the crop/bwdif
   # filters and PGS handling are unaffected. NOT applied to ffprobe calls (probing is cheap) and
@@ -468,7 +482,12 @@ foreach($it in $items){
   #
   # A finalised Matroska reports a duration; a truncated one reports N/A. That is the check.
   # (Same defect, same fix, as _rip-loop.ps1's "a file existing is not a completed rip".)
-  if((Test-Path $it.out) -and ((Get-Item $it.out).Length -gt 5MB)){
+  #
+  # ANY non-empty existing output gets the duration probe - there is no size floor here. The old
+  # "-gt 5MB" pre-filter meant a small-but-finalised output (a sub-minute video-only extra can be
+  # under 1 MB) fell through to a pointless re-encode on every requeue. The probe is the check;
+  # size is not evidence in either direction (danger-man-s1d6, 2026-09-02).
+  if((Test-Path $it.out) -and ((Get-Item $it.out).Length -gt 0)){
     $od = "$(& $fp -v error -show_entries format=duration -of csv=p=0 $it.out 2>$null)".Trim()
     $odv = 0.0; [void][double]::TryParse($od, [ref]$odv)
     if($odv -gt 0){ Write-Output "   skip (exists)"; continue }
@@ -560,6 +579,11 @@ foreach($it in $items){
         Write-Output "   ABORT: no '$subSpec' subtitle on this source and $ns subtitle stream(s) present.$subDflt"
         Write-Output "          Refusing to fall back to s:0 - that ships an unknown language tagged as 'eng'."
         Write-Output "          Fix the manifest: use an explicit 0-based ordinal, or subTrack:'none' if the source has no English subs."
+        # COUNT THE SKIP AS A FAILURE. Without this the manifest exits 0 and lane-runner files it
+        # under done\ with an item never encoded - "MANIFEST DONE with failed items" through the one
+        # path the exit-code fix at the bottom of this file did not cover. The ABORT line above is
+        # only as durable as whatever captures stdout; the exit code is what actually routes.
+        $failCount++
         continue
       }
     }
@@ -873,21 +897,23 @@ foreach($it in $items){
   $a += @('-max_muxing_queue_size','1024',$it.out)
 
   if($env:TRANSCODE_DEBUG){ Write-Output ("   CMD: " + ($a -join ' ')) }
-  $t0=Get-Date; & $ff @a; $secs=[int]((Get-Date)-$t0).TotalSeconds
+  $t0=Get-Date; & $ff @a; $ffExit=$LASTEXITCODE; $secs=[int]((Get-Date)-$t0).TotalSeconds
   # NVENC does the encoding, so a slow item is almost always DECODE-bound (measured on a VC-1
   # Blu-ray: software decode 1.62x realtime, adding the encode cost only 8% more -- the encoder
   # idles waiting for frames). $hwaccel puts the decode on the GPU too. It can fail on odd
   # profiles/codecs, so on failure retry once with software decode before reporting a problem.
-  if((-not (Test-Path $it.out)) -or ((Get-Item $it.out).Length -le 1MB)){
+  if(($ffExit -ne 0) -or -not (Finalised-Output $it.out)){
     if($usedHwaccel){
       Write-Output "   hwaccel decode failed; retrying with software decode"
       Remove-Item $it.out -Force -ErrorAction SilentlyContinue
       $a = @($a | Where-Object { $_ -ne '-hwaccel' -and $_ -ne 'cuda' })
-      $t0=Get-Date; & $ff @a; $secs=[int]((Get-Date)-$t0).TotalSeconds
+      $t0=Get-Date; & $ff @a; $ffExit=$LASTEXITCODE; $secs=[int]((Get-Date)-$t0).TotalSeconds
     }
   }
-  if((Test-Path $it.out) -and ((Get-Item $it.out).Length -gt 1MB)){ Write-Output ("   OK {0:N2}GB in {1}s" -f ((Get-Item $it.out).Length/1GB),$secs) }
-  else { Write-Output "   !! FAILED ($secs s)"; $failCount++ }
+  # Success = ffmpeg said it succeeded AND the container is finalised. See Finalised-Output for why
+  # a byte-size floor is wrong in both directions (danger-man-s1d6, 2026-09-02).
+  if(($ffExit -eq 0) -and (Finalised-Output $it.out)){ Write-Output ("   OK {0:N2}GB in {1}s" -f ((Get-Item -LiteralPath $it.out).Length/1GB),$secs) }
+  else { Write-Output "   !! FAILED ($secs s, ffmpeg exit $ffExit)"; $failCount++ }
   Remove-Item "$work\s$i.sup","$work\s${i}_fixed.sup" -ErrorAction SilentlyContinue
 }
 

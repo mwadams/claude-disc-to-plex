@@ -24,11 +24,16 @@ param(
   # ungated check below is a GUARD and not a wall, but reaching for it should be rare and should be
   # explained: every use so far would have been better served by fixing the gate.
   [switch]$AllowUngated,
-  # How many times a manifest may be seen with its audio evidence still unwritten before it is
-  # failed rather than deferred. Generous on purpose: _analyse-loop.ps1 transcribes each DVD title
-  # in turn and a four-episode disc can take the better part of an hour, during which the manifest
-  # is legitimately not ready. Each deferral also sleeps 60 s, so this is roughly an hour's grace.
-  [int]$MaxDefer = 60
+  # How long a manifest may wait for its audio evidence before it is failed rather than deferred.
+  # A TIME bound, not a sighting count. The old `-MaxDefer 60` sightings was written when each
+  # deferral slept 60 s, and the head-of-line-blocking fix quietly removed that sleep: a lone
+  # queued manifest then cycled at $PollSec (20 s), so "roughly an hour's grace" had silently
+  # become ~20 minutes - well under _analyse-loop.ps1's real latency on a multi-title disc
+  # (minutes per title; a nine-title Danger Man disc is over an hour), so healthy manifests
+  # routinely expired into failed\ and the operator learned to requeue without reading. A bound
+  # that expires on healthy work is worse than no bound. Four hours covers the slowest disc seen
+  # while still catching evidence that will genuinely never arrive.
+  [double]$MaxDeferHours = 4
 )
 
 # SINGLE INSTANCE, AND VISIBLE TO _loops.ps1.
@@ -52,6 +57,19 @@ if (-not $laneMutex.WaitOne(0)) {
 }
 
 $transcode = 'D:\video\.claude\skills\disc-to-plex\scripts\transcode.ps1'
+
+# Every routing decision is APPENDED to <per-manifest log>\lane.txt as well as printed. The
+# runner's own stdout is NOT durable - the sanctioned start command is
+# `Start-Process pwsh ... -WindowStyle Hidden` (see _loops.ps1), which discards it - so until this
+# existed, WHY a manifest was moved to failed\ was unrecoverable after the fact: danger-man-s1d6
+# (2026-09-02) sat in failed\ with four verified, published outputs and an EMPTY log folder, and
+# the reason had to be reconstructed from folder mtimes. A lane whose failure reason cannot be
+# recovered can equally misreport success, and nobody would be able to prove it either way.
+function Lane-Note([string]$logDir, [string]$msg){
+  $line = "{0}  {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $msg
+  Write-Output "    $line"
+  try { Add-Content -LiteralPath (Join-Path $logDir 'lane.txt') -Value $line } catch {}
+}
 foreach ($d in @($Queue, (Join-Path $Queue 'running'), (Join-Path $Queue 'done'), (Join-Path $Queue 'failed'), $LogRoot)) {
   New-Item -ItemType Directory -Force $d | Out-Null
 }
@@ -65,9 +83,12 @@ function Busy-Lanes {
 
 Write-Output "lane-runner: draining $Queue with $Lanes lane(s)"
 $idle = 0
-# How many times each manifest has been put back for want of audio evidence. In memory only, and
-# deliberately so: a restart SHOULD forgive past deferrals, because the usual reason a manifest was
-# waiting is that the analyse track had not caught up, and that is not a fault to carry forward.
+# When each manifest was FIRST seen with its audio evidence unwritten (name -> DateTime). In
+# memory only, and deliberately so: a restart SHOULD forgive past waiting, because the usual
+# reason a manifest was waiting is that the analyse track had not caught up, and that is not a
+# fault to carry forward. Also cleared when a manifest is moved to failed\, for the same reason:
+# a requeue is a fresh attempt and gets the full grace period, not an instant re-expiry - the old
+# sighting counter was never cleared, so a requeued manifest hit the bound on its FIRST sighting.
 $deferrals = @{}
 # Names deferred during the current sweep of the queue, so the picker above can step past them
 # instead of re-selecting the same blocked manifest for ever. Reset whenever the sweep exhausts.
@@ -132,7 +153,7 @@ while ($true) {
         if ($e.name -eq $next.Name -and $e.sha256 -eq $claimHash) { $gated = $true; break }
       }
       if (-not $gated) {
-        Write-Output "    REFUSED: $($next.Name) is not in the gate ledger - it was written straight into _queue."
+        Lane-Note $log "REFUSED: $($next.Name) is not in the gate ledger - it was written straight into _queue. Moved to failed."
         Write-Output '    Queue it with: pwsh -File D:/video/_gate-queue.ps1 -Disc <disc name> -Manifest <path>'
         Write-Output '    (or re-run this lane with -AllowUngated if the gate genuinely cannot apply)'
         Move-Item -LiteralPath $claim -Destination (Join-Path $Queue ('failed' + [IO.Path]::DirectorySeparatorChar + $next.Name)) -Force
@@ -169,14 +190,16 @@ while ($true) {
     # The deferral is BOUNDED - a disc whose evidence never appears must not circle for ever, so
     # after $MaxDefer sightings it goes to failed with the reason intact.
     if ($LASTEXITCODE -eq 4) {
-      $seen = 1 + [int]($deferrals[$next.Name])
-      $deferrals[$next.Name] = $seen
-      if ($seen -ge $MaxDefer) {
+      if (-not $deferrals.ContainsKey($next.Name)) { $deferrals[$next.Name] = Get-Date }
+      $waited = (Get-Date) - $deferrals[$next.Name]
+      if ($waited.TotalHours -ge $MaxDeferHours) {
         $audit | ForEach-Object { "    $_" }
-        Write-Output "    evidence still absent after $seen sighting(s) - moving to failed"
+        try { $audit | Add-Content -LiteralPath (Join-Path $log 'lane.txt') } catch {}
+        Lane-Note $log ("evidence still absent after {0:N1} h (grace {1} h) - moving to failed" -f $waited.TotalHours, $MaxDeferHours)
         Move-Item -LiteralPath $claim -Destination (Join-Path $Queue ('failed' + [IO.Path]::DirectorySeparatorChar + $next.Name)) -Force
+        [void]$deferrals.Remove($next.Name)   # a requeue is a fresh attempt with fresh grace
       } else {
-        Write-Output "    evidence not written yet (sighting $seen of $MaxDefer) - returning it to the queue"
+        Write-Output ("    evidence not written yet ({0:N0} min of {1} h grace used) - returning it to the queue" -f $waited.TotalMinutes, $MaxDeferHours)
         Move-Item -LiteralPath $claim -Destination (Join-Path $Queue $next.Name) -Force
         # Mark it for THIS sweep only, so the picker moves to the next manifest instead of
         # re-selecting this one. No sleep here: another manifest may be ready to encode right now,
@@ -188,7 +211,8 @@ while ($true) {
     }
     if ($LASTEXITCODE -ne 0) {
       $audit | ForEach-Object { "    $_" }
-      Write-Output '    REFUSED before encoding - moving to failed'
+      try { $audit | Add-Content -LiteralPath (Join-Path $log 'lane.txt') } catch {}
+      Lane-Note $log "REFUSED before encoding (assert-tracks-analysed exit $LASTEXITCODE) - moving to failed"
       Move-Item -LiteralPath $claim -Destination (Join-Path $Queue ('failed' + [IO.Path]::DirectorySeparatorChar + $next.Name)) -Force
       $idle = 0
       continue
@@ -205,14 +229,22 @@ while ($true) {
     # the NAS labelled English: transcode.ps1 announced the fallback on a WARNING line, this filter
     # dropped it, and no log a human reads ever mentioned it. A filter that hides warnings turns a
     # noisy failure into a silent one.
+    # The FULL transcode output is teed to a timestamped file in the per-manifest log dir before
+    # the filter. The filter is for the console; the file is the record. Without it the only copy
+    # of "!! FAILED" / "ABORT" lines lived on a discarded stdout (see Lane-Note above), and
+    # transcode.ps1's -LogDir has never written anything, so the log dirs sat empty for success
+    # and failure alike - indistinguishable.
+    $tlog = Join-Path $log ("transcode-{0}.log" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
     & pwsh -NoProfile -File $transcode -Manifest $claim -LogDir $log 2>&1 |
+      Tee-Object -FilePath $tlog |
       Select-String 'OK |FAILED|ABORT|REFUS|WARNING|MANIFEST DONE|AUDIO REVIEW' | ForEach-Object { "    $_" }
     if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) {
-      Write-Output "    lane exit $LASTEXITCODE - moving to failed"
+      Lane-Note $log "$($next.Name): transcode exit $LASTEXITCODE - moving to failed (full output: $tlog)"
       Move-Item -LiteralPath $claim -Destination (Join-Path $Queue "failed\$($next.Name)") -Force
     }
     else {
       # Only NOW is it done. `running\` empty + `done\` populated is the truthful resting state.
+      Lane-Note $log "$($next.Name): transcode exit 0 - moving to done (full output: $tlog)"
       Move-Item -LiteralPath $claim -Destination (Join-Path $Queue "done\$($next.Name)") -Force
     }
     $idle = 0
