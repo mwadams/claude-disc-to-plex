@@ -200,15 +200,22 @@ while ($true) {
         # must stay cheap (see the retire-list note above: NAS traffic every 90s adds up). The full
         # picture is refreshed separately and less often, below.
         #
-        # QUEUEING IS NOT RUNNING. This only appends rows to _transcribe-queue.csv for the ONE
-        # category safe to automate - 'awaiting-transcription' (the disc genuinely had no subtitle
-        # source, per the manifest that produced this exact file) - never 'not-applicable' (routed
-        # to its own register, never queued) and never 'genuinely-missed' (a real subtitle source
-        # that failed to ship - reported, not papered over with a machine transcript). The
-        # transcribe track itself stays optional and stands down for encodes; this never starts it.
+        # QUEUEING IS NOT RUNNING. Two SEPARATE queues, two separate scope rules (user, 2026-09-03):
+        #   - OCR (_ocr-queue.csv): LIBRARY-WIDE - a bitmap subtitle stream found by probing the
+        #     published file directly is its own evidence; it does not matter which drive produced
+        #     it or whether this pipeline produced it. "If there is a PGS or VOBSUB stream in the
+        #     published file then yes, it can be queued immediately for OCR."
+        #   - Transcription (_transcribe-queue.csv): NARROWED - only 'awaiting-transcription' (this
+        #     pipeline's own manifest declares no subtitle source AND the file is sourced from the
+        #     CURRENTLY ATTACHED drive). A disc on a drive not attached may have subtitles never
+        #     seen yet, so transcribing now risks GPU + verification effort a future re-rip would
+        #     waste; those go to _transcribe-deferred.csv instead, NOT as a failure.
+        # Never 'not-applicable' (routed to its own register) and never 'genuinely-missed' (a real
+        # subtitle source that failed to ship - reported, not papered over). Neither track is ever
+        # STARTED by this - both drain opportunistically and OCR/transcribe stand down for encodes.
         try {
           $covOut = & pwsh -NoProfile -File 'D:\video\.claude\skills\disc-to-plex\scripts\subtitle-coverage.ps1' -Works $w.Name -Queue 2>&1
-          $covLine = $covOut | Select-String 'QUEUED: [1-9]|DIVERTED TO NOT-APPLICABLE: [1-9]|awaiting-ocr|genuinely-missed'
+          $covLine = $covOut | Select-String 'QUEUED: [1-9]|DIVERTED TO NOT-APPLICABLE|EXCLUDED|awaiting-ocr|genuinely-missed|transcription-deferred'
           if ($covLine) { $covLine | ForEach-Object { "    [subtitle-coverage] $_" } }
         } catch {
           Write-Output "    subtitle-coverage.ps1 threw: $($_.Exception.Message)"
@@ -254,16 +261,22 @@ while ($true) {
     # FULL SUBTITLE-COVERAGE REPORT - refreshed periodically, not every pass. The per-work trigger
     # above catches what THIS loop just published; this is the wider "one current picture" (every
     # work, both areas, the legacy backlog total, stale-provenance and genuinely-missed lists) that
-    # D:/video/_subtitle-coverage.csv is supposed to be. A full sweep walks the whole NAS (~7,000
-    # files, ~30-40s) so it is throttled to once per $coverageFullSweepEveryMin, the same shape as
-    # every other "don't rescan on every idle poll" guard in this loop.
+    # D:/video/_subtitle-coverage.csv is supposed to be.
+    #
+    # COST WENT UP 2026-09-03: a full sweep now ffprobes EVERY file with no current sidecar for a
+    # bitmap subtitle stream (the awaiting-ocr check, widened to the whole library per the user's
+    # ruling that OCR eligibility must be probed on the file, not inferred from a manifest) - about
+    # 5,600 files, ~25-30 minutes, not the ~30-40s a metadata-only sweep took before. Raised the
+    # throttle from 30 to 240 minutes accordingly - at 30 the sweep would have been running back to
+    # back, which is exactly the "NAS is remote and slow, don't rescan on every idle poll" guard
+    # this loop otherwise follows everywhere else.
     #
     # REPORT ONLY - never -Queue here. The 'awaiting-transcription' backlog across the WHOLE
-    # library this pipeline has ever produced runs into four figures (1,136 files measured
-    # 2026-09-03) - committing that to the transcribe queue in one shot is the kind of decision
-    # this loop must surface, not make unattended. Only the scoped per-work call above queues
-    # anything, and only for the work that just published.
-    $coverageFullSweepEveryMin = 30
+    # library this pipeline has ever produced runs into four figures - committing that to the
+    # transcribe queue in one shot is the kind of decision this loop must surface, not make
+    # unattended. Only the scoped per-work call above queues anything, and only for the work that
+    # just published (both its OCR and its transcription eligibility).
+    $coverageFullSweepEveryMin = 240
     $coverageCheckpoint = 'D:/video/_subtitle-coverage-last-full.txt'
     $dueForFullSweep = $true
     if (Test-Path -LiteralPath $coverageCheckpoint) {
@@ -277,7 +290,7 @@ while ($true) {
       Write-Output '--- refreshing full subtitle-coverage report (report-only, no auto-queue) ---'
       try {
         & pwsh -NoProfile -File 'D:\video\.claude\skills\disc-to-plex\scripts\subtitle-coverage.ps1' 2>&1 |
-          Select-String 'unclassified,|awaiting-transcription,|LEGACY BACKLOG|genuinely-missed \(ours\)|stale-provenance \(ours\)' |
+          Select-String 'unclassified,|awaiting-transcription,|awaiting-ocr,|LEGACY BACKLOG|TRANSCRIPTION-DEFERRED|genuinely-missed \(ours\)|stale-provenance \(ours\)' |
           ForEach-Object { "    $_" }
         Set-Content -LiteralPath $coverageCheckpoint -Value (Get-Date -Format s)
       } catch {

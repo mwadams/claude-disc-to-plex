@@ -78,6 +78,39 @@ import sys
 SECTOR = 2048
 
 
+# THE ONE-SECTOR SHORTFALL, MECHANICALLY EXPLAINED (Survivors Series 3 Disk 2, 2026-09-03).
+#
+# t01 and t04 each came back exactly 2048 bytes (one sector) short of their VTS's title-VOB total.
+# Read the actual bytes: the LAST sector of VTS_01_2.VOB and of VTS_04_2.VOB is not audio/video
+# payload. It opens with a pack header (00 00 01 BA) immediately followed by a private_stream_2 PES
+# pair (00 00 01 BF, 00 00 01 BF) whose declared lengths are 0x3D4 and 0x3FA - 980 and 1018 bytes -
+# which are exactly PCI and DSI, the two navigation records every VOBU carries, zero-padded to fill
+# the sector. Every ordinary sector nearby opens with an audio (0xBD) or video (0xE0) PES packet;
+# only this final sector is NAV-only, with nothing to demux.
+#
+# So the authoring software closed the title with a trailing navigation pack that has no VOBU
+# payload after it. The IFO's cell table (C_PBI last_sector) and the physical VOB file both include
+# that sector, because it is bytes that are really on the disc; MakeMKV's TINFO,11 - the demuxed
+# title's SOURCE size - does not, because there is no source content in it. Both numbers are correct
+# about different things. The shortfall is exactly one sector, never more, because there is only
+# ever one such closing pack per title.
+#
+# TOLERANCE, NOT A FUDGE FACTOR. A MakeMKV total may be accepted up to this many sectors SHORT of a
+# candidate's total - never the reverse, because MakeMKV cannot invent bytes the disc doesn't have.
+# 1 sector is the number this mechanism can ever produce; a shortfall of 2+ sectors is NOT this
+# artifact and must not be swallowed by widening this constant.
+TRAILING_NAV_PACK_MAX_SECTORS = 1
+TRAILING_NAV_PACK_MAX_BYTES = TRAILING_NAV_PACK_MAX_SECTORS * SECTOR
+
+# THE SEPARATION-RATIO SAFEGUARD. A tolerance window alone is not proof - it just widens the target
+# a wrong candidate could fall into. What actually makes Survivors S3D2's match safe is that the
+# next-nearest OTHER candidate sits nowhere near it: 1,164x and 2,369x TRAILING_NAV_PACK_MAX_BYTES
+# away for t04 and t01 respectively. 100x is comfortably below both of those real separations and
+# comfortably above 1x, so a genuine near-collision (two titles a few sectors apart in size) FAILS
+# this guard and is correctly left UNPROVEN rather than silently accepted. See match_by_size().
+MIN_SEPARATION_RATIO = 100
+
+
 # --------------------------------------------------------------------------------------- IFO
 
 def read_tt_srpt(video_ts_dir):
@@ -299,6 +332,65 @@ def run_makemkv(disc_dir, minlength):
     return p.stdout
 
 
+# ------------------------------------------------------------------------------------ matching
+
+def match_by_size(want, candidates):
+    """Match MakeMKV's `want` bytes against `candidates` (key -> byte total), exactly or within
+    the documented one-sector trailing-NAV-pack tolerance (see TRAILING_NAV_PACK_MAX_BYTES).
+
+    Returns (hits, tolerance_bytes, ambiguous):
+      hits             matching key(s) - length 0 (no match), 1 (a proof), or >1 (real ambiguity,
+                        handled by the caller exactly like today's exact-match ambiguity)
+      tolerance_bytes   0 for an exact match; otherwise the bytes short (a positive multiple of
+                        SECTOR - currently always exactly SECTOR, since MAX_SECTORS is 1)
+      ambiguous         True only when >1 keys were found WITHIN TOLERANCE (as opposed to exactly) -
+                        lets the caller word the ambiguity note correctly
+
+    An exact match always wins outright - a disc that already proved cleanly takes an identical path
+    through this function today, so there is no regression risk for it.
+
+    A tolerant match is returned ONLY when exactly one candidate falls in the window AND the
+    next-nearest OTHER candidate clears MIN_SEPARATION_RATIO. Failing that guard returns ([], 0,
+    False) - i.e. behaves as "no match", so the caller's existing UNPROVEN fallbacks apply. A
+    tolerance nobody can fail is a fudge factor; this one can, and does, on the truncation test
+    below.
+    """
+    exact = [k for k, total in candidates.items() if total == want]
+    if exact:
+        return exact, 0, False
+
+    within = sorted(
+        ((k, total - want) for k, total in candidates.items()
+         if 0 < total - want <= TRAILING_NAV_PACK_MAX_BYTES and (total - want) % SECTOR == 0),
+        key=lambda kv: kv[1])
+    if not within:
+        return [], 0, False
+    if len(within) > 1:
+        return [k for k, _ in within], 0, True
+
+    key, delta = within[0]
+    others = [abs(total - want) for k, total in candidates.items() if k != key]
+    nearest_other = min(others) if others else None
+    if nearest_other is None or nearest_other < MIN_SEPARATION_RATIO * TRAILING_NAV_PACK_MAX_BYTES:
+        # Either nothing else to compare against, or the next-nearest candidate is not far enough
+        # away to trust the window - stay unmatched rather than guess.
+        return [], 0, False
+    return [key], delta, False
+
+
+def sizes_matching(target, sizes_values):
+    """Which MakeMKV-reported sizes are consistent with `target` (an expected VTS or per-title
+    byte total), exactly or within the trailing-NAV-pack shortfall?
+
+    DIAGNOSTIC ONLY. This says "MakeMKV plainly saw something this size", not "this proves the
+    mapping" - it has none of match_by_size's separation-ratio guard, because it is not used to
+    accept a proof. It is used only to stop the 'declared but not enumerated' report from calling a
+    title 'never enumerated' when MakeMKV's own output plainly contains its size.
+    """
+    return [s for s in sizes_values
+            if 0 <= target - s <= TRAILING_NAV_PACK_MAX_BYTES and (target - s) % SECTOR == 0]
+
+
 # -------------------------------------------------------------------------------------- main
 
 def prove(disc_dir, info_text):
@@ -321,19 +413,29 @@ def prove(disc_dir, info_text):
     rows, unproven = [], []
     for mkv_id in sorted(sizes):
         want = sizes[mkv_id]
-        hits = [v for v, total in vob.items() if total == want]
+        hits, tol_bytes, hits_ambiguous = match_by_size(want, vob)
         row = {'makemkvTitle': mkv_id, 'sizeBytes': want, 'vts': None,
-               'dvdvideoTitle': None, 'provenBy': None, 'note': None}
+               'dvdvideoTitle': None, 'provenBy': None, 'note': None, 'toleranceBytes': 0}
+
+        # A TOLERANCE-ACCEPTED PROOF USES THE DISC'S TRUE TOTAL IN ITS PROSE, NOT MAKEMKV'S SHORT
+        # ONE. `verify_claims()` re-derives the number that follows "title VOBs total" against the
+        # disc's own vob total - so the claim must state that true figure, or a perfectly good proof
+        # would fail its own re-derivation. The tolerance-accepted tag says how it was reached; the
+        # cited number says what is actually true of the disc.
+        tol_tag = ('' if not tol_bytes else
+                   f' [TOLERANCE-ACCEPTED: MakeMKV reports {want} bytes, {tol_bytes} short '
+                   f'({tol_bytes // SECTOR} sector) - see TRAILING_NAV_PACK_MAX_BYTES]')
 
         if len(hits) == 1:
             v = hits[0]
             row['vts'] = v
+            row['toleranceBytes'] = tol_bytes
             titles = per_vts.get(v, [])
             if len(titles) == 1:
                 row['dvdvideoTitle'] = titles[0]['title']
-                row['provenBy'] = (f"VTS_{v:02d} title VOBs total {want} bytes, matching MakeMKV "
-                                   f"t{mkv_id:02d} exactly; TT_SRPT declares one title in that VTS "
-                                   f"(VTSN={v}, VTS_TTN={titles[0]['vts_ttn']})")
+                row['provenBy'] = (f"VTS_{v:02d} title VOBs total {vob[v]} bytes, matching MakeMKV "
+                                   f"t{mkv_id:02d}{tol_tag}; TT_SRPT declares one title in that "
+                                   f"VTS (VTSN={v}, VTS_TTN={titles[0]['vts_ttn']})")
             else:
                 # THE VTS TOTAL MATCHED, AND SEVERAL TITLES ARE DECLARED IN IT. Before giving up,
                 # ask whether those titles cover IDENTICAL cells. If they do, this is the two-door
@@ -347,9 +449,9 @@ def prove(disc_dir, info_text):
                 if len(same) == len(titles) and title_ranges.get((v, titles[0]['vts_ttn'])):
                     row['dvdvideoTitle'] = titles[0]['title']
                     row['provenBy'] = (
-                        f"VTS_{v:02d} title VOBs total {want} bytes, matching MakeMKV "
-                        f"t{mkv_id:02d} exactly; TT_SRPT declares {len(titles)} titles in that VTS "
-                        f"({', '.join(str(t['title']) for t in titles)}) but their PGCs cover "
+                        f"VTS_{v:02d} title VOBs total {vob[v]} bytes, matching MakeMKV "
+                        f"t{mkv_id:02d}{tol_tag}; TT_SRPT declares {len(titles)} titles in that "
+                        f"VTS ({', '.join(str(t['title']) for t in titles)}) but their PGCs cover "
                         f"IDENTICAL cell sectors - one item behind two doors, so every one of them "
                         f"is the same material and title {titles[0]['title']} is its lowest entry")
                 else:
@@ -362,18 +464,27 @@ def prove(disc_dir, info_text):
             # its own size is a fraction of the set it lives in. Go one level finer and match
             # against the per-title cell-sector totals, but only where that VTS's per-title sizes
             # ACCOUNT FOR THE WHOLE VTS with no remainder - otherwise the IFO reading is not
-            # trustworthy enough to prove anything with, and it stays unproven.
-            cand = [(vtsn, ttn) for (vtsn, ttn), nb in title_bytes.items()
-                    if nb == want and covered.get(vtsn) == vob.get(vtsn)]
+            # trustworthy enough to prove anything with, and it stays unproven. Tolerant the same
+            # way as the VTS-level match above, and for the same reason: the trailing NAV-pack
+            # shortfall applies just as well to a title that happens to be the last one physically
+            # laid out in its VTS.
+            candidates = {k: nb for k, nb in title_bytes.items()
+                         if covered.get(k[0]) == vob.get(k[0])}
+            cand, cand_tol, cand_ambig = match_by_size(want, candidates)
+            cand_tag = ('' if not cand_tol else
+                       f' [TOLERANCE-ACCEPTED: MakeMKV reports {want} bytes, {cand_tol} short '
+                       f'({cand_tol // SECTOR} sector) - see TRAILING_NAV_PACK_MAX_BYTES]')
             if len(cand) == 1:
                 vtsn, ttn = cand[0]
+                nb = title_bytes[(vtsn, ttn)]
                 match = [t for t in per_vts.get(vtsn, []) if t['vts_ttn'] == ttn]
                 if len(match) == 1:
                     row['vts'] = vtsn
+                    row['toleranceBytes'] = cand_tol
                     row['dvdvideoTitle'] = match[0]['title']
                     row['provenBy'] = (
-                        f"VTS_{vtsn:02d} title {ttn} totals {want} bytes across its PGC's cell "
-                        f"sectors, matching MakeMKV t{mkv_id:02d} exactly; that VTS holds "
+                        f"VTS_{vtsn:02d} title {ttn} totals {nb} bytes across its PGC's cell "
+                        f"sectors, matching MakeMKV t{mkv_id:02d}{cand_tag}; that VTS holds "
                         f"{len(per_vts[vtsn])} title(s) whose cells, unioned, cover the VTS total "
                         f"exactly (VTSN={vtsn}, VTS_TTN={ttn})")
                 else:
@@ -407,11 +518,13 @@ def prove(disc_dir, info_text):
                     entries = sorted(t['title'] for t in per_vts.get(vtsn, [])
                                      if t['vts_ttn'] in ttns)
                     ttn = next(t['vts_ttn'] for t in per_vts[vtsn] if t['title'] == entries[0])
+                    nb = title_bytes[cand[0]]   # identical for every door - `doors` proved that
                     row['vts'] = vtsn
+                    row['toleranceBytes'] = cand_tol
                     row['dvdvideoTitle'] = entries[0]
                     row['provenBy'] = (
-                        f"VTS_{vtsn:02d} title {ttn} totals {want} bytes across its PGC's cell "
-                        f"sectors, matching MakeMKV t{mkv_id:02d} exactly; that VTS holds "
+                        f"VTS_{vtsn:02d} title {ttn} totals {nb} bytes across its PGC's cell "
+                        f"sectors, matching MakeMKV t{mkv_id:02d}{cand_tag}; that VTS holds "
                         f"{len(per_vts[vtsn])} title(s) whose cells, unioned, cover the VTS total "
                         f"exactly (VTSN={vtsn}, VTS_TTN={ttn}). NOTE this size is shared by "
                         f"dvdvideo {', '.join(str(e) for e in entries)}, whose PGCs play IDENTICAL "
@@ -431,12 +544,13 @@ def prove(disc_dir, info_text):
                     # not. Say which of the two genuine reasons applies and leave it unproven.
                     why = ('they lie in different VTSs' if len({c[0] for c in cand}) > 1
                            else 'their PGCs play DIFFERENT cell sectors')
-                    row['note'] = ('byte total %d matches %d declared titles (%s) and %s, so this is '
-                                   'REAL ambiguity between different material - not the two-door '
-                                   'shape. Size cannot separate them; settle it from content or '
-                                   'from proven neighbours in TT_SRPT order' %
-                                   (want, len(cand),
-                                    ', '.join('VTS_%02d title %d' % c for c in sorted(cand)), why))
+                    basis = 'within the trailing-NAV-pack tolerance' if cand_ambig else 'exactly'
+                    listed = ', '.join('VTS_%02d title %d' % c for c in sorted(cand))
+                    row['note'] = (f'byte total {want} matches {len(cand)} declared titles {basis} '
+                                   f'({listed}) and {why}, so this is REAL ambiguity between '
+                                   f'different material - not the two-door shape. Size cannot '
+                                   f'separate them; settle it from content or from proven neighbours '
+                                   f'in TT_SRPT order')
                     unproven.append(row)
             else:
                 near = sorted(vob.items(), key=lambda kv: abs(kv[1] - want))[:1]
@@ -446,7 +560,9 @@ def prove(disc_dir, info_text):
                                f'single per-title cell-sector total either')
                 unproven.append(row)
         elif len(hits) > 1:
-            row['note'] = f'byte total {want} matches {len(hits)} title sets ({sorted(hits)})'
+            basis = 'within the trailing-NAV-pack tolerance' if hits_ambiguous else 'exactly'
+            row['note'] = (f'byte total {want} matches {len(hits)} title sets {basis} '
+                           f'({sorted(hits)})')
             unproven.append(row)
         else:
             near = sorted(vob.items(), key=lambda kv: abs(kv[1] - want))[:1]
@@ -490,21 +606,43 @@ def prove(disc_dir, info_text):
         covered_elsewhere = bool(own) and all(
             any(a <= first and last <= b for a, b in claimed_cells.get(e['vtsn'], []))
             for first, last in own)
+        # THE EXPECTED SIZE OF THIS DECLARED TITLE, so it can be checked against what MakeMKV
+        # actually reported - own per-title cells where the IFO parses, else the whole VTS total.
+        nb = sum((last - first + 1) * SECTOR for first, last in own) if own else vob.get(e['vtsn'])
+        seen = sizes_matching(nb, sizes.values()) if nb is not None else []
         if covered_elsewhere:
             why = ('its cells are wholly covered by an enumerated title - a second door onto the '
                    'same material, not missing content')
+            present_unprovable = False
+        elif seen:
+            # MAKEMKV PLAINLY SAW THIS TITLE. Some enumerated title's byte size matches this
+            # declared title's own expected size - exactly, or within the same one-sector
+            # trailing-NAV-pack window match_by_size() uses to PROVE a mapping (this check carries
+            # none of that function's separation-ratio guard, because it isn't proving one - only
+            # reporting that MakeMKV's output is not empty here). Calling this "not enumerated ...
+            # below the minlength floor?" would be false and exactly the alarm this fix exists to
+            # remove: the title is plainly above the floor and plainly present in MakeMKV's own
+            # numbers. What is actually missing is a PROVEN mapping, not the content - see the
+            # UNPROVEN row(s) in `rows` above for why the byte-matching stopped short of proof.
+            why = (f'VTS present AND ENUMERATED (expected {nb:,} bytes; MakeMKV reported '
+                   f'{", ".join(f"{s:,}" for s in seen)}) but the byte-proof could not map it to '
+                   f'this specific dvdvideo title - see the UNPROVEN row(s) above. This is a '
+                   f'mapping gap, not missing content')
+            present_unprovable = True
         elif on_disk:
             # STATE ITS SIZE. "Not enumerated" alone cannot be acted on - the reader must know
             # whether they are looking at a missing 44-minute episode or a stub. Farscape S2 D1's
             # dvdvideo 1 is five sectors, 10,240 bytes, and no amount of investigation was going to
             # make it interesting; without the number it looked exactly like the other case.
-            nb = sum((last - first + 1) * SECTOR for first, last in (own or []))
             why = ('VTS present but not enumerated (%s - below the minlength floor?)'
                    % (f'{nb:,} bytes' if own else 'size unknown, IFO unparsed'))
+            present_unprovable = False
         else:
             why = 'VTS HAS NO TITLE VOBs ON DISK - the copy is incomplete'
+            present_unprovable = False
         missing.append({'title': e['title'], 'vts': e['vtsn'], 'vtsOnDisk': on_disk,
-                        'secondDoor': covered_elsewhere, 'why': why})
+                        'secondDoor': covered_elsewhere, 'presentButUnprovable': present_unprovable,
+                        'why': why})
     return rows, unproven, srpt, missing
 
 
@@ -573,7 +711,7 @@ def verify_claims(disc_dir, catalogue_path):
                                         f'but TT_SRPT puts it at VTS_{srpt[dv]["vtsn"]:02d} title '
                                         f'{srpt[dv]["vts_ttn"]}'))
             else:
-                verified.append((label, dv, vtsn))
+                verified.append((label, dv, vtsn, claim))
             continue
 
         m = re.search(r'VTS_(\d+)\s+title VOBs total\s+(\d+)\s+bytes', claim)
@@ -628,9 +766,9 @@ def verify_claims(disc_dir, catalogue_path):
                                         f'VTS_{vtsn:02d}, but that is dvdvideo '
                                         f'{min(titles_here)}'))
             else:
-                verified.append((label, dv, vtsn))
+                verified.append((label, dv, vtsn, claim))
         else:
-            verified.append((label, dv, vtsn))
+            verified.append((label, dv, vtsn, claim))
     # WHICH TITLES DOES THE DISC DECLARE THAT THE CATALOGUE NEVER MENTIONS?
     #
     # `assert-accounted.ps1` checks that every CATALOGUED title has a disposition. If MakeMKV never
@@ -676,8 +814,9 @@ def main():
 
     if a.verify_claims:
         ok, unver, bad, uncat = verify_claims(a.disc, a.verify_claims)
-        for label, dv, vtsn in ok:
-            print(f'    {label}  VERIFIED  dvdvideo {dv} in VTS_{vtsn:02d} - byte total and '
+        for label, dv, vtsn, claim in ok:
+            tag = ' [TOLERANCE-ACCEPTED PROOF]' if 'TOLERANCE-ACCEPTED' in claim else ''
+            print(f'    {label}  VERIFIED{tag}  dvdvideo {dv} in VTS_{vtsn:02d} - byte total and '
                   f'TT_SRPT placement both re-derived from the disc')
         for label, claim in unver:
             print(f'    {label}  unverified human claim (not this script\'s wording): {claim[:90]}')
@@ -724,26 +863,44 @@ def main():
         for r in rows:
             dv = f'dvdvideo {r["dvdvideoTitle"]}' if r['dvdvideoTitle'] is not None else 'dvdvideo ?'
             vt = f'VTS_{r["vts"]:02d}' if r['vts'] is not None else 'VTS ?'
+            # A TOLERANCE-ACCEPTED PROOF MUST BE VISIBLY DIFFERENT FROM AN EXACT ONE even in this
+            # compact line, not only in the prose - a reader scanning the column of rows must be
+            # able to tell without reading every provenBy sentence.
+            tag = f'[TOLERANCE -{r["toleranceBytes"]}B] ' if r.get('toleranceBytes') else ''
             print(f'    t{r["makemkvTitle"]:02d} -> {dv:<13} in {vt:<7} '
                   f'{r["sizeBytes"]:>14,} bytes  '
-                  f'{r["provenBy"] or "UNPROVEN: " + (r["note"] or "")}')
+                  f'{tag}{r["provenBy"] or "UNPROVEN: " + (r["note"] or "")}')
         if unproven:
             print(f'\n{len(unproven)} title(s) UNPROVEN - these still rest on duration and need '
                   f'corroboration from content (menu, adjacency, on-screen card).')
         else:
-            print(f'\nall {len(rows)} enumerated title(s) proven by byte size; duration was not '
-                  f'consulted.')
+            tol_n = sum(1 for r in rows if r.get('toleranceBytes'))
+            extra = (f' ({tol_n} within the documented 1-sector trailing-NAV-pack tolerance, '
+                    f'flagged [TOLERANCE] above)' if tol_n else '')
+            print(f'\nall {len(rows)} enumerated title(s) proven by byte size{extra}; duration was '
+                  f'not consulted.')
 
         if missing:
             absent = [m for m in missing if not m['vtsOnDisk']]
             doors = [m for m in missing if m.get('secondDoor')]
-            # HEADLINE THE NUMBER THAT MATTERS. Counting second doors in the alarm is what made
-            # this line read like a half-copied disc on a disc that was complete.
-            real = len(missing) - len(doors)
+            unprovable = [m for m in missing if m.get('presentButUnprovable')]
+            # HEADLINE THE NUMBER THAT MATTERS. Counting second doors - or a title MakeMKV plainly
+            # enumerated but couldn't be mapped by byte size - in the alarm is what made this line
+            # read like a half-copied disc on a disc that was complete (second doors), and what made
+            # it read that way for two 49-minute episodes that were sitting right there in MakeMKV's
+            # own output, just short one sector (Survivors Series 3 Disk 2, 2026-09-03). Both are
+            # real states worth reporting, but neither is "never enumerated", so neither belongs in
+            # the number that triggers *** stars.
+            real = len(missing) - len(doors) - len(unprovable)
+            parts = []
+            if doors:
+                parts.append(f'{len(doors)} are second doors onto material already claimed')
+            if unprovable:
+                parts.append(f'{len(unprovable)} were enumerated but not mapped by byte size (see '
+                             f'UNPROVEN rows above)')
             head = (f'{real} of {len(srpt)} DECLARED title(s) were never enumerated'
                     if real else
-                    f'all {len(srpt)} declared title(s) accounted for; {len(doors)} are second '
-                    f'doors onto material already claimed')
+                    f'all {len(srpt)} declared title(s) accounted for; ' + '; '.join(parts))
             print(f'\n*** {head} ***' if real else f'\n{head}:')
             for m in missing:
                 print(f'    dvdvideo {m["title"]:>3}  VTS_{m["vts"]:02d}  {m["why"]}')

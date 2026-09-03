@@ -72,6 +72,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'lib-subtitle-coverage.ps1')
+. (Join-Path $PSScriptRoot 'lib-queue-guard.ps1')
 
 $fullSweep = ($Works.Count -eq 0)
 $writeReport = $Report.IsPresent -or $fullSweep
@@ -291,10 +292,12 @@ if ($ocrExcludedInFlight.Count) {
 }
 
 # --- TRANSCRIPTION QUEUE (narrowed: ours + attached drive only) --------------------------------
-$existingQueue = @{}
-if (Test-Path -LiteralPath $QueueCsv) {
-  Import-Csv -LiteralPath $QueueCsv | ForEach-Object { $existingQueue[$_.Path] = $true }
-}
+# Seeded from the CSV once via the SHARED table (lib-queue-guard.ps1) that Add-UniqueQueueRow then
+# keeps current on every append below - the same table queue-transcribable.ps1 uses for its own
+# inserts would need to be this one too for a true cross-script guard, but a rename-shaped
+# duplicate (same file, different path) is out of reach for a path-keyed table regardless; that
+# needs revalidate-queue.ps1's resolution step first. See lib-queue-guard.ps1's header.
+$existingQueue = Get-QueueSeenTable -Csv $QueueCsv
 $progress = @{}
 if (Test-Path -LiteralPath $ProgressCsv) {
   Import-Csv -LiteralPath $ProgressCsv | ForEach-Object { $progress[$_.Path] = $_.Result }
@@ -310,7 +313,7 @@ $skippedTooShort = New-Object System.Collections.Generic.List[object]
 $divertedNa = New-Object System.Collections.Generic.List[object]
 
 foreach ($c in $candidates) {
-  if ($existingQueue.ContainsKey($c.MkvPath)) { continue }
+  if ($existingQueue.ContainsKey((Get-QueueRowKey $c.MkvPath))) { continue }
   if ($progress.ContainsKey($c.MkvPath)) { continue }
   if ($naSet.ContainsKey($c.MkvPath.ToLowerInvariant())) { continue }
 
@@ -338,9 +341,7 @@ foreach ($c in $candidates) {
     Minutes = $(if ($sec) { [math]::Round($sec / 60, 1) } else { '' })
     DiscId = ''; DiscFolder = ''; Evidence = $c.Evidence; Redo = ''
   }
-  [pscustomobject]$row | Export-Csv -LiteralPath $QueueCsv -Append -NoTypeInformation
-  $existingQueue[$c.MkvPath] = $true
-  $queued.Add($c)
+  if (Add-UniqueQueueRow -Csv $QueueCsv -Row $row -SeenInRun $existingQueue) { $queued.Add($c) }
 }
 
 Write-Output ''
@@ -402,10 +403,18 @@ if ($RefilterTranscribeQueue) {
 
     # ATOMIC rewrite, local D: only: temp file then Move-Item over the original. Never edit the
     # live CSV in place mid-read - _transcribe-loop.ps1 polls it every 60s.
+    #
+    # REFUSE to silently empty a populated queue down to zero rows - same anti-shrink instinct
+    # queue-transcribable.ps1 already applies elsewhere in this pipeline (a 0-row queue looks
+    # exactly like "nothing left to do" and is the shape that costs most). This is a single-pass
+    # re-filter, not expected to remove every row; if it would, that is loud and unresolved rather
+    # than a silent no-op that leaves stale rows in place either way.
     $tmp = [IO.Path]::Combine([IO.Path]::GetDirectoryName($QueueCsv), '_transcribe-queue.refilter.tmp.csv')
     if ($kept.Count -gt 0) {
       $kept | Export-Csv -LiteralPath $tmp -NoTypeInformation -Encoding UTF8
       Move-Item -LiteralPath $tmp -Destination $QueueCsv -Force
+    } elseif ($existingRows.Count -gt 0) {
+      Write-Output "  *** every row was removed or moved - REFUSING to overwrite $QueueCsv with an empty file. Investigate before re-running."
     }
 
     Write-Output ("  kept (still awaiting-transcription): {0}" -f $kept.Count)

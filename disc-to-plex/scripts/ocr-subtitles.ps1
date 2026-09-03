@@ -423,18 +423,52 @@ foreach ($f in $targets) {
   # ---- pick the track: bitmap, in the wanted language (untagged counts - discs often omit it)
   $info = & $ffprobe -v error -select_streams s `
             -show_entries stream=index,codec_name:stream_tags=language -of csv=p=0 $f.FullName 2>$null
-  if (-not $info) { $skipped++; continue }
+  if (-not $info) {
+    # Was a SILENT skip - indistinguishable from a transient ffprobe hiccup, so callers (this loop
+    # itself, and _ocr-queue-loop.ps1's Resolve-OcrOutcome classifier) had no text to tell "this file
+    # genuinely has no subtitle stream at all" apart from "something went wrong, retry forever".
+    Write-Host "  skip (no subtitle stream present at all): $($f.Name)"
+    $skipped++; continue
+  }
 
   $cand = @()
   foreach ($line in $info) {
     $p = $line -split ','
     if ($p.Count -lt 2) { continue }
-    $idx = [int]$p[0]; $codec = $p[1]; $lang = if ($p.Count -ge 3) { $p[2] } else { '' }
+    $idx = [int]$p[0]; $codec = $p[1]
+    # NOT named $lang. PowerShell variable names are CASE-INSENSITIVE, so $lang and the script
+    # parameter $Lang (target OCR language, default 'eng') are THE SAME VARIABLE - this assignment
+    # was silently clobbering $Lang with the CURRENT STREAM's own tag on the very first iteration.
+    # Two compounding failures followed, discovered 2026-09-03 diagnosing Cairo Time.mkv (a German-
+    # tagged PGS track) via _ocr-queue-loop.ps1's "unexplained, retried 3x, then failed" bucket:
+    #   1. The very filter below ($streamLang -ne $Lang) always compared the corrupted $Lang to
+    #      itself once a foreign-tagged stream had been seen, so it could NEVER exclude a wrong-
+    #      language stream - every bitmap track was always accepted as a "candidate", regardless of
+    #      its tag.
+    #   2. Worse: --ocr-language:$Lang (much further down, same scope, same file's processing) then
+    #      ran Tesseract in the STREAM'S OWN language instead of the requested one. Only eng and osd
+    #      tessdata are installed here, so any non-English-tagged, non-empty-tagged bitmap stream
+    #      made Tesseract exit "Error opening data file" - a hard crash with no language-mismatch
+    #      wording anywhere in it, which is why Resolve-OcrOutcome could not classify it either.
+    # This was deterministic, not intermittent: every file whose ONLY/selected bitmap stream carries
+    # an explicit foreign language tag hit this identically, every time - not a fraction of random
+    # noise across the queue.
+    $streamLang = if ($p.Count -ge 3) { $p[2] } else { '' }
     if ($bitmapCodecs -notcontains $codec) { continue }
-    if ($lang -and $lang -ne $Lang -and $lang -ne 'und') { continue }
+    if ($streamLang -and $streamLang -ne $Lang -and $streamLang -ne 'und') { continue }
     $cand += [pscustomobject]@{ Index = $idx; Codec = $codec }
   }
-  if (-not $cand) { $skipped++; continue }
+  if (-not $cand) {
+    # Also a SILENT skip before today - the $lang/$Lang collision above meant this branch could
+    # never actually be reached for a foreign-tagged stream (every stream was wrongly accepted as a
+    # candidate); now that the collision is fixed, this is the FIRST time a genuine wrong-language
+    # bitmap-only file reaches this line, and it needs a message the classifier can read, same as
+    # the "already has text subs" case two lines below.
+    $seenTags = ($info | ForEach-Object { ($_ -split ',')[2] } | Where-Object { $_ } | Select-Object -Unique) -join ', '
+    $tagNote = if ($seenTags) { "tags present: $seenTags" } else { 'no language tags on any stream' }
+    Write-Host "  skip (no $Lang-language bitmap subtitle stream - $tagNote): $($f.Name)"
+    $skipped++; continue
+  }
 
   # already has a text track in this language? then there is nothing to gain
   $hasText = $info | Where-Object { $bitmapCodecs -notcontains ($_ -split ',')[1] }

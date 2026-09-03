@@ -353,16 +353,38 @@ PUT /library/metadata/<ratingKey>/refresh?force=1
 gate above only refuses a file with a BITMAP subtitle awaiting OCR, and a file with none at all has
 genuinely nothing to wait for. `_publish-loop.ps1` closes that gap itself: after every work it
 publishes, it runs `scripts/subtitle-coverage.ps1 -Works "<work>" -Queue`, which classifies that
-work's subtitle coverage (`covered` / `stale-provenance` / `not-applicable` / `awaiting-transcription`
-/ `awaiting-ocr` / `genuinely-missed` — see `lib-subtitle-coverage.ps1` for what evidence backs each)
-and queues only `awaiting-transcription` files into `_transcribe-queue.csv`. It never queues a
-`not-applicable` (video-only) or `genuinely-missed` (a real subtitle source that failed to ship —
-reported, not papered over) file, and queueing never starts the transcribe track itself. A full,
-un-scoped run (`subtitle-coverage.ps1`, no `-Works`) refreshes the one current
-`D:/video/_subtitle-coverage.csv` report and is throttled to run at most every 30 minutes from the
-same loop — report-only; it never auto-queues the library-wide backlog, which is a decision for the
-operator (see the script's `-IncludeLegacy` switch, off by default, for pulling in the wider
-register-evidenced legacy set via `queue-transcribable.ps1`).
+work's subtitle coverage (`covered` / `stale-provenance` / `not-applicable` / `awaiting-ocr` /
+`awaiting-transcription` / `transcription-deferred` / `genuinely-missed` — see
+`lib-subtitle-coverage.ps1` for what evidence backs each) and routes eligible files into **two
+separate queues with two separate scope rules** (user, 2026-09-03):
+
+- **OCR** (`D:/video/_ocr-queue.csv`) — **library-wide**, regardless of drive or whether this
+  pipeline produced the file. A bitmap (PGS/VOBSUB) stream found by probing the published file
+  directly is its own evidence: "if there is a PGS or VOBSUB stream in the published file then
+  yes, it can be queued immediately for OCR... it does not matter whether the source disc is still
+  available." Excludes a file already named in some manifest's `supersedes` (about to be retired)
+  or whose work has a re-rip currently in `_queue/pending`\|`running` (its own subtitles are
+  coming) — both cleanly evidenced, never guessed.
+- **Transcription** (`D:/video/_transcribe-queue.csv`) — **narrowed**: only a file that is (a) this
+  pipeline's own output (a manifest declares no subtitle source) AND (b) probed directly and
+  confirmed to carry no bitmap stream AND (c) sourced from the drive named in `-AttachedDrive`
+  (default `media2`), matched via the disc-identity register's `discFolder`↔`sourceDrive`. A disc
+  on a drive not currently attached may carry subtitles never seen yet, so transcribing it now
+  risks GPU + human verification a future re-rip would waste — those go to
+  `D:/video/_transcribe-deferred.csv` instead, a queued-not-failed state a later pass can drain
+  once that drive returns, never counted as a failure.
+
+Neither queue is ever drained by this — both stay optional and stand down for encodes; queueing is
+not running. `not-applicable` (video-only) and `genuinely-missed` (a real subtitle source that
+failed to ship) are never queued anywhere, only reported. A full, un-scoped run
+(`subtitle-coverage.ps1`, no `-Works`) refreshes the one current `D:/video/_subtitle-coverage.csv`
+report; because it now probes every no-sidecar file for a bitmap stream it costs ~25-30 minutes
+over ~5,600 files (not the ~30s a metadata-only sweep took before), so it is throttled to once per
+4 hours from the loop. `-RefilterTranscribeQueue` re-validates every row already in the
+transcription queue against the current bitmap + attached-drive rules (full sweep only — a scoped
+run has not classified the files the other rows point at) and `-IncludeLegacy` (off by default,
+not wired into the loop) pulls in `queue-transcribable.ps1`'s register-evidenced legacy set for
+transcription only — OCR has no such switch, since OCR is library-wide unconditionally.
 
 ### 7. Verify in Plex, then fix what the agent got wrong
 
@@ -476,7 +498,7 @@ Library-wide maintenance:
 | `ocr-library-batch.ps1` | resumable OCR campaign over that audit |
 | `fix-srt-glyphs.ps1` | retro-fit the OCR glyph repairs (`\|`→`I`, `J`→`♪`) to existing sidecars |
 | `inventory-mp4s.ps1` | inventory every mp4 with copy date; flag broken stubs |
-| `subtitle-coverage.ps1` | classify every published file's subtitle coverage (covered / stale-provenance / not-applicable / awaiting-transcription / awaiting-ocr / genuinely-missed) from `_queue/done` manifest evidence; `-Works` scopes a run (the publish-loop trigger), `-Queue` enqueues eligible `awaiting-transcription` files idempotently. Read-only unless `-Queue` is passed; never guesses a file it can't evidence into a bucket |
+| `subtitle-coverage.ps1` | classify every published file's subtitle coverage (covered / stale-provenance / not-applicable / awaiting-ocr / awaiting-transcription / transcription-deferred / genuinely-missed); `-Works` scopes a run (the publish-loop trigger), `-Queue` routes eligible files to `_ocr-queue.csv` (library-wide) and `_transcribe-queue.csv` (this pipeline's own output + attached drive only), `-RefilterTranscribeQueue` re-validates the existing transcription queue against current evidence. Read-only unless `-Queue` is passed; never guesses a file it can't evidence into a bucket |
 | `lib-subtitle-coverage.ps1` | the classification function `subtitle-coverage.ps1` and the publish-loop trigger both call — one rule, shared by both entry points |
 
 ## References

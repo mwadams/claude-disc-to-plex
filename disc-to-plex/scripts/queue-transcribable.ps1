@@ -69,9 +69,20 @@ param(
 )
 $ErrorActionPreference = 'Continue'
 
+. (Join-Path $PSScriptRoot 'lib-queue-guard.ps1')
+
 $paths   = Get-Content 'D:\video\.transcode-tools\tool-paths.json' -Raw | ConvertFrom-Json
 $ffprobe = Join-Path (Split-Path $paths.ffmpeg) 'ffprobe.exe'
 if (-not (Test-Path -LiteralPath $Store)) { throw "identity register not found: $Store" }
+
+# ONE identity table for the WHOLE run, shared by both sources below (register outputs, then the
+# optional -AuditSet). Previously each source only checked membership against $rows as it stood
+# BEFORE that source's own loop ran - a source could never see its own prior insertions within the
+# same loop, let alone the other source's. That let two audit-set entries for the SAME published
+# file both pass the check and both get added - the exact shape that put Danger Man S00E03 and
+# S00E12 into the queue twice. $seenPaths is updated in place by Add-UniqueQueueRowToList on every
+# successful add, so it is always current for whichever loop runs next.
+$seenPaths = @{}
 
 # A file with no audio stream at all can never be transcribed - whisper has nothing to decode.
 # That is not a transient failure, it is a correct terminal outcome, and it must never reach the
@@ -138,13 +149,13 @@ foreach ($rf in $records) {
     }
 
     $stats.eligible++
-    $rows.Add([pscustomobject]@{
+    [void](Add-UniqueQueueRowToList -List $rows -SeenInRun $seenPaths -Row ([ordered]@{
       Kind = $rec.kind; Work = $o.work; Path = $f.FullName
       Season = $o.season; Episode = $o.episode
       Minutes = [math]::Round($sec / 60, 1)
       DiscId = $rec.discId; DiscFolder = $rec.discFolder
       Evidence = "disc titles $($srcTitles -join '+') enumerated with 0 subtitle streams"
-    })
+    }))
   }
 }
 
@@ -156,14 +167,17 @@ if ($AuditSet) {
   if (-not (Test-Path -LiteralPath $AuditSet)) { throw "audit set not found: $AuditSet" }
   $roots = @{ 'Movies' = [IO.Path]::Combine('\\NASTEAMV','Multimedia','Movies')
               'Television Shows' = [IO.Path]::Combine('\\NASTEAMV','Multimedia','Television Shows') }
-  $known = @{}
-  foreach ($r in $rows) { $known[$r.Path] = $true }
+  # $seenPaths is the SAME table source 1 populated above, and stays current as THIS loop adds
+  # rows too (Add-UniqueQueueRowToList updates it on every add) - this is the fix for the bug
+  # that let two AuditSet entries resolving to the same $full both get added in one run: the old
+  # $known table was a snapshot taken once, before this loop started, and was never updated as
+  # the loop itself added rows.
   $added = 0
   foreach ($a in (Get-Content -LiteralPath $AuditSet -Raw | ConvertFrom-Json)) {
     $root = $roots[$a.kind]
     if (-not $root) { continue }
     $full = Join-Path $root $a.rel
-    if ($known.ContainsKey($full)) { continue }
+    if ($seenPaths.ContainsKey((Get-QueueRowKey $full))) { continue }
     if (-not (Test-Path -LiteralPath $full)) { $stats.notPublished++; continue }
 
     $f = Get-Item -LiteralPath $full
@@ -192,14 +206,14 @@ if ($AuditSet) {
       continue
     }
 
-    $stats.eligible++; $added++
-    $rows.Add([pscustomobject]@{
+    $added2 = Add-UniqueQueueRowToList -List $rows -SeenInRun $seenPaths -Row ([ordered]@{
       Kind = $a.kind; Work = $a.work; Path = $f.FullName
       Season = ''; Episode = ''
       Minutes = [math]::Round($sec / 60, 1)
       DiscId = ''; DiscFolder = $a.disc
       Evidence = "audit: no re-rip needed; disc '$($a.disc)' title t$($a.tid) has 0 subtitle streams"
     })
+    if ($added2) { $stats.eligible++; $added++ }
   }
   Write-Host "audit set contributed $added file(s)"
 }
