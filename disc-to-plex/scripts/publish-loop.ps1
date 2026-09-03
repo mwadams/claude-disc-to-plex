@@ -189,6 +189,30 @@ while ($true) {
           Write-Output ("    *** {0} IS PUBLISHED AND THE DISK IS BELOW THE FETCH FLOOR ({1} GB)." -f $w.Name, $freeGB)
           Write-Output  '        Confirm it in Plex so its local copy can be reclaimed - the line is waiting on this.'
         }
+
+        # SUBTITLE-COVERAGE TRIGGER, right at the event that creates the gap. "I am surprised it
+        # published without SRT" (user, 2026-09-03): the publish gate above only refuses a file
+        # with a BITMAP subtitle awaiting OCR - a file with no subtitle stream at all sails
+        # through, because there is genuinely nothing to wait for. Four Survivors S02 episodes did
+        # exactly that the same day, and nothing noticed.
+        #
+        # SCOPED to the work that JUST published, not a full-library sweep - a routine pass here
+        # must stay cheap (see the retire-list note above: NAS traffic every 90s adds up). The full
+        # picture is refreshed separately and less often, below.
+        #
+        # QUEUEING IS NOT RUNNING. This only appends rows to _transcribe-queue.csv for the ONE
+        # category safe to automate - 'awaiting-transcription' (the disc genuinely had no subtitle
+        # source, per the manifest that produced this exact file) - never 'not-applicable' (routed
+        # to its own register, never queued) and never 'genuinely-missed' (a real subtitle source
+        # that failed to ship - reported, not papered over with a machine transcript). The
+        # transcribe track itself stays optional and stands down for encodes; this never starts it.
+        try {
+          $covOut = & pwsh -NoProfile -File 'D:\video\.claude\skills\disc-to-plex\scripts\subtitle-coverage.ps1' -Works $w.Name -Queue 2>&1
+          $covLine = $covOut | Select-String 'QUEUED: [1-9]|DIVERTED TO NOT-APPLICABLE: [1-9]|awaiting-ocr|genuinely-missed'
+          if ($covLine) { $covLine | ForEach-Object { "    [subtitle-coverage] $_" } }
+        } catch {
+          Write-Output "    subtitle-coverage.ps1 threw: $($_.Exception.Message)"
+        }
       }
     }
   }
@@ -225,6 +249,40 @@ while ($true) {
         ForEach-Object { "    $_" }
     } catch {
       Write-Output "    build-retire-list.ps1 threw: $($_.Exception.Message)"
+    }
+
+    # FULL SUBTITLE-COVERAGE REPORT - refreshed periodically, not every pass. The per-work trigger
+    # above catches what THIS loop just published; this is the wider "one current picture" (every
+    # work, both areas, the legacy backlog total, stale-provenance and genuinely-missed lists) that
+    # D:/video/_subtitle-coverage.csv is supposed to be. A full sweep walks the whole NAS (~7,000
+    # files, ~30-40s) so it is throttled to once per $coverageFullSweepEveryMin, the same shape as
+    # every other "don't rescan on every idle poll" guard in this loop.
+    #
+    # REPORT ONLY - never -Queue here. The 'awaiting-transcription' backlog across the WHOLE
+    # library this pipeline has ever produced runs into four figures (1,136 files measured
+    # 2026-09-03) - committing that to the transcribe queue in one shot is the kind of decision
+    # this loop must surface, not make unattended. Only the scoped per-work call above queues
+    # anything, and only for the work that just published.
+    $coverageFullSweepEveryMin = 30
+    $coverageCheckpoint = 'D:/video/_subtitle-coverage-last-full.txt'
+    $dueForFullSweep = $true
+    if (Test-Path -LiteralPath $coverageCheckpoint) {
+      $last = Get-Content -LiteralPath $coverageCheckpoint -Raw -ErrorAction SilentlyContinue
+      $lastTime = $null
+      if ([DateTime]::TryParse($last, [ref]$lastTime)) {
+        $dueForFullSweep = ((Get-Date) - $lastTime).TotalMinutes -ge $coverageFullSweepEveryMin
+      }
+    }
+    if ($dueForFullSweep) {
+      Write-Output '--- refreshing full subtitle-coverage report (report-only, no auto-queue) ---'
+      try {
+        & pwsh -NoProfile -File 'D:\video\.claude\skills\disc-to-plex\scripts\subtitle-coverage.ps1' 2>&1 |
+          Select-String 'unclassified,|awaiting-transcription,|LEGACY BACKLOG|genuinely-missed \(ours\)|stale-provenance \(ours\)' |
+          ForEach-Object { "    $_" }
+        Set-Content -LiteralPath $coverageCheckpoint -Value (Get-Date -Format s)
+      } catch {
+        Write-Output "    subtitle-coverage.ps1 (full sweep) threw: $($_.Exception.Message)"
+      }
     }
   }
 

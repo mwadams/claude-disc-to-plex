@@ -349,6 +349,21 @@ publish verifies — a section scan does not index them (`references/gotchas-ple
 PUT /library/metadata/<ratingKey>/refresh?force=1
 ```
 
+**A published file with no subtitle stream sails through with no signal, on purpose** — the publish
+gate above only refuses a file with a BITMAP subtitle awaiting OCR, and a file with none at all has
+genuinely nothing to wait for. `_publish-loop.ps1` closes that gap itself: after every work it
+publishes, it runs `scripts/subtitle-coverage.ps1 -Works "<work>" -Queue`, which classifies that
+work's subtitle coverage (`covered` / `stale-provenance` / `not-applicable` / `awaiting-transcription`
+/ `awaiting-ocr` / `genuinely-missed` — see `lib-subtitle-coverage.ps1` for what evidence backs each)
+and queues only `awaiting-transcription` files into `_transcribe-queue.csv`. It never queues a
+`not-applicable` (video-only) or `genuinely-missed` (a real subtitle source that failed to ship —
+reported, not papered over) file, and queueing never starts the transcribe track itself. A full,
+un-scoped run (`subtitle-coverage.ps1`, no `-Works`) refreshes the one current
+`D:/video/_subtitle-coverage.csv` report and is throttled to run at most every 30 minutes from the
+same loop — report-only; it never auto-queues the library-wide backlog, which is a decision for the
+operator (see the script's `-IncludeLegacy` switch, off by default, for pulling in the wider
+register-evidenced legacy set via `queue-transcribable.ps1`).
+
 ### 7. Verify in Plex, then fix what the agent got wrong
 
 - **TV numbering** — `pwsh -File scripts/verify-plex-episodes.ps1 -Show "<name>" -Season <n>` diffs
@@ -461,6 +476,8 @@ Library-wide maintenance:
 | `ocr-library-batch.ps1` | resumable OCR campaign over that audit |
 | `fix-srt-glyphs.ps1` | retro-fit the OCR glyph repairs (`\|`→`I`, `J`→`♪`) to existing sidecars |
 | `inventory-mp4s.ps1` | inventory every mp4 with copy date; flag broken stubs |
+| `subtitle-coverage.ps1` | classify every published file's subtitle coverage (covered / stale-provenance / not-applicable / awaiting-transcription / awaiting-ocr / genuinely-missed) from `_queue/done` manifest evidence; `-Works` scopes a run (the publish-loop trigger), `-Queue` enqueues eligible `awaiting-transcription` files idempotently. Read-only unless `-Queue` is passed; never guesses a file it can't evidence into a bucket |
+| `lib-subtitle-coverage.ps1` | the classification function `subtitle-coverage.ps1` and the publish-loop trigger both call — one rule, shared by both entry points |
 
 ## References
 

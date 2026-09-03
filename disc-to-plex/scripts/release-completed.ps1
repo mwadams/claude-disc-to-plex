@@ -106,7 +106,37 @@ foreach ($u in $Units) {
     continue
   }
 
-  if (-not (Test-Path -LiteralPath $dir -PathType Container)) {
+  # Derived artefacts: the analysis sidecar and the rip intermediate. The rip folder is named from
+  # the unit via ConvertTo-RipSlug (lib-disk.ps1) - lowercase, spaces removed, EVERYTHING ELSE IN
+  # THE NAME PRESERVED - because that is the one and only transform _rip-loop.ps1 actually applies
+  # (`$disc.ToLower().Replace(' ', '') + '-rip'`). Computed BEFORE the "is this staged" check below,
+  # not after: a unit whose raw disc folder already went (a previous release matched $dir but missed
+  # its derived artefacts under a wrong slug) must still be found here, from these artefacts alone.
+  $slug     = ConvertTo-RipSlug $unit
+  $targets  = @()
+  if (Test-Path -LiteralPath $dir -PathType Container) { $targets += $dir }
+  $sidecar  = Join-Path $Stage "$unit.tracks.json"
+  if (Test-Path -LiteralPath $sidecar) { $targets += $sidecar }
+  # ALSO the per-title evidence files. assert-tracks-analysed.ps1 keys DVD audio evidence to
+  # `<unit>.title<N>.tracks.json` whenever one disc folder is the src of several gated items (a DVD
+  # src is the FOLDER, so the legacy single name cannot speak for two titles). Matching only
+  # `<unit>.tracks.json` left those orphaned in _stage on every such disc - first seen on
+  # The Saint Colour D14, which needed one per movie version.
+  Get-ChildItem -LiteralPath $Stage -Filter "$unit.title*.tracks.json" -File -ErrorAction SilentlyContinue |
+    ForEach-Object { $targets += $_.FullName }
+  # '-reel' and '-audio' are hand-built intermediates: the per-PROGRAM extraction used to recover a
+  # first-cell-truncated title (see gotchas-dvd.md) and a per-title audio extraction for analysis.
+  # Both are named with the same slug convention as the rip folders so they are reclaimed with them.
+  foreach ($suffix in @('-rip', '-x', '-main', '-mkv', '-reel', '-audio')) {
+    $ripDir = Join-Path $Stage "$slug$suffix"
+    if (Test-Path -LiteralPath $ripDir -PathType Container) { $targets += $ripDir }
+  }
+
+  # NOT STAGED means none of the above exist - not merely that $dir doesn't. A unit whose raw
+  # folder is gone but still has a derived artefact sitting in _stage is NOT already released; it
+  # is exactly the gap this script exists to close, and "skip" here would make that gap permanent
+  # (there is nowhere else this cleanup runs from).
+  if ($targets.Count -eq 0) {
     Write-Output "skip    $unit - not staged"
     continue
   }
@@ -116,6 +146,9 @@ foreach ($u in $Units) {
     continue
   }
 
+  # assert-accounted keys off the catalogue/dispositions FILENAME (Split-Path -Leaf of -Disc), not
+  # off $dir existing on disk - it already tolerates a reclaimed staged disc (see its own "staged
+  # disc is no longer on disk" branch). Passing $dir here is safe whether or not it currently exists.
   & pwsh -NoProfile -File $assert -Disc $dir -RequireEvidence > $null 2>&1
   if ($LASTEXITCODE -ne 0) {
     Write-Output "REFUSE  $unit - assert-accounted exit $LASTEXITCODE (titles unaccounted for)"
@@ -140,27 +173,6 @@ foreach ($u in $Units) {
     Write-Output ("REFUSE  {0} - {1} manifest(s) still queued or running against it: {2}" -f `
                   $unit, $pending.Count, (($pending.Name) -join ', '))
     continue
-  }
-
-  # Derived artefacts: the analysis sidecar and the rip intermediate. The rip folder is named from
-  # the unit with every non-alphanumeric character dropped, which is how _rip-loop.ps1 names it.
-  $slug     = ($unit -replace '[^A-Za-z0-9]', '').ToLowerInvariant()
-  $targets  = @($dir)
-  $sidecar  = Join-Path $Stage "$unit.tracks.json"
-  if (Test-Path -LiteralPath $sidecar) { $targets += $sidecar }
-  # ALSO the per-title evidence files. assert-tracks-analysed.ps1 keys DVD audio evidence to
-  # `<unit>.title<N>.tracks.json` whenever one disc folder is the src of several gated items (a DVD
-  # src is the FOLDER, so the legacy single name cannot speak for two titles). Matching only
-  # `<unit>.tracks.json` left those orphaned in _stage on every such disc - first seen on
-  # The Saint Colour D14, which needed one per movie version.
-  Get-ChildItem -LiteralPath $Stage -Filter "$unit.title*.tracks.json" -File -ErrorAction SilentlyContinue |
-    ForEach-Object { $targets += $_.FullName }
-  # '-reel' and '-audio' are hand-built intermediates: the per-PROGRAM extraction used to recover a
-  # first-cell-truncated title (see gotchas-dvd.md) and a per-title audio extraction for analysis.
-  # Both are named with the same slug convention as the rip folders so they are reclaimed with them.
-  foreach ($suffix in @('-rip', '-x', '-main', '-mkv', '-reel', '-audio')) {
-    $ripDir = Join-Path $Stage "$slug$suffix"
-    if (Test-Path -LiteralPath $ripDir -PathType Container) { $targets += $ripDir }
   }
 
   $bytes = 0

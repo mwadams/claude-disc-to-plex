@@ -91,3 +91,39 @@ function Wait-FreeSpaceSettled {
     Settled = ($reason -ne 'timeout')
   }
 }
+
+<#
+.SYNOPSIS
+  The ONE authority for turning a unit name (as _completed.txt / the catalogue spell it) into the
+  slug _rip-loop.ps1 actually uses for its rip-intermediate folder name.
+
+.WHY THIS EXISTS
+  _rip-loop.ps1 builds its rip-folder name with exactly:
+
+      $disc.ToLower().Replace(' ', '') + '-rip'
+
+  - lowercase, and remove SPACES ONLY. Every other character in the name (hyphens, colons,
+  apostrophes, ...) survives unchanged. At least four consumers had independently re-derived that
+  same slug using `($unit -replace '[^A-Za-z0-9]', '').ToLowerInvariant()` instead - strip ALL
+  punctuation, not just spaces - on the belief, stated in their own comments, that this was "how
+  _rip-loop.ps1 names it". The two transformations agree whenever a name has no punctuation besides
+  spaces, which is most of the time, so the divergence went unnoticed for months.
+
+  It surfaced on 2026-09-02: "Danger Man Series 1964-1968 Disk 1" ... "Disk 13" are all confirmed in
+  _completed.txt, but their `-rip` intermediates kept the hyphen in "1964-1968"
+  (dangermanseries1964-1968disk1-rip) while _release-completed.ps1's guessed slug stripped it
+  (dangermanseries19641968disk1-rip) - a path that never existed, so the derived-artefact cleanup
+  silently matched nothing. 13 folders, ~15 GB, stranded with no error from any run.
+
+  ONE function, used everywhere a rip-slug is computed, makes that class of drift structurally
+  impossible instead of merely documented. If _rip-loop.ps1's own naming ever changes, this is the
+  only other place that needs to change with it.
+
+.PARAMETER Name
+  The unit/disc name exactly as _completed.txt or the catalogue spells it.
+#>
+function ConvertTo-RipSlug {
+  [CmdletBinding()]
+  param([Parameter(Mandatory)][string]$Name)
+  $Name.ToLowerInvariant().Replace(' ', '')
+}
