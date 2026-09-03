@@ -127,3 +127,67 @@ function ConvertTo-RipSlug {
   param([Parameter(Mandatory)][string]$Name)
   $Name.ToLowerInvariant().Replace(' ', '')
 }
+
+<#
+.SYNOPSIS
+  The ONE authority for "what on-disk paths under _stage belong to this unit" - the raw disc
+  folder AND every derived artefact (tracks.json sidecars, per-title evidence, and the
+  -rip/-x/-main/-mkv/-reel/-audio slug intermediates).
+
+.WHY THIS EXISTS
+  _release-completed.ps1 originally computed this list inline, and _reclaim-loop.ps1 separately
+  decided "is this unit already released" by testing ONLY the raw disc folder
+  (Test-Path (Join-Path $Stage $unit)) - a second, narrower reimplementation of the same question.
+  The two agree whenever a unit's raw folder and its derived artefacts are released together, which
+  is most of the time, so the gap went unnoticed until the 13 "Danger Man Series 1964-1968" units:
+  their raw `_stage/<unit>` folders were released first (an earlier pass), but each still had a
+  `<slug>-rip` intermediate sitting in _stage (~15 GB total). _reclaim-loop.ps1 saw the raw folder
+  gone, the unit registered in _completed.txt, and reported "already released" without ever calling
+  _release-completed.ps1 - so the -rip folders were never looked at, let alone removed, and the
+  artefact still moved to done/ with verdict DONE. This is the exact class of drift ConvertTo-RipSlug
+  above already fixed once for slug computation; the fix here is the same shape applied to target
+  ENUMERATION: one function, used by both the actual deletion and any "is there anything left"
+  pre-check, so there is nothing left to drift.
+
+.PARAMETER Unit
+  The unit/disc name exactly as _completed.txt or the catalogue spells it.
+
+.PARAMETER Stage
+  The staging root (normally D:/video/_stage).
+
+.OUTPUTS
+  string[] of full paths (directories and/or files) that exist right now for this unit. An empty
+  array is the ONLY honest basis for "there is nothing left to release" - it means every location
+  this function knows to check was tested and found empty, not merely that the raw folder is gone.
+#>
+function Get-UnitStageTargets {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory)][string]$Unit,
+    [Parameter(Mandatory)][string]$Stage
+  )
+  $unit = $Unit.Trim()
+  $dir  = Join-Path $Stage $unit
+  $slug = ConvertTo-RipSlug $unit
+
+  $targets = @()
+  if (Test-Path -LiteralPath $dir -PathType Container) { $targets += $dir }
+
+  $sidecar = Join-Path $Stage "$unit.tracks.json"
+  if (Test-Path -LiteralPath $sidecar) { $targets += $sidecar }
+
+  # Per-title evidence files: assert-tracks-analysed.ps1 keys DVD audio evidence to
+  # `<unit>.title<N>.tracks.json` whenever one disc folder is the src of several gated items.
+  Get-ChildItem -LiteralPath $Stage -Filter "$unit.title*.tracks.json" -File -ErrorAction SilentlyContinue |
+    ForEach-Object { $targets += $_.FullName }
+
+  # '-rip' is the raw rip intermediate; '-x'/'-main'/'-mkv' are transcode-stage intermediates;
+  # '-reel' is the per-PROGRAM extraction used to recover a first-cell-truncated title; '-audio' is
+  # a per-title audio extraction for analysis. All are named with the slug convention.
+  foreach ($suffix in @('-rip', '-x', '-main', '-mkv', '-reel', '-audio')) {
+    $ripDir = Join-Path $Stage "$slug$suffix"
+    if (Test-Path -LiteralPath $ripDir -PathType Container) { $targets += $ripDir }
+  }
+
+  return ,$targets
+}

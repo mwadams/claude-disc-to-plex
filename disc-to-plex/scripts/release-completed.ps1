@@ -91,6 +91,9 @@ $startFree = [System.IO.DriveInfo]::new('D').AvailableFreeSpace
 if (-not (Get-Command Wait-FreeSpaceSettled -ErrorAction SilentlyContinue)) {
   throw 'lib-disk.ps1 failed to load - refusing to run without the free-space settle check'
 }
+if (-not (Get-Command Get-UnitStageTargets -ErrorAction SilentlyContinue)) {
+  throw 'lib-disk.ps1 failed to load - refusing to run without the shared target enumerator'
+}
 
 foreach ($u in $Units) {
   $unit = $u.Trim()
@@ -106,31 +109,15 @@ foreach ($u in $Units) {
     continue
   }
 
-  # Derived artefacts: the analysis sidecar and the rip intermediate. The rip folder is named from
-  # the unit via ConvertTo-RipSlug (lib-disk.ps1) - lowercase, spaces removed, EVERYTHING ELSE IN
-  # THE NAME PRESERVED - because that is the one and only transform _rip-loop.ps1 actually applies
-  # (`$disc.ToLower().Replace(' ', '') + '-rip'`). Computed BEFORE the "is this staged" check below,
-  # not after: a unit whose raw disc folder already went (a previous release matched $dir but missed
-  # its derived artefacts under a wrong slug) must still be found here, from these artefacts alone.
-  $slug     = ConvertTo-RipSlug $unit
-  $targets  = @()
-  if (Test-Path -LiteralPath $dir -PathType Container) { $targets += $dir }
-  $sidecar  = Join-Path $Stage "$unit.tracks.json"
-  if (Test-Path -LiteralPath $sidecar) { $targets += $sidecar }
-  # ALSO the per-title evidence files. assert-tracks-analysed.ps1 keys DVD audio evidence to
-  # `<unit>.title<N>.tracks.json` whenever one disc folder is the src of several gated items (a DVD
-  # src is the FOLDER, so the legacy single name cannot speak for two titles). Matching only
-  # `<unit>.tracks.json` left those orphaned in _stage on every such disc - first seen on
-  # The Saint Colour D14, which needed one per movie version.
-  Get-ChildItem -LiteralPath $Stage -Filter "$unit.title*.tracks.json" -File -ErrorAction SilentlyContinue |
-    ForEach-Object { $targets += $_.FullName }
-  # '-reel' and '-audio' are hand-built intermediates: the per-PROGRAM extraction used to recover a
-  # first-cell-truncated title (see gotchas-dvd.md) and a per-title audio extraction for analysis.
-  # Both are named with the same slug convention as the rip folders so they are reclaimed with them.
-  foreach ($suffix in @('-rip', '-x', '-main', '-mkv', '-reel', '-audio')) {
-    $ripDir = Join-Path $Stage "$slug$suffix"
-    if (Test-Path -LiteralPath $ripDir -PathType Container) { $targets += $ripDir }
-  }
+  # Derived artefacts: the analysis sidecar and the rip intermediate, via the ONE shared enumerator
+  # (Get-UnitStageTargets, lib-disk.ps1) so this list can never drift from what _reclaim-loop.ps1's
+  # own "is there anything left" pre-check believes exists - that drift (loop checked only $dir,
+  # this script also checked slug-based -rip/-x/-main/-mkv/-reel/-audio folders) is exactly what let
+  # 13 "Danger Man Series 1964-1968" -rip folders (~15 GB) survive a DONE-verdict reclaim: the loop
+  # never called this script at all once the raw folder was gone. Computed regardless of whether
+  # $dir currently exists - a unit whose raw disc folder already went must still be found here, from
+  # its derived artefacts alone.
+  $targets = Get-UnitStageTargets -Unit $unit -Stage $Stage
 
   # NOT STAGED means none of the above exist - not merely that $dir doesn't. A unit whose raw
   # folder is gone but still has a derived artefact sitting in _stage is NOT already released; it
@@ -138,6 +125,23 @@ foreach ($u in $Units) {
   # (there is nowhere else this cleanup runs from).
   if ($targets.Count -eq 0) {
     Write-Output "skip    $unit - not staged"
+    continue
+  }
+
+  # A UNIT CLOSED shipped-outside-manifest IS A HARD REFUSE, NOT SOMETHING _completed.txt CAN
+  # OVERRIDE. close-shipped-outside-manifest.ps1 (scripts/) exists for a disc whose one shippable
+  # item reached the library by a route no manifest could take (Survivors Series 2 Disk 4's photo
+  # gallery: authored as still MENUS, invisible to MakeMKV/transcode.ps1) - for such a disc the raw
+  # staging may be the ONLY place that item could ever be re-derived from, and
+  # assert-accounted.ps1 has no concept of a non-title item, so it exits 0 and prints "may be
+  # released" regardless. This unit's Plex confirmation says the SHIPPED ITEM was seen and is fine,
+  # not that the RAW DISC is safe to destroy - those are different questions for this class of disc,
+  # unlike every other unit this script handles. So this check runs before -Completed is even
+  # consulted, and there is no override flag: removing the record is a deliberate, separate, human
+  # act (see the record's own releaseNotice field), never a side effect of running this script.
+  $somGuard = Join-Path $Catalogue "$unit.shipped-outside-manifest.json"
+  if (Test-Path -LiteralPath $somGuard) {
+    Write-Output "REFUSE  $unit - shipped-outside-manifest record present ($somGuard); this staging is NOT releasable by this script. Read the record's releaseNotice; removing it is a deliberate human step, not an automatic one."
     continue
   }
 

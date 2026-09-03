@@ -135,6 +135,28 @@ you exclude as an artefact, which costs one line to dismiss and is the whole poi
 title, or reachable only down a menu path, will not appear however low the floor goes — for those,
 render the menu (`-f dvdvideo -menu 1`) and read what it offers.
 
+🔴 **A menu that names an extra you cannot find as a title is a FINDING, not a loose end.** A DVD
+gallery is sometimes authored entirely in the MENU domain — N consecutive still menu PGCs, advanced
+by the remote — so it is absent from `TT_SRPT`, invisible to MakeMKV at *any* `--minlength`,
+unreachable by `-f dvdvideo -title N`, and **every title-level check still passes**: `scan-disc.ps1`,
+`audit-bd-titles.ps1` and the per-unit gate's "every title accounted for" all go green with the
+extra missing, because every *title* really is accounted for. Survivors Series 2 Disk 4 (2026-09-03)
+is the first confirmed case: 20 stills in VTS_01 menu PGCs 12–31, on a disc whose gate was otherwise
+clean and whose staging therefore looked releasable.
+
+```
+python scripts/dvd-still-cells.py --menu "<VIDEO_TS>" <vts> --list        # find the run of still PGCs
+python scripts/dvd-still-cells.py --menu "<VIDEO_TS>" <vts> <out> 12,...,31
+```
+
+Two properties make the extraction provable rather than plausible, and both should be stated:
+**the menu PGC cells tile `VTS_xx_0.VOB` contiguously**, so a full tiling with no gap means no
+unaccounted sector can hold another still; and such a set is **self-delimiting in the pixels** —
+the first page has no BACK, the last no NEXT. Ship it as ONE item per the gallery rule in
+`naming.md`, and note the cells usually carry a `dvd_subtitle` stream that is the menu's
+BUTTON-HIGHLIGHT subpicture, not subtitles — keep it and you ship a bitmap "English subtitle" that
+routes the file to the OCR queue to OCR a button.
+
 **DVD: `pwsh -File scripts/scan-disc.ps1 -SrcRoot <parent> -Pattern "<Show> * Disk *"`** (or
 `-Root <one disc>`). It probes every title and labels each EPISODE?/PLAYALL?/REVIEW/BOILERPLATE/
 ARTIFACT, using cross-disc identical durations to unmask copyright/promo reels.
@@ -460,6 +482,7 @@ Core pipeline, in the order you use them:
 | `build-retire-list.ps1` | read-only; turns manifest `supersedes` entries into `_nas-retire.txt` once each replacement is byte-verified on the NAS. Lists only — **removal stays the user's**. Run automatically by `_publish-loop.ps1` after every pass that publishes something — never hand-run this in normal operation |
 | `assert-staged-complete.ps1` | **run BEFORE enumerating** — throws if the staging folder is still growing or short against source |
 | `scan-disc.ps1` | enumerate and classify DVD titles across a set of discs |
+| `dvd-still-cells.py` | carve a DVD still-set's cells straight out of the VOBs by sector arithmetic — the only way to reach a gallery/infopod no demuxer will emit. `--menu` reads the MENU domain (`VTSM_PGCI_UT`, sectors against `VTS_xx_0.VOB`) for a gallery that is not a title at all |
 | `prove-dvd-mapping.py` | prove tNN→dvdvideoTitle from TT_SRPT + VTS byte sizes, *without* duration |
 | `apply-proof.py` | rewrite a catalogue onto that proven mapping, **moving each evidence bundle with it** |
 | `capture-evidence.py` | capture frames and speech windows through a title's *proven* dvdvideo number and register them in the catalogue (refusing near-blank frames). **Take landmark windows with `--speech`, not ad-hoc ffmpeg** — an unrecorded transcript cannot be cited, so `assert-accounted.ps1` refuses the quote even when the identification is right |

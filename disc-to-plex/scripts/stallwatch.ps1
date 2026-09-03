@@ -198,6 +198,42 @@ foreach ($u in $units) {
     continue
   }
 
+  # A DISC WHOSE ONE SHIPPABLE ITEM WENT OUT BY A ROUTE OTHER THAN A MANIFEST IS ALSO CLOSED,
+  # NOT WAITING ON A MANIFEST - BUT THIS IS NOT THE SHIPS-NOTHING CASE, AND MUST NEVER READ LIKE IT.
+  #
+  # Survivors Series 2 Disk 4 (2026-09-03): all 8 MakeMKV/dvdvideo titles ship nothing (published
+  # already or boilerplate) - but the disc's one new item, a photo gallery, is authored as 20 still
+  # MENUS in the MENU domain, invisible to MakeMKV and absent from TT_SRPT, so transcode.ps1 (which
+  # only ever reads `-f dvdvideo -title N`) could never produce a manifest for it. It was carved by
+  # dvd-still-cells.py --menu and published by _publish-loop.ps1 (filesystem-driven, not manifest-
+  # driven), so no manifest exists and none ever will. ships-nothing.json would be FALSE here - the
+  # disc shipped something - so close-shipped-outside-manifest.ps1 writes a DIFFERENT record.
+  #
+  # THE WORDING BELOW IS DELIBERATELY NOT THE SHIPS-NOTHING LINE. A ships-nothing disc can be
+  # released at zero information cost, because by definition nothing on it was worth keeping - so
+  # that line can say "releases via a user-confirmed reclaim artefact" and mean it. This disc is the
+  # opposite: its raw staging may be the ONLY place the shipped item could ever be re-derived from
+  # (assert-accounted.ps1 has no concept of a menu-domain item, so it exits 0 and prints "may be
+  # released" regardless). Saying the same thing here would be exactly the false assurance this
+  # record exists to prevent, so this board line says the staging is NOT releasable via the normal
+  # route instead. _release-completed.ps1 enforces this independently of what this board prints.
+  $somPath = Join-Path $Catalogue "$name.shipped-outside-manifest.json"
+  if (Test-Path -LiteralPath $somPath) {
+    $som = $null
+    try { $som = Get-Content -LiteralPath $somPath -Raw | ConvertFrom-Json } catch { }
+    $dispShaNow2 = if (Test-Path -LiteralPath $disp) { (Get-FileHash -LiteralPath $disp -Algorithm SHA256).Hash } else { '' }
+    if (-not $som -or -not $som.dispositionsSha256) {
+      $stalls += "{0,-28} shipped-outside-manifest record UNREADABLE -> inspect {1}" -f $name, $somPath
+    } elseif ($som.dispositionsSha256 -ne $dispShaNow2) {
+      $stalls += "{0,-28} shipped-outside-manifest record is STALE - the dispositions changed after closure -> re-run close-shipped-outside-manifest.ps1" -f $name
+    } elseif ($mentioned.Count -gt 0) {
+      $stalls += "{0,-28} closed SHIPPED OUTSIDE MANIFEST yet {1} manifest(s) reference it ({2}) - contradiction, investigate" -f $name, $mentioned.Count, (($mentioned.Name) -join ', ')
+    } else {
+      $moving += "{0,-28} closed: SHIPPED VIA NON-MANIFEST ROUTE ({1}) - {2}; STAGING NOT RELEASABLE via the normal route - see {3}" -f $name, "$($som.closedAt)", "$($som.shippedItem)", (Split-Path $somPath -Leaf)
+    }
+    continue
+  }
+
   if ($mentioned.Count -eq 0) {
     # A RIP FOLDER THAT NO MANIFEST READS IS REDUNDANT, NOT UNFINISHED.
     #

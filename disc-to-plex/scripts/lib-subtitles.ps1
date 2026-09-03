@@ -167,6 +167,39 @@ function Resolve-OcrOutcome {
   # ORDER MATTERS. The defect patterns are checked before the no-text patterns because several
   # gate messages mention cues in both directions, and the catch-all must stay LAST and must
   # never record anything.
+  if ($OutputText -match 'already has text subs') {
+    # ocr-subtitles.ps1's own "nothing to gain" skip: the file already carries a text (SRT/mov_text)
+    # subtitle track alongside the bitmap one. Added 2026-09-03 after Beowulf (2007).mkv - it has
+    # BOTH a dvd_subtitle track AND a subrip 'eng' track already - hit exactly this skip every
+    # single time, produced NO text this classifier had a pattern for, and so retried 3x and landed
+    # in 'failed' with no real diagnosis, when the true, correct, PERMANENT answer was "there is
+    # nothing to OCR here, this file is already covered by its own text track".
+    return [pscustomobject]@{
+      Status = 'already-has-text'; Verdict = 'exhausted'; BlockReason = ''
+      Lines = @('already carries its own text subtitle track alongside the bitmap one - nothing to gain from OCR, marked exhausted (this is a correct outcome, not a failure)')
+    }
+  }
+  if ($OutputText -match 'no [a-z]{3}-language bitmap subtitle stream') {
+    # ocr-subtitles.ps1 selects a bitmap track "in the wanted language (untagged counts as eng)".
+    # When the ONLY bitmap track(s) present carry some OTHER explicit language tag, there is no
+    # candidate to OCR at all - added 2026-09-03 after Cairo Time.mkv, whose only PGS track is
+    # tagged German. This is DISTINCT from 'wrong-language' above (which fires only after OCR
+    # actually ran and READ text that turned out not to be English) - here OCR never runs at all.
+    # BLOCKED, not exhausted: the disc may genuinely have no English subtitle option (nothing more
+    # to do), or it may have one on a different, unselected track (worth a human re-rip decision) -
+    # either way that is a judgement call this classifier should not make silently, so it stays
+    # visible rather than being written off as settled emptiness.
+    return [pscustomobject]@{
+      Status = 'no-language-candidate'; Verdict = 'blocked'
+      BlockReason = 'no bitmap subtitle stream in the requested language - the only bitmap track(s) present are tagged a different language; check whether the disc actually offers an English option before writing this off'
+      Lines = @(
+        '*** NO BITMAP SUBTITLE STREAM IN THE REQUESTED LANGUAGE - the only track(s) present carry a'
+        '    different language tag. This may be the whole story (no English subs exist on this disc)'
+        '    or the disc may offer one on an unselected track - worth a human look, not an automatic'
+        '    write-off. No further OCR retries until the file changes.'
+      )
+    }
+  }
   if ($OutputText -match 'not English text|non-English function words') {
     # Fantasia's extras carry SPANISH subtitles tagged `eng`. OCR worked perfectly; the disc lies.
     # Marking this exhausted would have published the featurette with a Spanish track labelled
