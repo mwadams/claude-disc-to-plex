@@ -42,7 +42,12 @@
                                the demuxer stops emitting after cell 13 (a cell command ends
                                playback there), and no chapter covers those cells - so no demuxer
                                option can reach them. The range is carved to a temp .vob (per-PID
-                               work dir) and byte-verified before use. `title` is still REQUIRED:
+                               work dir), byte-verified, then RETIMED by retime-vob-cells.py:
+                               multi-cell titles restart SCR/PTS/DTS near zero at every cell, and
+                               encoding such a carve raw loses frames at every seam (592 frames /
+                               23.68 s on The Champions D9 VTS_03, ffmpeg exit 0 - the retimer's
+                               per-cell table in the encode log is the audit trail). A carve with
+                               no resets passes through byte-identical. `title` is still REQUIRED:
                                audioTracks ordinals on such an item are declared in the DVDVIDEO
                                TITLE'S stream order (= the order the .tracks.json evidence uses)
                                and are translated to the cut's own order via MPEG stream ids -
@@ -587,6 +592,26 @@ foreach($it in $items){
     }
     Write-Output ('   vobSectors {0}..{1} of VTS_{2:D2} -> {3:N0} bytes carved and byte-verified' -f `
       [long](@($it.vobSectors)[0]), [long](@($it.vobSectors)[1]), [int]$it.vts, (Get-Item -LiteralPath $cut).Length)
+    # RETIME THE CARVE - per-cell timestamp resets are rewritten into one continuous timeline
+    # BEFORE anything reads the cut. A multi-cell VOB restarts SCR/PTS/DTS near zero at every
+    # cell, and ffmpeg's TS_DISCONT rebase (one shared offset per input) loses a frame or two at
+    # every seam - and fails CATASTROPHICALLY when a stream is absent from one cell: The Champions
+    # D9 VTS_03 has no 0x80 audio in cell 17, the offset flapped between the audio and video
+    # resets, and 592 frames (23.68 s) were dropped with ffmpeg exit 0 - only the expectFrames
+    # guard caught it. retime-vob-cells.py fixes this deterministically from the video DTS chain
+    # (within-cell A/V timing untouched; a stream missing from a cell becomes a true gap, not a
+    # desync) and is a byte-identical no-op on a carve with no resets. Its per-cell table is the
+    # audit trail, so it is logged in full.
+    $retimed = Join-Path $work ("cut$i-retimed.vob")
+    $rtOut = & python (Join-Path $PSScriptRoot 'retime-vob-cells.py') $cut $retimed 2>&1
+    $rtExit = $LASTEXITCODE        # captured BEFORE any pipeline can dilute it - never read an exit code through a pipe
+    $rtOut | ForEach-Object { Write-Output "   $_" }
+    if($rtExit -ne 0 -or -not (Test-Path -LiteralPath $retimed) -or `
+       (Get-Item -LiteralPath $retimed).Length -ne (Get-Item -LiteralPath $cut).Length){
+      Write-Output '   !! FAILED - retime-vob-cells refused the carve (see its report above); never encoding an unretimed multi-cell cut'
+      $failCount++; continue
+    }
+    $cut = $retimed
     if((Has $it 'audioTracks') -and @($it.audioTracks).Count -gt 0){
       $titleIds = @(& $fp -v error -f dvdvideo -title ([string]$it.title) -select_streams a -show_entries stream=id -of csv=p=0 "$($it.src)" 2>$null | ForEach-Object { "$_".Trim().TrimEnd(',') } | Where-Object { $_ -match '^0x' })
       $cutIds   = @(& $fp -v error -select_streams a -show_entries stream=id -of csv=p=0 $cut 2>$null | ForEach-Object { "$_".Trim().TrimEnd(',') } | Where-Object { $_ -match '^0x' })
@@ -713,7 +738,21 @@ foreach($it in $items){
       }
     }
 
-  $a = @('-y','-hide_banner','-v','error','-stats') + $encspec
+  $a = @('-y','-hide_banner','-v','error','-stats')
+  # A RETIMED CARVE'S TIMESTAMPS ARE TRUSTWORTHY - TELL FFMPEG SO. mpegps is a TS_DISCONT format,
+  # so ffmpeg's input handler rebases the whole input's shared ts_offset whenever ANY stream's DTS
+  # jumps more than dts_delta_threshold (default 10 s) - in EITHER direction. After retiming, the
+  # only jumps left are REAL: a stream absent from a cell resumes with a forward gap (The Champions
+  # D9 VTS_03: audio 0x80 has no cell-17 packets, so it re-enters at +59.44 s). Default handling
+  # read that as a discontinuity, rebased the input by -59.4 s, then the OTHER audio stream's next
+  # packet read as a -59.4 s jump and rebased it back - the offset flapped on alternating packets
+  # and vsync dropped 565 video frames (22.6 s) with exit 0. Measured 2026-09-03 via -v info:
+  # "timestamp discontinuity ... new offset" pairs alternating for the whole tail. With the
+  # threshold at 3600 s the same command emits all 26,215 frames, zero drops, zero rebase messages.
+  # Scoped to the retimed cut ONLY: every other input keeps the default heuristic, which is right
+  # for sources whose timestamps genuinely do reset (that is what the retimer exists to remove).
+  if($it.kind -eq 'DVD' -and (Has $it '_cutFile')){ $a += @('-dts_delta_threshold','3600') }
+  $a += $encspec
 
   # --- timestamp origin ---------------------------------------------------------------------
   # A Blu-ray .m2ts does not have to start at PTS 0. The Ipcress File begins at 11.650667, and
