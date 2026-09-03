@@ -281,9 +281,34 @@ while ($true) {
     $dueForFullSweep = $true
     if (Test-Path -LiteralPath $coverageCheckpoint) {
       $last = Get-Content -LiteralPath $coverageCheckpoint -Raw -ErrorAction SilentlyContinue
-      $lastTime = $null
-      if ([DateTime]::TryParse($last, [ref]$lastTime)) {
-        $dueForFullSweep = ((Get-Date) - $lastTime).TotalMinutes -ge $coverageFullSweepEveryMin
+      # MUST BE TYPED. `$lastTime = $null` is untyped, and TryParse's [ref] parameter needs a
+      # [DateTime]-typed variable to bind to - an untyped $null cannot bind, so the call THROWS
+      # (MethodException: "Cannot find an overload for TryParse and the argument count: 2") on
+      # EVERY pass, regardless of what $last contains. Confirmed live in _publish-loop.log at
+      # 18:20 today, repeating on every publish cycle since this block was written.
+      #
+      # That throw is NON-TERMINATING at script scope (no try/catch here previously, and none
+      # needed to reach the next statement) - PowerShell prints the error and moves on, so the
+      # loop never crashed and nothing looked broken. But it aborts the `if` before
+      # $dueForFullSweep is ever reassigned away from its default $true, so the 240-minute
+      # throttle silently never engaged: the 30-45 minute full sweep ran on EVERY publish pass
+      # instead of every 4 hours, and the loop's log has sat frozen mid-sweep since 18:20 while
+      # this checkpoint still read 17:32 - Edge of Darkness work queued behind it the whole time.
+      [DateTime]$lastTime = [DateTime]::MinValue
+      try {
+        if ([DateTime]::TryParse($last, [ref]$lastTime)) {
+          $dueForFullSweep = ((Get-Date) - $lastTime).TotalMinutes -ge $coverageFullSweepEveryMin
+        } else {
+          # Same failure class as the TV-reindex incident (follow-up.md, 2026-09-03): a throttle
+          # that degrades silently into "always run" reads as ordinary slowness for days, not as
+          # a defect. This loop keeps operator-log lines only where they match this script's own
+          # 'verified|REFUSING|NOT PUBLISHING' convention (see the per-work publish block above),
+          # so reuse REFUSING here too even though this path never touches that filter directly -
+          # it is the greppable word this pipeline already looks for.
+          Write-Output ("    REFUSING to trust subtitle-coverage checkpoint '{0}' - content is not a parseable date ('{1}') - forcing a full sweep this pass" -f $coverageCheckpoint, $last)
+        }
+      } catch {
+        Write-Output ("    REFUSING to trust subtitle-coverage checkpoint '{0}' - {1} - forcing a full sweep this pass" -f $coverageCheckpoint, $_.Exception.Message)
       }
     }
     if ($dueForFullSweep) {
@@ -292,7 +317,17 @@ while ($true) {
         & pwsh -NoProfile -File 'D:\video\.claude\skills\disc-to-plex\scripts\subtitle-coverage.ps1' 2>&1 |
           Select-String 'unclassified,|awaiting-transcription,|awaiting-ocr,|LEGACY BACKLOG|TRANSCRIPTION-DEFERRED|genuinely-missed \(ours\)|stale-provenance \(ours\)' |
           ForEach-Object { "    $_" }
-        Set-Content -LiteralPath $coverageCheckpoint -Value (Get-Date -Format s)
+        # STAMP ONLY ON A CLEAN EXIT. subtitle-coverage.ps1 runs with $ErrorActionPreference =
+        # 'Stop' and exits 2 on a refused/invalid run, 0 on a completed sweep - so $LASTEXITCODE
+        # is a real signal here, not prose to match. Stamping unconditionally would let a failed
+        # sweep look identical to a good one for the next 240 minutes; not stamping at all would
+        # otherwise re-run every pass forever exactly like the bug above, which is why this checks
+        # the code instead of assuming the pipeline reaching Set-Content means success.
+        if ($LASTEXITCODE -eq 0) {
+          Set-Content -LiteralPath $coverageCheckpoint -Value (Get-Date -Format s)
+        } else {
+          Write-Output ("    REFUSING to stamp the coverage checkpoint - subtitle-coverage.ps1 exited {0} - next pass will retry the full sweep" -f $LASTEXITCODE)
+        }
       } catch {
         Write-Output "    subtitle-coverage.ps1 (full sweep) threw: $($_.Exception.Message)"
       }
