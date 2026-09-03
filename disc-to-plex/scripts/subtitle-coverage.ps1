@@ -312,6 +312,33 @@ $queued = New-Object System.Collections.Generic.List[object]
 $skippedTooShort = New-Object System.Collections.Generic.List[object]
 $divertedNa = New-Object System.Collections.Generic.List[object]
 
+# RECORD a classifier-level 'not-applicable' in the register too.
+#
+# The diversion further down only fires for a file that reached the enqueue stage, i.e. one the
+# classifier called 'awaiting-transcription'. Since lib-subtitle-coverage.ps1 gained its own audio
+# probe (2026-09-03), a video-only artefact is recognised EARLIER and never becomes a candidate -
+# so without this block it would be classified correctly in the report and recorded NOWHERE.
+# That would quietly defeat the register's stated purpose: queue-transcribable.ps1 keeps it
+# "countable and visible on purpose: silence here is how 'we covered everything' gets claimed
+# falsely." A correct classification that leaves no trace is exactly that silence.
+$recordedNa = New-Object System.Collections.Generic.List[object]
+foreach ($c in @($results | Where-Object { $_.Category -eq 'not-applicable' })) {
+  if ($naSet.ContainsKey($c.MkvPath.ToLowerInvariant())) { continue }
+  $recordedNa.Add($c)
+  [pscustomobject]@{
+    Kind = $c.Area; Work = $c.Work; Path = $c.MkvPath; Season = ''; Episode = ''
+    Minutes = ''; DiscId = ''; DiscFolder = ''
+    Reason = 'no audio stream (video-only artefact) - cannot be transcribed'
+    Evidence = $c.Evidence; When = (Get-Date -Format s)
+  } | Export-Csv -LiteralPath $NaCsv -Append -NoTypeInformation
+  $naSet[$c.MkvPath.ToLowerInvariant()] = $true
+}
+if ($recordedNa.Count) {
+  Write-Output ''
+  Write-Output ("RECORDED NOT-APPLICABLE (video-only, probed directly): {0}" -f $recordedNa.Count)
+  foreach ($d in $recordedNa) { Write-Output ("  ~ {0} / {1}" -f $d.Work, $d.File) }
+}
+
 foreach ($c in $candidates) {
   if ($existingQueue.ContainsKey((Get-QueueRowKey $c.MkvPath))) { continue }
   if ($progress.ContainsKey($c.MkvPath)) { continue }

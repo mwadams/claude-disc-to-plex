@@ -116,8 +116,25 @@ foreach($e in $eps){
   if($FromIndex -and $e.index -lt $FromIndex){ continue }
   if($ToIndex   -and $e.index -gt $ToIndex){ continue }
   $rk   = $e.ratingKey
-  $leaf = Split-Path $e.Media[0].Part[0].file -Leaf
-  $file = Join-Path $MediaDir $leaf
+
+  # An episode can carry MULTIPLE Media entries mid-rename: the copy-then-retire pattern (rename
+  # locally, copy to the NAS under the new name, hand over a delete list for the old name) leaves
+  # the OLD file registered as an extra "version" of the same item until the user deletes it, and
+  # Plex does not reorder Media[] to put the new one first. Taking Media[0] unconditionally would
+  # silently resolve to the old, unparseable bare filename and report "couldn't parse" even though
+  # the correctly-named file is sitting right there in -MediaDir. So try every Media/Part's leaf
+  # against MediaDir and take the first one that's actually present; fall back to Media[0] when
+  # none matches, which reproduces the original (single-version) behaviour unchanged.
+  $leaf = $null; $file = $null
+  foreach($part in @($e.Media | ForEach-Object { $_.Part } | Where-Object { $_ })){
+    $l = Split-Path $part.file -Leaf
+    $f = Join-Path $MediaDir $l
+    if(Test-Path $f){ $leaf = $l; $file = $f; break }
+  }
+  if(-not $leaf){
+    $leaf = Split-Path $e.Media[0].Part[0].file -Leaf
+    $file = Join-Path $MediaDir $leaf
+  }
   $haveFile = Test-Path $file
   $line = "E{0:D2} rk={1} {2}" -f $e.index,$rk,$e.title
 

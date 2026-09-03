@@ -229,6 +229,35 @@ function Test-BitmapSubtitleStream {
   return ''   # empty string = "checked, none found" - distinct from $null ("could not check")
 }
 
+# A file with NO AUDIO STREAM can never be transcribed - whisper has nothing to decode. That is a
+# terminal, correct disposition, not a transient failure, and `queue-transcribable.ps1` already
+# probes for it (its Test-HasAudioStream) precisely because two stills galleries -
+# `Survivors - S00E08 - Publicity Stills.mkv` and `The Champions S00E09.mkv` - sat in the FAILED
+# queue burning a failure on every pass (2026-09-02).
+#
+# The classifier below had no such probe: it recognised 'not-applicable' ONLY by finding the path
+# already listed in `_transcribe-not-applicable.csv`. That register is rebuilt from the
+# disc-identity register by queue-transcribable.ps1, so a brand-new video-only artefact - a
+# menu-domain stills slideshow, a mute angle-2 extra - is not in it at the moment it is published,
+# and the publish-loop's own scoped run would classify it 'awaiting-transcription' and queue it.
+# Same defect class, arrived at from the other entry point. So probe the file, exactly as the
+# bitmap check does, and let the evidence answer.
+#
+# ⚠ NAME DELIBERATELY PREFIXED. `subtitle-coverage.ps1` and `queue-transcribable.ps1` each define
+# their OWN `Test-HasAudioStream([string]$Path)` - one positional parameter, no -ffprobe - and
+# subtitle-coverage.ps1 dot-sources this file at its line 74 and then defines its version at line
+# 94, so a same-named function here is SHADOWED in exactly the caller that matters. The classifier
+# below would then be calling a one-parameter function with `-ffprobe`, which is a binding error,
+# and subtitle-coverage.ps1 runs with $ErrorActionPreference='Stop' - so the publish loop's
+# coverage pass would throw instead of classifying. `revalidate-queue.ps1` already suffixes its
+# own copy `-RQ` for this reason. Do not rename this back to the bare name.
+function Test-CoverageHasAudioStream {
+  param([Parameter(Mandatory)][string]$Path, [string]$ffprobe)
+  if (-not $ffprobe -or -not (Test-Path -LiteralPath $ffprobe)) { return $null }   # $null = "could not check"
+  $codecs = & $ffprobe -v error -select_streams a -show_entries stream=codec_name -of csv=p=0 -- $Path 2>$null
+  return (@($codecs | Where-Object { $_ }).Count -gt 0)
+}
+
 function Get-SubtitleCoverageClassification {
   param(
     [Parameter(Mandatory)]$Row,
@@ -307,6 +336,19 @@ function Get-SubtitleCoverageClassification {
     }
   }
   $bitmapChecked = ($null -ne $bitmap)   # $bitmap -eq '' means "checked, none found"; $null means "could not check"
+
+  # Probed, not looked up: a video-only artefact published a minute ago cannot yet be in the
+  # register, and queueing it means a permanent 'failed' on every transcribe pass. Only a
+  # DEFINITE $false counts - $null means "could not check" and must fall through, never be
+  # read as "no audio".
+  if ((Test-CoverageHasAudioStream -Path $Row.MkvPath -ffprobe $ffprobe) -eq $false) {
+    return [pscustomobject]@{
+      Category = 'not-applicable'; Ours = $isOurs
+      Evidence = 'probed directly: the published file carries NO audio stream, so there is nothing to transcribe (video-only artefact - stills gallery, mute footage)'
+      ManifestFile = $(if ($manifest) { $manifest.ManifestFile } else { $null })
+      SubTrack = $(if ($manifest) { $manifest.SubTrack } else { $null }); SourceDrive = $null
+    }
+  }
 
   if ($NaSet.ContainsKey($Row.MkvPath.ToLowerInvariant())) {
     return [pscustomobject]@{

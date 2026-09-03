@@ -65,6 +65,31 @@ Three things to get right, each of which has its own way of shipping something p
   declares `VTS_SPST_Ns=1`, ordinal 0, lang `en`; it emits nothing, and a stream-copy of it muxes
   to an empty file. `subTrack: "none"`. Keeping it would stamp `language=eng` on nothing and route
   the file to the OCR queue to OCR an empty stream.
+- **AND THE MUXER SHIPS AN UNSEEKABLE FILE UNLESS YOU FORCE INTERLEAVING.** This is the fourth
+  thing, it is the one no existing gate can see, and it is the reason `transcode.ps1` adds
+  `-max_interleave_delta 0` on the `stillsHold` path. With ONE input frame the `setpts,fps` chain
+  emits nothing until the demuxer hits EOF and then floods every generated frame at once, while the
+  audio decoded and encoded in seconds — so at libavformat's default 10 s interleave delta the
+  muxer flushes all the audio first. MEASURED on the pre-fix build: all 43,975 video packets landed
+  in the last 20 MB of a 189 MB file, video t=0 at byte 169,727,762 against audio t=0 at
+  71,394,398. That file **plays from the start and probes perfectly** — right duration, right
+  packet counts, right geometry, ffmpeg exit 0, `expectSeconds`/`expectFrames` both satisfied — and
+  `ffmpeg -ss 880` returned an EMPTY wav, zero samples, because the seek lands on a video keyframe
+  past all the audio. A viewer scrubbing 30 seconds in gets silence.
+  **So the acceptance test for a `stillsHold` item is a SEEK, not a probe:** decode a second of
+  audio and one frame at several offsets and confirm both come back non-empty. Verified on the
+  shipped file at 5/60/440/880/1320/1700/1755 s — 576,102 B of 5.1 PCM and a full 720x576 frame at
+  every one, mean volume −21 to −40 dB (real music, not silence) — and the first packet of all four
+  streams now sits inside the first 56 KB.
+  Cost of the fix is MEMORY, and it is larger than "buffer the audio": because the video queue
+  drains as fast as it fills, the muxer never has a packet for every stream at once and holds the
+  WHOLE output until video EOF. Measured 609 MB peak working set, and **the output file stays 0
+  bytes for the first ~2 of 3 minutes** while ffmpeg's own progress line reports a growing `size=`.
+  That is this path working, not a stall — do not read the 0-byte output as a dead encode.
+  (The alternative fix, not taken, is to stop deferring the video at all: extract the still to a
+  PNG and re-feed it as `-loop 1 -framerate <fps> -t <dur>`, which streams frames in step with the
+  audio and needs no buffering. It is the better shape and a bigger change; `-max_interleave_delta 0`
+  is the minimal correct fix for the existing filter chain.)
 
 **And it is not a subtitle failure.** The item has audio, so it is transcribable in principle — but
 it is a music suite with no speech, and the transcribe track's own 4-cues-per-minute floor is what

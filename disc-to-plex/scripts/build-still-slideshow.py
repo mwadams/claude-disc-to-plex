@@ -36,14 +36,20 @@ USAGE
     <cells dir>   the directory `dvd-still-cells.py` wrote: one `pgcNN/cell001.vob` per still.
     --pgcs        inclusive ranges and/or singletons, e.g. `23-57` or `12,14,16-20`. Order is
                   the order given, which is the order the disc's NEXT button walks.
+    --keep-frames keep the rendered pages in DIR (for looking at them). WITHOUT it the pages go
+                  to a temp dir that is removed - deliberately NOT a directory derived from
+                  `out`, because that lands inside the work folder and publish-work.ps1 copies
+                  the whole folder to the NAS, which this pipeline may never clean up.
 
 Exit codes: 0 = OK, 2 = refused (structure, duplicate, or a post-encode count mismatch).
 """
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 
 
 def tools():
@@ -131,8 +137,27 @@ def main():
         raise SystemExit('--pgcs and --dwell are both required (--dwell has no default on purpose)')
 
     pgcs = parse_pgcs(spec)
-    work = keep or (os.path.splitext(out)[0] + '.frames')
+    if not pgcs:
+        raise SystemExit('--pgcs %r selected no page at all (exit 2)' % spec)
+
+    # THE FRAME SCRATCH MUST NOT BE DERIVED FROM `out`. It used to default to
+    # `os.path.splitext(out)[0] + '.frames'`, i.e. a directory INSIDE the work folder - and
+    # `publish-work.ps1` copies the WHOLE work folder with robocopy /E, while `.png` is an
+    # allowed library artefact (lib-artefact-types.ps1). So every page of every set would have
+    # been published into the NAS Season 00 folder alongside the .mkv, and nothing in this
+    # pipeline may delete from the NAS: each one becomes a hand-removal chore for the user.
+    # That is exactly the trap CLAUDE.md names - a derived path written from an OUTPUT path.
+    # Default to a real temp dir and remove it; `--keep-frames DIR` opts back in explicitly.
+    work = keep or tempfile.mkdtemp(prefix='stills-')
     os.makedirs(work, exist_ok=True)
+    try:
+        return build(cells_dir, out, pgcs, dwell, fps, drop_term, allow_dup, dry, work)
+    finally:
+        if not keep:
+            shutil.rmtree(work, ignore_errors=True)
+
+
+def build(cells_dir, out, pgcs, dwell, fps, drop_term, allow_dup, dry, work):
 
     sar = None
     frames, hashes = [], []

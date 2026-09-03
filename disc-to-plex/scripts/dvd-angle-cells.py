@@ -124,6 +124,16 @@ def nav_info(pack):
 
     The DSI PES is located by walking the pack's PES packets rather than by a fixed offset, so a
     pack with unusual stuffing cannot yield a plausible wrong VOB id.
+
+    ⚠ A NAV PACK IS NOT ALWAYS JUST PCI+DSI. The first pack of every VOB (every VOB_ID, not just
+    every .VOB file) additionally carries a SYSTEM HEADER, stream id 0xBB - required by the
+    DVD-Video spec. This walk used to `return None` on any id that was not 0xBF, so it declared
+    the first pack of each VOB "not a NAV pack" and aborted with "lost VOBU sync" before emitting
+    a single sector. Measured on The League of Gentlemen Series 2 Disk 1 VTS_07 (2026-09-03):
+    sector 0 is `pack | 0xBB len 18 | 0xBF sub 0x00 (PCI) | 0xBF sub 0x01 (DSI)`, and the walk
+    failed at sector 0 for angle 1 and at sector 372 for angle 2 - which are exactly where VOB_ID
+    1 and VOB_ID 2 begin. So SKIP the ids that legally precede the DSI and bail only on a real
+    media stream, which is what actually proves a pack is not a NAV pack.
     """
     if pack[:4] != b'\x00\x00\x01\xba':
         return None
@@ -137,8 +147,11 @@ def nav_info(pack):
             g = off + 7                                    # DSI_GI
             return (struct.unpack_from('>H', pack, g + 24)[0], pack[g + 27],
                     struct.unpack_from('>I', pack, g + 8)[0])
-        if sid != 0xBF:
-            return None                                    # a NAV pack leads with PCI then DSI
+        # 0xBB system header (first pack of a VOB), 0xBF sub 0x00 (the PCI that precedes the DSI),
+        # 0xBE padding - all legal ahead of the DSI. Anything else is video/audio/subpicture data,
+        # so this pack really is not a NAV pack.
+        if sid not in (0xBB, 0xBE, 0xBF):
+            return None
         off += 6 + plen
     return None
 
