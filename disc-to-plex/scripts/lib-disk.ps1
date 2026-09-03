@@ -149,6 +149,42 @@ function ConvertTo-RipSlug {
   ENUMERATION: one function, used by both the actual deletion and any "is there anything left"
   pre-check, so there is nothing left to drift.
 
+.THE SLUG IS A CONVENTION, NOT A RECORD - SO A DIRECTORY MAY DECLARE ITS OWN UNIT
+  Everything above derives the artefact directory name FROM THE UNIT NAME. That is a convention,
+  and rip-titles.ps1 lets the caller override it: `-Dest` names the folder outright, and its
+  default (`<disc>.ToLower() + '-mkv'`) only applies when -Dest is absent. Pass a -Dest that does
+  not follow the convention and NOTHING on disk records which unit the folder belongs to - the link
+  exists only in the head of whoever typed the command.
+
+  That is not hypothetical. `_stage/mumins1-mkv` (7.6 GB) was ripped from `DIE_MUMINS_1` with a
+  -Dest named after its MANIFEST (`mumins1`, see _queue/done/mumins1.json). The unit slug is
+  `die_mumins_1-mkv`, which never existed, so every enumeration above returned nothing and the
+  folder was invisible to `_release-completed.ps1` and `_reclaim-loop.ps1` alike - the Danger Man
+  `-rip` class recurring at one remove. It could only be released by inventing a unit called
+  "Mumins 1", which the reclaim gate correctly refused as a name the pipeline has never seen.
+
+  NO MATCHER CAN CLOSE THIS. `mumins1` is not derivable from `DIE_MUMINS_1` by any rule that would
+  not also reach some other work's staging from a similar name, and a mis-targeted release is the
+  one irreversible step in this pipeline. The fix is therefore to RECORD the link at rip time
+  rather than re-derive it: rip-titles.ps1 writes a `.unit` marker into every -Dest it creates,
+  naming the disc the rip came from. This function honours that marker, under three constraints
+  that keep it exact rather than fuzzy:
+
+    1. EXACT NAME MATCH, never substring or prefix - `DIE_MUMINS_1` must not claim
+       `DIE_MUMINS_11`'s artefacts. Case-insensitive only, because Windows paths are.
+    2. ONLY DIRECT CHILDREN OF $Stage whose name carries one of the known intermediate suffixes
+       (-rip/-x/-main/-mkv/-reel/-audio). A marker can therefore only ever redirect WITHIN the
+       intermediate namespace; it can never aim a deletion at another unit's RAW disc folder,
+       however the -Dest was written.
+    3. A DIRECTORY WITH NO MARKER IS NEVER CLAIMED. The default is still the slug convention, so
+       nothing that works today changes behaviour.
+
+  The marker is written by the step that creates the directory, so it is a record of what actually
+  happened rather than a judgement made later. A marker retro-fitted to a pre-existing folder is a
+  CLAIM like any other and must be evidenced the same way (for mumins1-mkv: its 23 rips match
+  DIE_MUMINS_1's catalogue titles t01-t23 duration-for-duration in order, and one-to-one onto the
+  23 published outputs of mumins1.json) - the marker file carries that reasoning in `#` comments.
+
 .PARAMETER Unit
   The unit/disc name exactly as _completed.txt or the catalogue spells it.
 
@@ -187,6 +223,25 @@ function Get-UnitStageTargets {
   foreach ($suffix in @('-rip', '-x', '-main', '-mkv', '-reel', '-audio')) {
     $ripDir = Join-Path $Stage "$slug$suffix"
     if (Test-Path -LiteralPath $ripDir -PathType Container) { $targets += $ripDir }
+  }
+
+  # ARTEFACT DIRECTORIES THAT DECLARE THEIR OWN UNIT - see the header section on the slug being a
+  # convention rather than a record. Deliberately narrow: an intermediate-suffixed direct child of
+  # $Stage, carrying a `.unit` marker whose named unit EQUALS this one. Anything looser could aim a
+  # deletion at work this unit has nothing to do with.
+  foreach ($cand in @(Get-ChildItem -LiteralPath $Stage -Directory -ErrorAction SilentlyContinue |
+                      Where-Object { $_.Name -match '-(rip|x|main|mkv|reel|audio)$' })) {
+    if ($targets -contains $cand.FullName) { continue }   # already found by the slug convention
+    $marker = Join-Path $cand.FullName '.unit'
+    if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) { continue }
+    # First non-empty, non-'#' line is the unit name; the rest of the file is free-text provenance,
+    # the same shape as a dispositions file. A marker naming nothing claims nothing.
+    $claim = @(Get-Content -LiteralPath $marker -ErrorAction SilentlyContinue |
+               ForEach-Object { $_.Trim() } |
+               Where-Object { $_ -and -not $_.StartsWith('#') }) | Select-Object -First 1
+    if ($claim -and [string]::Equals("$claim", $unit, [System.StringComparison]::OrdinalIgnoreCase)) {
+      $targets += $cand.FullName
+    }
   }
 
   return ,$targets

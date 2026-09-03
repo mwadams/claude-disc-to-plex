@@ -93,6 +93,35 @@ if ($freeGB -lt $wantGB) {
 
 # ---- 3. RIP -------------------------------------------------------------------------------
 New-Item -ItemType Directory -Force -Path $Dest | Out-Null
+
+# RECORD WHICH UNIT THIS DIRECTORY BELONGS TO, HERE, WHERE IT IS KNOWN FOR CERTAIN.
+#
+# The reclaim path (Get-UnitStageTargets, lib-disk.ps1) finds artefact directories by DERIVING their
+# names from the unit name - `<slug>-rip|-x|-main|-mkv|-reel|-audio`. That works only while -Dest
+# follows the convention on line 48. Pass a -Dest that does not, and nothing on disk records which
+# disc the folder came from: the link lives solely in the head of whoever typed the command, and the
+# folder becomes unreachable by every reclaim artefact.
+#
+# `_stage/mumins1-mkv` (7.6 GB) is the case that proved it - ripped from DIE_MUMINS_1 into a -Dest
+# named after its MANIFEST (`mumins1`), so the slug `die_mumins_1-mkv` never existed and both
+# _release-completed.ps1 and _reclaim-loop.ps1 reported "not staged" for a folder plainly sitting
+# there. No matcher can bridge `mumins1` to `DIE_MUMINS_1` without also reaching names it must not
+# touch, and a mis-targeted release is this pipeline's one irreversible step. So write the fact down
+# instead of re-deriving it: one line, at the moment the directory is created.
+$unitMarker = Join-Path $Dest '.unit'
+if (-not (Test-Path -LiteralPath $unitMarker)) {
+  Set-Content -LiteralPath $unitMarker -Encoding UTF8 -Value @(
+    $discName
+    '# Written by rip-titles.ps1 at rip time. First non-comment line is the STAGED UNIT this'
+    '# directory was ripped from, as _completed.txt and the catalogue spell it.'
+    '# Get-UnitStageTargets (lib-disk.ps1) reads it so a -Dest that does not follow the slug'
+    '# convention is still reachable by a reclaim artefact naming the unit. Do not edit it to'
+    '# make a release pass: it is a record of where these files came from.'
+    ("# source disc: {0}" -f $Disc)
+    ("# ripped     : {0}" -f (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss'))
+  )
+}
+
 $before = @(Get-ChildItem $Dest -Filter *.mkv -ErrorAction SilentlyContinue).Count
 foreach ($t in $Titles) {
   Write-Output ("  ripping t{0:D2} ({1}) ..." -f $t, $size[$t])

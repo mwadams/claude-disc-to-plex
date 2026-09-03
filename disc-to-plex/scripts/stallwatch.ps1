@@ -228,6 +228,15 @@ foreach ($u in $units) {
       $stalls += "{0,-28} shipped-outside-manifest record is STALE - the dispositions changed after closure -> re-run close-shipped-outside-manifest.ps1" -f $name
     } elseif ($mentioned.Count -gt 0) {
       $stalls += "{0,-28} closed SHIPPED OUTSIDE MANIFEST yet {1} manifest(s) reference it ({2}) - contradiction, investigate" -f $name, $mentioned.Count, (($mentioned.Name) -join ', ')
+    } elseif ($som.stagingReleaseAuthorised -and "$($som.stagingReleaseAuthorised.sourceDisc.path)".Trim()) {
+      # AUTHORISED (2026-09-03): the record still stands - no manifest can produce this disc's item,
+      # so this line must keep reading CLOSED, never "needs MANIFEST". What has been lifted is only
+      # the staging refusal, and only because the SOURCE DISC is still reachable - a different claim
+      # from "no manifest can produce it", and the only one that ever justified refusing release.
+      # _release-completed.ps1 re-measures that source itself, so this line reports the authorisation
+      # rather than asserting the release will succeed.
+      $moving += "{0,-28} closed: SHIPPED VIA NON-MANIFEST ROUTE ({1}) - {2}; staging release AUTHORISED against {3} (source still reachable is re-checked at release)" -f `
+                 $name, "$($som.closedAt)", "$($som.shippedItem)", "$($som.stagingReleaseAuthorised.sourceDisc.path)"
     } else {
       $moving += "{0,-28} closed: SHIPPED VIA NON-MANIFEST ROUTE ({1}) - {2}; STAGING NOT RELEASABLE via the normal route - see {3}" -f $name, "$($som.closedAt)", "$($som.shippedItem)", (Split-Path $somPath -Leaf)
     }
@@ -379,7 +388,30 @@ if (Test-Path -LiteralPath $rqRoot) {
     $rqAlive = [System.Threading.Mutex]::TryOpenExisting(('Global' + [char]92 + 'video-reclaim-loop'), [ref]$rqH)
     if ($rqH) { $rqH.Dispose() }
   } catch { $rqAlive = $false }
+  # A FAILED ARTEFACT CAN BE SUPERSEDED RATHER THAN RETRYABLE, AND SAYING "RETRY IT" IS THEN WRONG.
+  #
+  # This line is permanent: failed/ is never emptied, so every refusal is re-announced forever with
+  # the same instruction - move the .json back and retry. For most refusals that is right (fix the
+  # cause, requeue, the already-done parts no-op). But a refusal can be closed by OTHER artefacts
+  # instead, and then requeueing it does damage or, at best, refuses again.
+  #
+  # mumins-staging-release.json (2026-09-03) is the case. Its three refusals were all correct; two
+  # were satisfied hours later by mumins-disc1-only.json and mumins-disc3-discard.json, and the
+  # third named a unit that DOES NOT EXIST ("Mumins 1", invented so the slug would reach
+  # _stage/mumins1-mkv). Requeueing it can only refuse again, and the register write it would need
+  # is precisely the false confirmation the gate refused to make. Yet the board kept telling the
+  # next reader to retry it.
+  #
+  # So: a `<name>.superseded.txt` beside the artefact closes the line - but NEVER silently. The
+  # artefact and its result file stay, the note must be written by hand and say what closed it, and
+  # the board still prints a line for it, just an accurate one. Nothing is deleted and no refusal
+  # is laundered: this changes the ADVICE, not the verdict.
   foreach ($f in $rqFailed) {
+    $supersededNote = Join-Path $f.DirectoryName ($f.BaseName + '.superseded.txt')
+    if (Test-Path -LiteralPath $supersededNote -PathType Leaf) {
+      Write-Output ("   reclaim {0} - FAILED and SUPERSEDED; closed by other artefacts, do NOT requeue. Why: {1}" -f $f.Name, $supersededNote)
+      continue
+    }
     Write-Output ("*** RECLAIM FAILED: {0} - a CONFIRMED reclaim did not complete. Read {1}/failed/{2}.result.txt, fix the cause, move the .json back into _reclaim-queue/ to retry." -f $f.Name, $rqRoot, $f.BaseName)
   }
   foreach ($f in $rqRunning) {

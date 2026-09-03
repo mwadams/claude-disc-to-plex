@@ -128,21 +128,74 @@ foreach ($u in $Units) {
     continue
   }
 
-  # A UNIT CLOSED shipped-outside-manifest IS A HARD REFUSE, NOT SOMETHING _completed.txt CAN
-  # OVERRIDE. close-shipped-outside-manifest.ps1 (scripts/) exists for a disc whose one shippable
-  # item reached the library by a route no manifest could take (Survivors Series 2 Disk 4's photo
-  # gallery: authored as still MENUS, invisible to MakeMKV/transcode.ps1) - for such a disc the raw
-  # staging may be the ONLY place that item could ever be re-derived from, and
-  # assert-accounted.ps1 has no concept of a non-title item, so it exits 0 and prints "may be
-  # released" regardless. This unit's Plex confirmation says the SHIPPED ITEM was seen and is fine,
-  # not that the RAW DISC is safe to destroy - those are different questions for this class of disc,
-  # unlike every other unit this script handles. So this check runs before -Completed is even
-  # consulted, and there is no override flag: removing the record is a deliberate, separate, human
-  # act (see the record's own releaseNotice field), never a side effect of running this script.
+  # A UNIT CLOSED shipped-outside-manifest REFUSES BY DEFAULT, AND _completed.txt CANNOT OVERRIDE IT.
+  # close-shipped-outside-manifest.ps1 (scripts/) exists for a disc whose one shippable item reached
+  # the library by a route no manifest could take (Survivors Series 2 Disk 4's photo gallery:
+  # authored as still MENUS, invisible to MakeMKV/transcode.ps1) - for such a disc the raw staging
+  # may be the ONLY place that item could ever be re-derived from, and assert-accounted.ps1 has no
+  # concept of a non-title item, so it exits 0 and prints "may be released" regardless. This unit's
+  # Plex confirmation says the SHIPPED ITEM was seen and is fine, not that the RAW DISC is safe to
+  # destroy - those are different questions for this class of disc, unlike every other unit this
+  # script handles. So this check runs before -Completed is even consulted.
+  #
+  # THE ONE OPT-OUT, AND WHY IT IS NARROW (2026-09-03). The refusal above was conflating two claims:
+  #
+  #   "no manifest can produce it"  - about the MANIFEST FORMAT. Permanently true for these discs.
+  #   "the source is unavailable"   - about the DRIVE. Contingent, and checkable.
+  #
+  # Only the second justifies an unconditional refusal. When the source disc is still on E: byte for
+  # byte, a re-fetch plus the same carve commands reproduces the item exactly, and what the staging
+  # saves is CONVENIENCE, not content. So a record may carry a `stagingReleaseAuthorised` field
+  # (written by scripts/authorise-staging-release.ps1, which refuses unless the source is reachable
+  # AND matches the staging on file count and bytes) naming who authorised it, when, why, and the
+  # source path it rests on.
+  #
+  # This is a PARAMETER, not a hole. The default is still refuse: a record without the field refuses
+  # exactly as before, and there is no flag on this script that changes that. And the authorisation
+  # is not taken on trust - the source folder is RE-MEASURED here, so a detached drive or an altered
+  # copy turns the refusal back on by itself. The record is never deleted: it is what keeps
+  # _stallwatch.ps1 from reporting "needs MANIFEST" for this disc forever, which no manifest can
+  # ever clear.
   $somGuard = Join-Path $Catalogue "$unit.shipped-outside-manifest.json"
   if (Test-Path -LiteralPath $somGuard) {
-    Write-Output "REFUSE  $unit - shipped-outside-manifest record present ($somGuard); this staging is NOT releasable by this script. Read the record's releaseNotice; removing it is a deliberate human step, not an automatic one."
-    continue
+    $somRec = $null
+    try { $somRec = Get-Content -LiteralPath $somGuard -Raw | ConvertFrom-Json } catch { }
+    $auth = if ($somRec) { $somRec.stagingReleaseAuthorised } else { $null }
+
+    if (-not $auth) {
+      Write-Output "REFUSE  $unit - shipped-outside-manifest record present ($somGuard) with no stagingReleaseAuthorised field; this staging is NOT releasable by this script. Read the record's releaseNotice. Authorising it is a deliberate, evidenced human step (scripts/authorise-staging-release.ps1), not an automatic one."
+      continue
+    }
+
+    # The field must actually carry its justification. A half-written stamp is not an authorisation.
+    $missing = @()
+    foreach ($f in @('authorisedBy', 'authorisedAt', 'because')) {
+      if (-not "$($auth.$f)".Trim()) { $missing += $f }
+    }
+    if (-not $auth.sourceDisc -or -not "$($auth.sourceDisc.path)".Trim()) { $missing += 'sourceDisc.path' }
+    if (-not $auth.sourceDisc -or [long]("0" + "$($auth.sourceDisc.bytes)") -le 0) { $missing += 'sourceDisc.bytes' }
+    if ($missing.Count -gt 0) {
+      Write-Output ("REFUSE  {0} - stagingReleaseAuthorised is present but incomplete (missing/empty: {1}). An authorisation must name who, when, why and the source it rests on." -f $unit, ($missing -join ', '))
+      continue
+    }
+
+    # RE-MEASURE. The whole authorisation says "the source disc is still reachable"; that is a claim
+    # about a drive that may have been unplugged since, so it is verified now rather than believed.
+    $srcPath = "$($auth.sourceDisc.path)"
+    if (-not (Test-Path -LiteralPath $srcPath -PathType Container)) {
+      Write-Output ("REFUSE  {0} - authorised against {1}, which is NOT REACHABLE now. The authorisation rests on the source being present; without it the original refusal stands." -f $unit, $srcPath)
+      continue
+    }
+    $srcAgg = Get-ChildItem -LiteralPath $srcPath -Recurse -File -ErrorAction SilentlyContinue |
+              Measure-Object -Property Length -Sum
+    $srcBytes = [long]($srcAgg.Sum)
+    if ($srcBytes -ne [long]$auth.sourceDisc.bytes) {
+      Write-Output ("REFUSE  {0} - the authorised source has CHANGED: {1} now totals {2} bytes, the record says {3}. Re-verify the source before releasing anything." -f `
+                    $unit, $srcPath, $srcBytes, [long]$auth.sourceDisc.bytes)
+      continue
+    }
+    Write-Output ("note    {0} - shipped-outside-manifest record present but AUTHORISED for release by {1} ({2}); source verified reachable at {3} ({4} files, {5:N2} GB, unchanged). Record retained." -f `
+                  $unit, "$($auth.authorisedBy)", "$($auth.authorisedAt)", $srcPath, [int]$srcAgg.Count, ($srcBytes/1GB))
   }
 
   if ($done -notcontains $unit) {

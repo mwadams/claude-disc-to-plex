@@ -34,9 +34,41 @@
     - _stallwatch.ps1's board line for this record type never uses ships-nothing's "staging
       releases via a user-confirmed reclaim artefact" wording - that phrase is only true when
       nothing came from the disc;
-    - _release-completed.ps1 REFUSES outright when a *.shipped-outside-manifest.json record exists
-      beside the unit's dispositions, with no override flag - removing the record is a deliberate,
-      separate, human act, never a side effect of confirming Plex.
+    - _release-completed.ps1 REFUSES BY DEFAULT when a *.shipped-outside-manifest.json record exists
+      beside the unit's dispositions - never as a side effect of confirming Plex.
+
+.TWO CLAIMS, ONLY ONE OF WHICH JUSTIFIES REFUSING RELEASE (2026-09-03)
+  The refusal above was originally unconditional, and that conflated two separate claims:
+
+    "NO MANIFEST CAN PRODUCE IT"  - a statement about the MANIFEST FORMAT. Permanently true for a
+                                    menu-domain PGC (no `-f dvdvideo -title N` reaches it) and for
+                                    a set whose reading order is a permutation of its sector order
+                                    (no manifest field reorders cells within a carve).
+    "THE SOURCE IS UNAVAILABLE"   - a statement about the DRIVE. Contingent, and checkable.
+
+  Only the SECOND justifies an unconditional refusal. Edge of Darkness Disk 1 and Survivors Series
+  2 Disk 4 both hold permanently true findings of the first kind - and both source discs were still
+  sitting on E: byte-for-byte, so a re-fetch plus the same carve commands reproduces the shipped
+  items exactly. There, the staging was buying CONVENIENCE, not content, at the price of ~18 GB of
+  NVMe against a fetch floor. The right test at release time is whether the source disc is
+  REACHABLE, which is a question about the drive, not about the manifest.
+
+  So the record carries an OPTIONAL, per-record opt-out:
+
+    stagingReleaseAuthorised = { authorisedBy, authorisedAt, because,
+                                 sourceDisc = { path, files, bytes, measuredAt,
+                                                stagedFiles, stagedBytes, matchedStaging },
+                                 recheckAtRelease, scopeNote }
+
+  written ONLY by scripts/authorise-staging-release.ps1, which refuses unless the named source
+  exists AND matches the staging on file count and total bytes. _release-completed.ps1 honours it
+  for that unit alone and RE-MEASURES the source itself, so a detached drive or an altered copy
+  turns the refusal back on by itself. A record WITHOUT the field refuses exactly as before, and
+  there is no flag on the release script that changes that: the default is refuse.
+
+  THE RECORD IS NEVER DELETED TO UNBLOCK A RELEASE. Its other function is permanent - without it
+  _stallwatch.ps1 reports "needs MANIFEST" for the disc forever, a false positive no manifest can
+  ever clear - and deleting it would also destroy the finding. That is why the opt-out is a field.
 
 .WHAT IT REFUSES
   1. No dispositions file                    -> nobody has looked; closure would be a default.
@@ -244,6 +276,24 @@ if ((Test-Path -LiteralPath $recPath) -and -not $Force) {
   exit 2
 }
 
+# A -Force RE-CLOSE DELIBERATELY DROPS ANY stagingReleaseAuthorised FIELD, AND SAYS SO.
+# -Force means the finding itself was re-made, so an authorisation resting on the OLD finding must
+# not be carried forward silently - the record would then read as authorised on evidence nobody
+# re-checked. Dropping it restores the default (refuse), which is the safe direction; re-authorising
+# is one command. This is announced rather than done quietly, because a permission that disappears
+# without a word is how the next operator concludes the guard is broken.
+if ($Force -and (Test-Path -LiteralPath $recPath)) {
+  $prev = $null
+  try { $prev = Get-Content -LiteralPath $recPath -Raw | ConvertFrom-Json } catch { }
+  if ($prev -and $prev.stagingReleaseAuthorised) {
+    Write-Output ("NOTE    the previous record carried a stagingReleaseAuthorised field (by {0}, {1}, source {2})." -f `
+                  "$($prev.stagingReleaseAuthorised.authorisedBy)", "$($prev.stagingReleaseAuthorised.authorisedAt)",
+                  "$($prev.stagingReleaseAuthorised.sourceDisc.path)")
+    Write-Output '        It is NOT carried into this re-close: it rested on the finding you have just re-made.'
+    Write-Output '        _release-completed.ps1 will refuse this unit again until authorise-staging-release.ps1 is re-run.'
+  }
+}
+
 $record = [ordered]@{
   disc                = $discName
   verdict             = 'SHIPPED VIA NON-MANIFEST ROUTE'
@@ -266,12 +316,18 @@ $record = [ordered]@{
     tail       = @($assertOut | Select-Object -Last 4)
   }
   releaseNotice = 'THIS RECORD DOES NOT LICENSE RELEASING THE RAW STAGING. Unlike ships-nothing.json, ' + `
-    'this disc shipped something that no manifest could have produced, and the staged disc folder ' + `
-    'may be the ONLY place it could ever be re-derived from - assert-accounted.ps1 has no concept ' + `
-    'of a non-title (e.g. menu-domain) item and its "may be released" line does not account for ' + `
-    'this. _release-completed.ps1 refuses any unit with a *.shipped-outside-manifest.json record ' + `
-    'beside its dispositions; releasing this staging is a deliberate human act that must remove ' + `
-    'this file first, never a side effect of a Plex confirmation.'
+    'this disc shipped something that no manifest could have produced - assert-accounted.ps1 has ' + `
+    'no concept of a non-title (e.g. menu-domain) item and its "may be released" line does not ' + `
+    'account for this. _release-completed.ps1 therefore REFUSES BY DEFAULT any unit carrying this ' + `
+    'record. THE WAY TO LIFT THAT IS NEVER TO DELETE THIS FILE: deleting it destroys the finding ' + `
+    'and makes _stallwatch.ps1 report "needs MANIFEST" for this disc forever, which no manifest ' + `
+    'can ever clear. Instead, note that "no manifest can produce it" (about the manifest format) ' + `
+    'and "the source is unavailable" (about the drive) are DIFFERENT CLAIMS, and only the second ' + `
+    'justifies refusing release. If the source disc is still reachable and byte-identical to the ' + `
+    'staging, a re-fetch plus the same commands reproduces the item, and ' + `
+    'scripts/authorise-staging-release.ps1 stamps an evidenced stagingReleaseAuthorised field onto ' + `
+    'this record for THIS unit only; _release-completed.ps1 re-measures that source before ' + `
+    'honouring it. Without that field, this record refuses.'
   closedBy            = 'close-shipped-outside-manifest.ps1'
 }
 Set-Content -LiteralPath $recPath -Value ($record | ConvertTo-Json -Depth 8) -Encoding UTF8
