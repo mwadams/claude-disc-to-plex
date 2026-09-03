@@ -39,36 +39,101 @@ $section = if($Kind -eq 'Movies'){ 6 } else { 5 }
 $hdr = @{ 'X-Plex-Token' = $token }
 function Get-PlexXml($path){ [xml](Invoke-WebRequest -Uri "$base$path" -Headers $hdr).Content }
 
-# ---- what did we actually ship? ------------------------------------------------------------
-$workDir = Join-Path (Join-Path $NasRoot $Kind) $Work
-if(-not (Test-Path -LiteralPath $workDir)){ throw "work not found on the NAS: $workDir" }
-$all     = @(Get-ChildItem -LiteralPath $workDir -Recurse -File -Filter *.mkv)
-$feature = @($all | Where-Object { $_.DirectoryName -eq $workDir })
-$extras  = @($all | Where-Object { $_.DirectoryName -ne $workDir })
-Write-Output ("$Work : {0} feature file(s), {1} extra file(s) on the NAS" -f $feature.Count, $extras.Count)
+# ---- resolve the NAS folder name from PLEX'S OWN CONFIG, not a second guess -----------------
+#
+# This used to build the folder as `Join-Path $NasRoot $Kind` - i.e. assume the on-disk folder is
+# literally named "Movies" or "TV". That happened to be right for films (the folder IS "Movies")
+# and wrong for television, whose real folder is "Television Shows" - so this threw on every TV
+# work, and because publish-work.ps1 only text-matched a couple of expected phrases in the output
+# instead of checking the child's exit code, the failure never reached anyone (see there for the
+# `NOT FOUND`/"not found" note). Broken since this script was written (2026-08-22); TV reindexing
+# has never worked before this fix.
+#
+# Fix: ask Plex's `/library/sections` for THIS section's configured Location path - that is the
+# actual root the server itself scans, not a name this script has to keep in sync by hand. The NAS
+# reports it QNAP-style (`/share/CACHEDEV1_DATA/Multimedia/Television Shows`); the last path
+# segment is the folder name under $NasRoot on the Windows side.
+$sections = Get-PlexXml '/library/sections'
+$sectionDir = @($sections.MediaContainer.Directory) | Where-Object { $_.key -eq [string]$section }
+if(-not $sectionDir){ throw "Plex section $section not found in /library/sections at $base - check the section number / PLEX_BASEURL" }
+$locPath = @($sectionDir.Location)[0].path
+if(-not $locPath){ throw "Plex section $section ($($sectionDir.title)) has no configured Location in /library/sections" }
+$folderName = @(($locPath -replace '\\','/') -split '/' | Where-Object { $_ }) | Select-Object -Last 1
+Write-Output ("section {0} = '{1}', NAS location '{2}' -> folder '{3}'" -f $section, $sectionDir.title, $locPath, $folderName)
 
-# ---- find it in Plex, by FILE PATH -----------------------------------------------------------
-# Match on path, not title: the agent's title legitimately differs from the folder (a Bel Air ballet
-# disc matched under a much longer name). Search by title first because a full section walk is one
-# request per item; fall back to the walk only if that misses.
+# ---- what did we actually ship? ------------------------------------------------------------
+$workDir = Join-Path (Join-Path $NasRoot $folderName) $Work
+if(-not (Test-Path -LiteralPath $workDir)){ throw "work not found on the NAS: $workDir" }
+$all = @(Get-ChildItem -LiteralPath $workDir -Recurse -File -Filter *.mkv)
+if($Kind -eq 'Movies'){
+  # Movie folder shape: the top-level file IS the feature; anything in a subfolder is an extra.
+  $feature = @($all | Where-Object { $_.DirectoryName -eq $workDir })
+  $extras  = @($all | Where-Object { $_.DirectoryName -ne $workDir })
+} else {
+  # TV folder shape is NOT the movie shape - every episode lives one level down in a "Season NN"
+  # subfolder, so "anything not at the top level" would count every ordinary episode as an "extra"
+  # and this check would fail on almost every TV work that has episodes at all (Plex's /extras
+  # endpoint, read below, never lists regular episodes - only genuine local extras). Episodes,
+  # including Season 00 specials, are indexed by a normal library scan same as any TV show; this
+  # script's forced-refresh is only needed for a genuine LOCAL EXTRA folder under the show.
+  #
+  # Same vocabulary as the edition/extras guards elsewhere in this skill (assert-edition-layout.ps1,
+  # catalogue-disc.ps1, publish-work.ps1) - not re-derived, so a folder that counts as "extras" for
+  # the publish gate counts as "extras" here too.
+  $extraDirNames = @('behind the scenes','featurettes','trailers','interviews','scenes',
+                      'shorts','deleted scenes','other','extras')
+  $extras = @($all | Where-Object {
+    $rel = $_.DirectoryName.Substring($workDir.Length).TrimStart([char]92)
+    $seg = @($rel -split [regex]::Escape([string][char]92))
+    $seg.Count -ge 1 -and $extraDirNames -contains $seg[0].ToLowerInvariant()
+  })
+  $feature = @($all | Where-Object { $extras.FullName -notcontains $_.FullName })
+}
+Write-Output ("$Work : {0} episode/feature file(s), {1} local-extra file(s) on the NAS" -f $feature.Count, $extras.Count)
+
+# ---- find it in Plex ---------------------------------------------------------------------------
+# MOVIES: match on FILE PATH, not title - the agent's title legitimately differs from the folder (a
+# Bel Air ballet disc matched under a much longer name). A movie section's `/all` returns <Video>
+# elements directly, and each item's own metadata carries its file path under Media/Part/file.
+#
+# TV: a TV section's `/all` returns <Directory type="show"> elements, not <Video> - a show is a
+# container, not a file, so there is no Media/Part to match on. Its own metadata DOES carry
+# <Location path="..."> though (the show's root folder), which is exactly as reliable an identity
+# check as the movie file-path match and comes from the same per-item metadata fetch.
+#
+# Getting this wrong is not cosmetic: `@($x.Video)` on a TV listing (no <Video> children at all)
+# evaluates to `@($null)` - an ARRAY OF ONE NULL, not an empty array - so an unguarded loop over it
+# calls Test-Match on a null item, which requests `/library/metadata/` with an EMPTY ratingKey and
+# 404s. That is a second, independent defect behind the folder-path one: fixing only the path still
+# leaves TV throwing, just later and less legibly.
+#
+# Search by title first because a full section walk is one request per item; fall back to the walk
+# only if that misses.
+$nodeName = if($Kind -eq 'Movies'){ 'Video' } else { 'Directory' }
 function Test-Match($ratingKey){
   $d = Get-PlexXml "/library/metadata/$ratingKey"
-  $parts = @($d.MediaContainer.Video.Media.Part) | ForEach-Object { $_.file }
-  [bool]($parts | Where-Object { $_ -and ($_ -replace '/','\') -like "*\$Work\*" })
+  $parts = @($d.MediaContainer.Video.Media.Part)     | ForEach-Object { $_.file }
+  $locs  = @($d.MediaContainer.Directory.Location)   | ForEach-Object { $_.path }
+  $candidates = @($parts + $locs) | Where-Object { $_ }
+  foreach($c in $candidates){
+    $cn = $c -replace '/','\'
+    if($cn -like "*\$Work\*" -or $cn -like "*\$Work"){ return $true }
+  }
+  return $false
 }
 $hit = $null; $hitKey = $null
 $titleGuess = ($Work -replace '\s*\(\d{4}\)\s*$','')
 try {
   $s = Get-PlexXml ("/library/sections/$section/all?title=" + [uri]::EscapeDataString($titleGuess))
-  foreach($v in @($s.MediaContainer.Video)){
-    if($v -and (Test-Match $v.ratingKey)){ $hit = $v; $hitKey = $v.ratingKey; break }
+  foreach($v in @($s.MediaContainer.$nodeName)){
+    if($v -and $v.ratingKey -and (Test-Match $v.ratingKey)){ $hit = $v; $hitKey = $v.ratingKey; break }
   }
 } catch { }
 if(-not $hitKey){
   Write-Output "title search missed - walking the section (slow)"
   $r = Get-PlexXml "/library/sections/$section/all"
-  foreach($v in @($r.MediaContainer.Video)){
-    if(Test-Match $v.ratingKey){ $hit = $v; $hitKey = $v.ratingKey; break }
+  foreach($v in @($r.MediaContainer.$nodeName)){
+    if($v -and $v.ratingKey -and (Test-Match $v.ratingKey)){ $hit = $v; $hitKey = $v.ratingKey; break }
   }
 }
 if(-not $hitKey){

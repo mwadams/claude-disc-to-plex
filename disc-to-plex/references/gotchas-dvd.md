@@ -15,6 +15,7 @@ Part of the `disc-to-plex` gotchas set — see [gotchas.md](gotchas.md) for the 
 - [A high `--minlength` silently drops EXTRAS, not just episodes](#a-high---minlength-silently-drops-extras-not-just-episodes)
 - [`mymovies.xml` title `Number`s are NOT ffmpeg `dvdvideo` title numbers — map by DURATION](#mymoviesxml-title-numbers-are-not-ffmpeg-dvdvideo-title-numbers-map-by-duration)
 - [An INCOMPLETE RIP in the archive looks like a different edition of the disc](#an-incomplete-rip-in-the-archive-looks-like-a-different-edition-of-the-disc)
+- [The modal DTS interval is the SIGNALLING PERIOD, not the frame duration](#the-modal-dts-interval-is-the-signalling-period-not-the-frame-duration-fixed-2026-09-03) — a seam overshoot that `expectFrames` is structurally blind to; the CFR-vs-packet discriminator
 
 ## An INCOMPLETE RIP in the archive looks like a different edition of the disc
 
@@ -460,6 +461,95 @@ stream that is populated everywhere costs nothing.
 The general rule, which is not specific to DVDs: **when two tools agree, ask whether they share an
 implementation or a bug before treating the agreement as corroboration.** Independent corroboration
 has to come from a different KIND of evidence — here, bytes on disk against the disc's own tables.
+
+### The modal DTS interval is the SIGNALLING PERIOD, not the frame duration (fixed 2026-09-03)
+
+`retime-vob-cells.py` — the deterministic retimer that replaced ffmpeg's TS_DISCONT heuristic for
+multi-cell carves — shipped deriving its frame duration from the **modal difference between
+consecutive video DTS values**. That quantity is not a frame duration. It is how often the muxer
+bothers to stamp a timestamp, and it is **per-disc**:
+
+| carve | modal DTS interval | actually |
+|---|---|---|
+| The Champions D9 VTS_03 / VTS_04 | 18,000 ticks (0.2000 s) | **5** frames at 25 fps |
+| League of Gentlemen S2 D1, VTS_07 angle carve | 43,200 ticks (0.4800 s) | **12** frames (a PAL GOP) |
+
+On the League carve only **250 of 37,704** video PES packets carried a timestamp, and every
+difference between them was identical — so the mode is perfectly stable and perfectly wrong.
+
+The seam arithmetic was *"cell k starts one signalling period after cell k−1's last **timestamped**
+picture"*. That is right **only while every cell's picture count is an exact multiple of the
+period**, i.e. while the last signalling group is full. **The Champions D9 passed for exactly that
+reason** — all 18 cells of VTS_03 and all 8 of VTS_04 divide by 5 — which is luck, not correctness;
+the worst case there was 68 frames / 2.72 s cumulative. Where a cell ends on a **partial** group the
+seam overshoots by the remainder. Measured on the real League angle-1 carve: cell 1 ends 5/12 of the
+way through a group, so the old output declared **119.56 s for 2,982 coded pictures** that occupy
+**119.28 s** — 7 frames of empty timeline, against a PGC that declares exactly 119.28 s.
+
+**Both existing guards passed it, and the reason is structural.** `expectFrames` counts
+**packets** — and a seam gap adds no packet and removes none, because the payload is byte-identical
+and merely spread wider. It is precisely the quantity the defect leaves untouched. `expectSeconds`
+compares container duration, but against a number a human wrote from the same arithmetic, and its
+2 s tolerance is far wider than the 0.28 s gap.
+
+**The fix, and why each half is needed:**
+
+- **Read the frame duration, don't infer it** — from the MPEG-2 sequence header's `frame_rate_code`
+  (PAL 25 → 3,600 ticks). The modal interval is still measured, but only reported, labelled as the
+  signalling period, and used to say how many frames the old arithmetic would have got wrong.
+- **Count coded pictures per cell** by scanning the video payload for `picture_start_code`
+  (`00 00 01 00`), so cell *k* begins at `t0(k−1) + N(k−1) × frame_dur` — an **exact count**, not a
+  remainder inferred from where the timestamp chain happened to stop.
+- **Refuse (exit 2)** when the timestamp chain and the picture chain disagree, i.e. when
+  `lastDTS − firstDTS ≠ (lastPictureIndex − firstPictureIndex) × frame_dur`. This is what makes a
+  picture count usable as a duration: it fires on a wrong frame duration, on a repeated field or
+  pulldown, and on a non-monotone DTS chain. Applied to multi-cell carves only — a single-cell carve
+  is a byte-identical no-op that makes no timing decision, so refusing there would be gratuitous.
+
+⚠ `raise SystemExit("message")` in Python **exits 1, not 2**. Every refusal in that script
+documented itself as "exit 2" while returning 1. `transcode.ps1` tests `-ne 0` so items failed
+correctly, but the contract was a lie. Wrap `main()` and re-exit 2 on a string code, as
+`dvd-angle-cells.py` already does.
+
+#### The blast radius is bounded — and that is worth knowing before you go looking
+
+A wrong frame duration here **cannot** cause intra-cell A/V drift, because the per-cell offset is
+applied to the SCR, PTS **and** DTS of *every* stream in that cell alike — the streams move
+together. Its only two effects are (a) holding or dropping frames **at a seam** and (b) changing
+total length. So the discriminator for it is a frame-count comparison, never an A/V sync
+measurement, and a published item that measures clean on frame count is clean.
+
+#### The guard that catches it: CFR decode vs packet count
+
+`check-cfr-frame-count.ps1`. Decoding with `-fps_mode cfr` re-times the file onto a constant grid,
+so it **must duplicate a frame into every empty slot** — CFR > packets *is* the gap, in frames.
+
+```
+old retimer output    packets 2,982   CFR 2,989   -> +7 frames of empty timeline
+fixed retimer output  packets 2,982   CFR 2,982   -> clean
+```
+
+All three published multi-cell-carve items measure exactly equal (26,215/26,215 · 7,410/7,410 ·
+3,698/3,698), so a difference is a defect rather than a tolerance. `transcode.ps1` runs it on every
+retimed-carve item and fails the item, moving it aside as `.seam-gap`.
+
+⚠ **Guard the comparison with a count, not just a byte count.** A failed matroska stream-copy left a
+74,380-byte stub carrying ONE packet; `packets 1 = CFR 1` read as a clean pass. It was *internally
+consistent*, so no cross-check could call it broken — the fix is to refuse to return a verdict below
+a second of video rather than to print `OK`. Same family as the "internal consistency is not
+evidence of completeness" principle above.
+
+#### An angle carve is NOT a `vobSectors` item — and used to bypass every gate
+
+`dvd-angle-cells.py` selects one angle's VOBUs out of an interleaved block, which is **not a
+contiguous sector range**, so it cannot be expressed as `vobSectors`. Its output is shipped as a
+plain `kind: "MKV"` item whose `src` is the carved `.vob` — which means `retime-vob-cells.py` is run
+**by hand**, outside `transcode.ps1`, and every gate the `vobSectors` branch applies is absent:
+nothing noticed if the retimer was skipped, refused, or its un-retimed input passed on by mistake.
+`transcode.ps1` now report-runs the retimer over any `.vob` given as `src` and **refuses the item if
+it still reports more than one cell** — a retimed VOB has no SCR resets left, so it reports exactly
+one. `dvd-angle-cells.py` itself needs no change: it computes no timestamps, and its only frame-rate
+figure is read from the IFO's own BCD time code for display.
 
 ## Two PGCs over IDENTICAL cells = ONE item with two doors — but do NOT assume WHY (2026-08-29)
 

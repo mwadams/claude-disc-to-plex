@@ -112,6 +112,12 @@ Write-Host "SHOW: $($showObj.title)  Season $Season  ($($eps.Count) items)`n"
 $tmp = Join-Path $env:TEMP ("plexposters_{0}_{1}_{2}" -f $showObj.ratingKey,$Season,$PID)
 New-Item -ItemType Directory -Force $tmp | Out-Null
 
+# The ONE definition of "a filename that carries a title": " - SxxEyy[-Ezz] - <Title>.<ext>".
+# Used twice - to CHOOSE which of an item's files to read, and to extract the title from it. Those
+# two uses disagreeing is what made the same-folder rename case fail silently (see below), so they
+# share one pattern rather than two copies that can drift.
+$titlePat = ' - S\d+E\d+(?:-E\d+)? - (.+)\.[^.]+$'
+
 foreach($e in $eps){
   if($FromIndex -and $e.index -lt $FromIndex){ continue }
   if($ToIndex   -and $e.index -gt $ToIndex){ continue }
@@ -125,13 +131,32 @@ foreach($e in $eps){
   # the correctly-named file is sitting right there in -MediaDir. So try every Media/Part's leaf
   # against MediaDir and take the first one that's actually present; fall back to Media[0] when
   # none matches, which reproduces the original (single-version) behaviour unchanged.
-  $leaf = $null; $file = $null
+  #
+  # 🔴 "FIRST LEAF THAT IS PRESENT" IS NOT ENOUGH, AND IT FAILED THE VERY CASE IT WAS WRITTEN FOR.
+  # The whole point of the copy-then-retire pattern is that the superseded file STAYS on the NAS
+  # until the user removes it - so when the rename happens inside ONE folder (the normal case), both
+  # leaves are present in -MediaDir, Plex returns the superseded bare name at Media[0], and "first
+  # present" picks exactly the unparseable name the patch was meant to skip. On The League of
+  # Gentlemen S00E33/S00E47 (2026-09-03) this reported `title: (couldn't parse filename)` with the
+  # correctly-named file sitting right beside it. Middlemarch S00E03 is documented as fixed by the
+  # earlier patch; on this evidence it can only have been Plex happening to order that one the other
+  # way round, which is not a property to rely on - Media[] order is not contractual.
+  #
+  # So the rule is PREFER A PRESENT LEAF THAT CARRIES A TITLE, and only then fall back to any
+  # present leaf, and only then to Media[0]. Titles are what this script exists to set: given two
+  # versions of one item, the titled filename is the one that can say anything, and the bare one
+  # can never be the better answer. Bare-named shows are unaffected - no leaf matches, so pass 2
+  # gives the previous behaviour byte for byte.
+  $present = @()
   foreach($part in @($e.Media | ForEach-Object { $_.Part } | Where-Object { $_ })){
     $l = Split-Path $part.file -Leaf
     $f = Join-Path $MediaDir $l
-    if(Test-Path $f){ $leaf = $l; $file = $f; break }
+    if(Test-Path $f){ $present += [pscustomobject]@{ leaf = $l; file = $f } }
   }
-  if(-not $leaf){
+  $pick = @($present | Where-Object { $_.leaf -match $titlePat })[0]   # pass 1: titled
+  if(-not $pick){ $pick = @($present)[0] }                             # pass 2: any present
+  if($pick){ $leaf = $pick.leaf; $file = $pick.file }
+  else {
     $leaf = Split-Path $e.Media[0].Part[0].file -Leaf
     $file = Join-Path $MediaDir $leaf
   }
@@ -140,7 +165,7 @@ foreach($e in $eps){
 
   # title from filename:  " - SxxEyy[-Ezz] - <Title>.mkv"
   if(-not $NoTitles){
-    if($leaf -match ' - S\d+E\d+(?:-E\d+)? - (.+)\.[^.]+$'){
+    if($leaf -match $titlePat){
       $title = $matches[1]
       $enc = [uri]::EscapeDataString($title)
       Invoke-RestMethod "$base/library/metadata/$rk`?type=4&title.value=$enc&title.locked=1" -Headers @{ "X-Plex-Token"=$tok } -Method Put | Out-Null

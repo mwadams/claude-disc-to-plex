@@ -328,8 +328,29 @@ if (-not $NoIndex) {
     $plexKind = if ($Kind -eq 'Movies') { 'Movies' } else { 'TV' }
     # Never pipe this through Select-Object -First N: closing the pipe kills the child mid-run.
     $ixOut = & pwsh -NoProfile -File $ixScript -Work $Work -Kind $plexKind 2>&1
-    $verdict = @($ixOut | Select-String 'OK - every shipped extra|NOT indexed|missing|NOT FOUND')
-    if ($verdict) { $verdict | ForEach-Object { "   $_" } }
-    else { Write-Warning "   reindex produced no verdict - check manually"; @($ixOut)[-3..-1] | ForEach-Object { "   $_" } }
+    $ixExit = $LASTEXITCODE
+
+    # JUDGE BY THE CHILD'S EXIT CODE, NOT BY GREPPING ITS TEXT.
+    #
+    # The old version matched output against a fixed set of expected phrases
+    # ('OK - every shipped extra|NOT indexed|missing|NOT FOUND') and treated a match as the verdict.
+    # That is the exact "success-shaped filter" defect this project keeps re-finding elsewhere
+    # (expectFrames counting packets, a grep matching only anticipated outcomes): plex-index-work.ps1
+    # was throwing "work not found on the NAS: ..." on EVERY television publish (wrong NAS folder -
+    # 'TV' instead of 'Television Shows', fixed alongside this), and by chance the word "found"
+    # inside that thrown message case-insensitively matched the 'NOT FOUND' branch of the regex - so
+    # this looked like it was reporting a verdict while actually just echoing a crash it never
+    # recognised as one. Downstream, _publish-loop.ps1 filters ITS OWN output for
+    # 'verified|REFUSING|NOT PUBLISHING' - a plain text line here, however worded, was invisible to
+    # the one place an operator actually watches. The exit code cannot be fooled by wording.
+    if ($ixExit -eq 0) {
+      $ixOut | Select-String 'OK - every shipped extra' | ForEach-Object { "   $_" }
+    } else {
+      # LOUD AND UNMISTAKABLE: this must survive _publish-loop.ps1's own output filter (which only
+      # keeps lines matching 'verified|REFUSING|NOT PUBLISHING'), so it borrows the 'REFUSING'
+      # keyword that filter already watches for, rather than inventing a new word nothing greps for.
+      Write-Warning ("   REFUSING TO CALL '{0}' INDEXED - reindex FAILED (exit {1}); Plex may not reflect what was just published:" -f $Work, $ixExit)
+      @($ixOut | Where-Object { "$_" -match '\S' }) | Select-Object -Last 6 | ForEach-Object { Write-Warning "       $_" }
+    }
   }
 }

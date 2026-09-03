@@ -645,6 +645,33 @@ foreach($it in $items){
     $it | Add-Member -NotePropertyName '_cutFile' -NotePropertyValue $cut -Force
   }
 
+  # A RAW .VOB HANDED IN AS `src` MUST ALREADY BE RETIMED - PROVE IT, DON'T ASSUME IT.
+  # `vobSectors` is not the only way a multi-cell MPEG-PS carve reaches the encoder. dvd-angle-cells.py
+  # emits one ANGLE of an interleaved block as a standalone .vob, and an angle block is not a
+  # contiguous sector range, so it CANNOT be expressed as vobSectors - it is shipped as a plain
+  # `kind: "MKV"` item whose src is that .vob (that is how the League of Gentlemen S2 D1 angle-2
+  # extra is being built). On that route retime-vob-cells.py is run BY HAND, outside this script,
+  # so every gate the vobSectors branch applies is simply absent: nothing notices if the retimer
+  # was skipped, or refused, or if the un-retimed carve was passed on by mistake.
+  # The check is cheap and exact: a retimed VOB has no SCR resets left, so the retimer reports ONE
+  # cell. More than one cell means the file still carries per-cell timestamp resets and ffmpeg's
+  # TS_DISCONT rebase is about to eat frames at every seam.
+  if(-not (Has $it '_cutFile') -and "$($it.src)" -like '*.vob'){
+    $rrOut  = & python (Join-Path $PSScriptRoot 'retime-vob-cells.py') "$($it.src)" --report-only 2>&1
+    $rrExit = $LASTEXITCODE      # captured BEFORE any pipeline - never read an exit code through a pipe
+    $rrOut | ForEach-Object { Write-Output "   $_" }
+    $cellCount = 0
+    if(("$rrOut" -join ' ') -match '(\d+)\s+cell\(s\)'){ $cellCount = [int]$Matches[1] }
+    if($rrExit -ne 0){
+      Write-Output '   !! FAILED - retime-vob-cells refused this .vob source (see its report above)'
+      $failCount++; continue
+    }
+    if($cellCount -ne 1){
+      Write-Output "   !! FAILED - .vob source still has $cellCount cell(s) of per-cell timestamp resets; run retime-vob-cells.py over it FIRST and point src at the retimed file"
+      $failCount++; continue
+    }
+  }
+
   $inspec = InSpec $it                       # probes: software decode, they only read headers
   $encspec = InSpec $it -Hwaccel             # the encode: GPU decode where the source allows it
   $usedHwaccel = ($encspec -contains '-hwaccel')
@@ -1150,6 +1177,38 @@ foreach($it in $items){
       Write-Output ("   !! WRONG LENGTH - output has {0:N0} video frames, manifest expects {1:N0}; moved aside as .wrong-length" -f $gf, [int]$it.expectFrames)
       Move-Item -LiteralPath $it.out -Destination "$($it.out).wrong-length" -Force
       $itemOk = $false
+    }
+  }
+  # CFR-DECODE COUNT vs PACKET COUNT - the guard for a SEAM OVERSHOOT, which expectFrames is
+  # STRUCTURALLY BLIND TO. expectFrames counts PACKETS, and a seam gap adds no packet and removes
+  # none: the pictures are byte-identical, they are merely spread over a longer timeline. That is
+  # exactly why `retime-vob-cells.py` deriving its frame duration from the modal DTS interval (the
+  # VOBU SIGNALLING PERIOD - 5 frames on The Champions D9, 12 on a League of Gentlemen angle carve)
+  # shipped invisibly: where a cell ends on a partial signalling group the seam overshoots by the
+  # remainder and every guard passes. Decoding with -fps_mode cfr forces a frame into every empty
+  # slot, so CFR > packets IS the gap, in frames. Measured on the real League angle-1 carve:
+  # old retimer 2,982 packets / 2,989 CFR (+7); fixed retimer 2,982 / 2,982.
+  #
+  # Run only where a seam can physically exist. A retimed cell carve FAILS on a gap - all three
+  # published multi-cell-carve items measure exactly equal, so a difference there is a defect, not
+  # a tolerance. A concat item is REPORTED, not failed: check-seam-integrity.ps1 is the tool that
+  # judges those, and no measured baseline justifies a hard gate on them yet.
+  # A hand-carved .vob src (dvd-angle-cells.py) is the same defect class as a vobSectors carve -
+  # it went through the same retimer, just by hand - so it is gated the same way, not warned about.
+  $isCarve  = (Has $it '_cutFile') -or ("$($it.src)" -like '*.vob')
+  $isConcat = ("$($it.src)" -like '*.txt')
+  if($itemOk -and ($isCarve -or $isConcat)){
+    $cfrOut  = & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'check-cfr-frame-count.ps1') -Path $it.out -Quiet
+    $cfrExit = $LASTEXITCODE     # captured BEFORE any pipeline - never read an exit code through a pipe
+    $cfrOut | ForEach-Object { Write-Output "   $_" }
+    if($cfrExit -ne 0){
+      if($isCarve){
+        Write-Output '   !! SEAM GAP - the output holds its pictures over a longer timeline than they fill; moved aside as .seam-gap'
+        Move-Item -LiteralPath $it.out -Destination "$($it.out).seam-gap" -Force
+        $itemOk = $false
+      } else {
+        Write-Output '   ** WARNING - concat item flagged; run check-seam-integrity.ps1 before publishing (not failed here)'
+      }
     }
   }
   if($itemOk){ Write-Output ("   OK {0:N2}GB in {1}s" -f ((Get-Item -LiteralPath $it.out).Length/1GB),$secs) }

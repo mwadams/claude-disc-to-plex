@@ -86,7 +86,23 @@ foreach ($s in $shows) {
     # per-item fetch: the bulk listing omits the Field[] that says which fields are LOCKED
     $full = (Plex-Get "/library/metadata/$($e.ratingKey)").Video
     $locked = @($full.Field | Where-Object { $_.name -eq 'title' }).Count -gt 0
-    $file   = @($full.Media.Part | ForEach-Object { Split-Path $_.file -Leaf })[0]
+    # 🔴 NOT Part[0]. An item mid-rename carries TWO Media entries, because the copy-then-retire
+    # pattern leaves the superseded file registered as an alternate version until the user deletes
+    # it — and Plex returns the OLD, bare leaf first. Reading [0] therefore judges the item against
+    # the name it no longer goes by: on The League of Gentlemen S00E33/S00E47 (2026-09-03), both had
+    # just been given correct titled filenames and had their Plex titles set and LOCKED from them,
+    # and this audit still filed them under "agent title, filename carries none" — the bucket for
+    # items it cannot check at all. So the audit under-reports its own fixes for as long as the
+    # hand-over delete is outstanding, which is precisely the window it is supposed to be watching.
+    # Worse, when the old leaf is bare and the new one is titled the item silently leaves the
+    # checkable population, so a genuine later regression would not be caught either.
+    #
+    # Prefer a leaf that CARRIES a title; fall back to the first. A titled name is the only one that
+    # can be checked against anything, and given two versions of one item it is always the better
+    # answer. Single-version items are unaffected — one leaf, same result as before.
+    $leaves = @($full.Media.Part | ForEach-Object { Split-Path $_.file -Leaf })
+    $file   = @($leaves | Where-Object { Title-FromFile $_ })[0]
+    if (-not $file) { $file = $leaves[0] }
     $want   = Title-FromFile $file
     # 🔴 "NOT LOCKED" IS NOT A FAULT ON ITS OWN — and treating it as one is dangerous.
     # A Season 00 does not always hold extras. In the tvdbAiring tree Spartacus's season 0 is

@@ -484,7 +484,8 @@ Core pipeline, in the order you use them:
 | `assert-staged-complete.ps1` | **run BEFORE enumerating** — throws if the staging folder is still growing or short against source |
 | `scan-disc.ps1` | enumerate and classify DVD titles across a set of discs |
 | `dvd-still-cells.py` | carve a DVD still-set's cells straight out of the VOBs by sector arithmetic — the only way to reach a gallery/infopod no demuxer will emit. `--menu` reads the MENU domain (`VTSM_PGCI_UT`, sectors against `VTS_xx_0.VOB`) for a gallery that is not a title at all |
-| `prove-dvd-mapping.py` | prove tNN→dvdvideoTitle from TT_SRPT + VTS byte sizes, *without* duration |
+| `dvd-angle-cells.py` | read ONE ANGLE of a multi-angle (ILVU-interleaved) title by walking each VOBU's NAV `vobu_vob_idn`/`vobu_c_idn`. `-f dvdvideo` has no angle selector and silently returns angle 1. An angle block is **not** a contiguous sector range, so it cannot be a `vobSectors` item: retime its output and ship it as `kind: "MKV"` with the retimed `.vob` as `src` |
+| `retime-vob-cells.py` | rewrite a multi-cell carve's per-cell SCR/PTS/DTS resets into one continuous timeline. Run automatically by `transcode.ps1` for `vobSectors`; run it **by hand** over a `dvd-angle-cells.py` carve before pointing `src` at it (`transcode.ps1` now refuses a `.vob` source that still reports more than one cell). Reads the frame duration from the MPEG-2 sequence header and allots each cell an **exact coded-picture count** — never the modal DTS interval, which is the VOBU signalling period and is per-disc |
 | `apply-proof.py` | rewrite a catalogue onto that proven mapping, **moving each evidence bundle with it** |
 | `capture-evidence.py` | capture frames and speech windows through a title's *proven* dvdvideo number and register them in the catalogue (refusing near-blank frames). **Take landmark windows with `--speech`, not ad-hoc ffmpeg** — an unrecorded transcript cannot be cited, so `assert-accounted.ps1` refuses the quote even when the identification is right |
 | `drop-blank-frames.py` | sweep blank and dangling frame references out of a catalogue |
@@ -498,6 +499,7 @@ Core pipeline, in the order you use them:
 | `assert-stream-packets.ps1` | **COUNT THE PACKETS** — catches a source title whose declared duration is right and whose decode is a fraction of it, and any stream declared but shipping zero packets |
 | `transcode.ps1` | the encoder — BD/DVD/MKV, crop, audio matrix, subtitles, guards |
 | `check-seam-integrity.ps1` | for a CONCATENATED item: look for decoder fill at the segment joins, which duration and frame count cannot see |
+| `check-cfr-frame-count.ps1` | **CFR-decode count vs packet count** — the discriminator for a SEAM OVERSHOOT, which `expectFrames` is structurally blind to: a gap in the timeline adds no packet and removes none, so the packet count is exactly the quantity the defect leaves untouched. `-fps_mode cfr` must duplicate a frame into every empty slot, so CFR > packets **is** the gap, in frames. Run automatically by `transcode.ps1` on every retimed-carve item (fails it) and every concat item (reports); use standalone to sweep published files |
 | `ocr-subtitles.ps1` | bitmap subtitles → SRT sidecar |
 | `publish-work.ps1` | copy a finished work to the NAS and verify every file |
 | `prune-empty-folders.ps1` | tidy folders left behind by reclaims |

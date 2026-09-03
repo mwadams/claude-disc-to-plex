@@ -14,14 +14,67 @@ are genuinely ambiguous to a single-pass reader.
 
 THE FIX IS DETERMINISTIC, NOT HEURISTIC: two passes over the carve.
   Pass 1 finds cell boundaries (SCR backward jump > 5 s - every DVD pack carries SCR, and a
-  cell's packs are contiguous), and records each cell's first/last video DTS.
+  cell's packs are contiguous), COUNTS THE CODED PICTURES in each cell, and records each cell's
+  first/last video DTS together with WHICH PICTURE each of those timestamps belongs to.
   Pass 2 adds a per-cell constant to every SCR, PTS and DTS, chosen so cell k's video begins
-  exactly one frame after cell k-1's video ends. Within-cell timing is UNTOUCHED, so each
-  cell's A/V alignment stays exactly as the disc authored it, and a stream missing from a
-  cell becomes a true gap in its own timeline (players render silence), not a desync.
+  exactly one frame after cell k-1's LAST PICTURE would have been shown. Within-cell timing is
+  UNTOUCHED, so each cell's A/V alignment stays exactly as the disc authored it, and a stream
+  missing from a cell becomes a true gap in its own timeline (players render silence), not a
+  desync.
 
 Only timestamp bytes change: the output is the same length, same packs, same payloads.
 A VOB with no resets (a mid-PGC cut with continuous timestamps) passes through byte-identical.
+
+THE MODAL DTS INTERVAL IS *NOT* THE FRAME DURATION (fixed 2026-09-03, shipped broken)
+-------------------------------------------------------------------------------------
+Until now this script inferred `frame_dur` as the MODAL DIFFERENCE BETWEEN CONSECUTIVE VIDEO
+DTS VALUES. That quantity is not a frame duration. It is the VOBU/DTS-SIGNALLING PERIOD - how
+often the muxer bothers to stamp a timestamp - and it is PER-DISC:
+
+  * The Champions Disk 9 measured 18000 ticks (0.2000 s) = FIVE frames at 25 fps.
+  * A League of Gentlemen Series 2 Disk 1 angle carve measured 43200 ticks (0.4800 s) = TWELVE
+    frames (a PAL GOP). Of that carve's 37,704 video PES packets only 250 carried a timestamp,
+    and every single difference between them was identical - so the mode is perfectly stable
+    and perfectly wrong.
+
+The seam arithmetic was `cell k starts at cell k-1's LAST TIMESTAMPED picture + one signalling
+period`. That is right only when the last signalling group of every cell is FULL, i.e. when
+each cell's picture count is an exact multiple of the period. The Champions D9 passed for
+exactly that reason: all 18 cells of VTS_03 and all 8 of VTS_04 divide by 5, so every one of
+its 25 seams landed on the correct frame (had they not, the worst case there was 68 frames /
+2.72 s cumulative). Where a cell ends on a PARTIAL group the seam OVERSHOOTS by the remainder,
+and BOTH existing guards pass, so it ships silently. On the League angle-1 carve above the old
+arithmetic yields a 3,000-frame timeline for a 2,982-picture carve: 18 frames of overshoot,
+against a PGC that declares 119.28 s = exactly 2,982 frames.
+
+So: the frame duration is READ, not inferred - from the MPEG-2 sequence header's
+`frame_rate_code` - and the per-cell allotment is an EXACT PICTURE COUNT obtained by scanning
+the video payload for `picture_start_code` (00 00 01 00), not a remainder inferred from the
+timestamp chain. The modal DTS interval is still measured, but only ever reported, labelled as
+what it is (the signalling period), and used to say how many frames the pre-fix arithmetic
+would have got wrong.
+
+BOUNDED BLAST RADIUS (established by the diagnosis, worth keeping written down). A wrong
+`frame_dur` here CANNOT produce intra-cell audio/video drift, because the per-cell offset is
+applied to the SCR, PTS and DTS of EVERY stream in that cell alike - the streams move together.
+Its only two effects are (a) holding or dropping frames AT A SEAM and (b) changing the total
+length. That is why the three items already published from multi-cell carves are clean rather
+than subtly desynced, and why the postflight discriminator for this defect is a frame-count
+comparison (`check-cfr-frame-count.ps1`) rather than an A/V sync measurement.
+
+REFUSALS (exit 2) - a multi-cell carve only, because a single-cell carve is a byte-identical
+no-op that makes no timing decision at all:
+  * no MPEG-2 sequence header, or a `frame_rate_code` whose period is not a whole number of
+    90 kHz ticks, or two sequence headers that disagree - the frame duration is then unknown
+    and every seam would be a guess;
+  * the modal DTS signalling interval is not a whole multiple of the frame duration;
+  * ANY cell whose timestamp chain and picture chain disagree, i.e. where
+    `lastDTS - firstDTS != (lastPictureIndex - firstPictureIndex) * frame_dur`. This is the
+    assertion that makes the picture count usable as a duration: it fails if the frame duration
+    is wrong, if a picture is held for other than one frame period (field repeats / pulldown),
+    or if the DTS chain is not monotone in picture order;
+  * the per-cell picture counts do not sum to the picture count of the whole carve, measured
+    independently with a rolling scan that knows nothing about cell boundaries.
 
 Usage:
   python retime-vob-cells.py IN.VOB OUT.VOB          # rewrite + print the cell table
@@ -34,7 +87,17 @@ import sys, os
 SECTOR = 2048
 PACK_START = b"\x00\x00\x01\xba"
 RESET_TICKS = 5 * 90000            # a backward SCR/DTS jump beyond 5 s = new cell
+PIC_START = b"\x00\x00\x01\x00"    # picture_start_code
+SEQ_START = b"\x00\x00\x01\xb3"    # sequence_header_code
 MARKER_OK = True
+
+# frame_rate_code (MPEG-2 sequence header) -> 90 kHz ticks per coded picture.
+# Only codes whose period is a WHOLE number of ticks are listed; DVD-Video permits just 3 (PAL
+# 25) and 4 (NTSC 30000/1001), both of which are exact. Codes 1 (24000/1001) and 7 (60000/1001)
+# are not representable in whole ticks and are refused rather than rounded.
+FRC_TICKS = {2: 3750, 3: 3600, 4: 3003, 5: 3000, 6: 1800, 8: 1500}
+FRC_NAME = {1: "24000/1001", 2: "24", 3: "25", 4: "30000/1001", 5: "30",
+            6: "50", 7: "60000/1001", 8: "60"}
 
 
 def read_scr(pack):
@@ -106,12 +169,73 @@ def ts_fields(pack, off, sid):
     return None, None
 
 
+def pes_payload(pack, off):
+    """(start, end) byte offsets of one PES packet's PAYLOAD inside the pack, or None."""
+    plen = (pack[off + 4] << 8) | pack[off + 5]
+    end = min(off + 6 + plen, SECTOR)
+    if (pack[off + 6] >> 6) != 0b10:
+        return None
+    start = off + 9 + pack[off + 8]
+    if start >= end:
+        return None
+    return start, end
+
+
+def scan_starts(tail, payload, code4):
+    """Count occurrences of a 4-byte start code in `payload`, split into two groups.
+
+    Returns (straddling, inside): `straddling` are the occurrences whose FIRST byte lies in the
+    3-byte `tail` carried over from the previous payload of the same elementary stream - those
+    pictures began before this payload; `inside` are the ones wholly within `payload`.
+
+    Two occurrences of a start code cannot overlap in a legal stream (after 00 00 01 xx the next
+    prefix can only begin 3 bytes later at the earliest), so `bytes.count` is exact for the
+    inside group. The overlapping degenerate case is start-code emulation, which is illegal -
+    and the sum-of-cells assertion in scan() would catch it as a discrepancy anyway.
+    """
+    straddling = 0
+    if tail:
+        edge = tail + payload[:3]
+        pos = 0
+        while True:
+            j = edge.find(code4, pos)
+            if j < 0 or j >= len(tail):
+                break
+            straddling += 1
+            pos = j + 3
+    return straddling, payload.count(code4)
+
+
+def frame_rate_code(tail, payload):
+    """First frame_rate_code in a sequence header found in this payload, else None.
+
+    frame_rate_code is the low nibble of the 4th byte AFTER the sequence_header_code, so it is
+    only readable when those 4 bytes are present in `tail + payload`. A header split across the
+    boundary is skipped: MPEG-2 repeats the sequence header at every GOP, so the next one serves.
+    """
+    data = tail + payload
+    pos = 0
+    while True:
+        j = data.find(SEQ_START, pos)
+        if j < 0:
+            return None
+        if j + 7 < len(data):
+            return data[j + 7] & 0x0F
+        return None
+
+
 def scan(path):
-    """Pass 1: cell boundaries (pack index of each cell start) + per-cell video DTS range."""
-    cells = []          # dicts: start (pack idx), firstVdts, lastVdts, scr0, scrN
-    vdiffs = {}
+    """Pass 1: cell boundaries, per-cell PICTURE COUNT, and the DTS<->picture correspondence."""
+    cells = []
+    dts_gaps = {}                  # histogram of consecutive-DTS differences (diagnostic only)
+    frc = None
+    gpics = 0                      # whole-carve picture count, no knowledge of cell boundaries
+    gtails = {}                    # rolling 3-byte tails for that independent count
+    tails = {}                     # rolling 3-byte tails, RESET at every cell boundary
     last_scr = None
-    prev_vdts = None
+    prev_dts = None
+    pending = None                 # a DTS awaiting the picture it belongs to
+    orphan_ts = 0                  # timestamps that never reached a picture (diagnostic)
     with open(path, "rb") as f:
         pi = -1
         while True:
@@ -126,41 +250,124 @@ def scan(path):
                 raise SystemExit(f"ERROR: pack {pi} has no parseable SCR - refusing (exit 2)")
             if last_scr is None or scr < last_scr - RESET_TICKS:
                 cells.append({"start": pi, "firstV": None, "lastV": None,
+                              "firstIdx": None, "lastIdx": None, "npics": 0,
                               "scr0": scr, "scrN": scr})
-            cells[-1]["scrN"] = scr
+                tails = {}         # a cell restarts its elementary stream: no straddle across a seam
+                prev_dts = None
+                if pending is not None:
+                    orphan_ts += 1
+                pending = None
+            c = cells[-1]
+            c["scrN"] = scr
             last_scr = scr
             for off, sid in pes_iter(pack):
-                pts_off, dts_off = ts_fields(pack, off, sid)
-                if pts_off is None:
+                if not (0xE0 <= sid <= 0xEF):
                     continue
-                eff = read_ts(pack, dts_off) if dts_off is not None else read_ts(pack, pts_off)
-                if 0xE0 <= sid <= 0xEF:
-                    c = cells[-1]
+                pts_off, dts_off = ts_fields(pack, off, sid)
+                if pts_off is not None:
+                    if pending is not None:
+                        orphan_ts += 1
+                    pending = read_ts(pack, dts_off) if dts_off is not None else read_ts(pack, pts_off)
+                span = pes_payload(pack, off)
+                if span is None:
+                    continue
+                payload = pack[span[0]:span[1]]
+
+                v = frame_rate_code(tails.get(sid, b""), payload)
+                if v is not None:
+                    if frc is None:
+                        frc = v
+                    elif v != frc:
+                        raise SystemExit(
+                            f"ERROR: pack {pi}: sequence header frame_rate_code changes "
+                            f"{frc} -> {v} mid-carve; the frame duration is not constant - "
+                            f"refusing (exit 2)")
+
+                stradd, inside = scan_starts(tails.get(sid, b""), payload, PIC_START)
+                c["npics"] += stradd
+                if pending is not None and inside:
+                    # This PES's timestamp belongs to the first picture that STARTS in its own
+                    # payload - the straddling ones began in the previous PES and are already
+                    # counted above.
+                    idx = c["npics"]
                     if c["firstV"] is None:
-                        c["firstV"] = eff
-                        prev_vdts = None
-                    if prev_vdts is not None and eff > prev_vdts:
-                        d = eff - prev_vdts
+                        c["firstV"], c["firstIdx"] = pending, idx
+                    if prev_dts is not None and pending > prev_dts:
+                        d = pending - prev_dts
                         if d < 90000:
-                            vdiffs[d] = vdiffs.get(d, 0) + 1
-                    c["lastV"] = eff if c["lastV"] is None else max(c["lastV"], eff)
-                    prev_vdts = eff
+                            dts_gaps[d] = dts_gaps.get(d, 0) + 1
+                    prev_dts = pending
+                    c["lastV"], c["lastIdx"] = pending, idx
+                    pending = None
+                c["npics"] += inside
+                tails[sid] = payload[-3:] if len(payload) >= 3 else \
+                    (tails.get(sid, b"") + payload)[-3:]
+
+                gs, gi = scan_starts(gtails.get(sid, b""), payload, PIC_START)
+                gpics += gs + gi
+                gtails[sid] = payload[-3:] if len(payload) >= 3 else \
+                    (gtails.get(sid, b"") + payload)[-3:]
     if not cells:
         raise SystemExit("ERROR: no packs found (exit 2)")
     for k, c in enumerate(cells):
         if c["firstV"] is None:
             raise SystemExit(f"ERROR: cell {k+1} contains no timestamped video PES - refusing (exit 2)")
-    frame_dur = max(vdiffs, key=vdiffs.get) if vdiffs else 3600
-    return cells, frame_dur, pi + 1
+        if c["npics"] == 0:
+            raise SystemExit(f"ERROR: cell {k+1} contains no coded pictures - refusing (exit 2)")
+    dts_period = max(dts_gaps, key=dts_gaps.get) if dts_gaps else None
+    frame_dur = FRC_TICKS.get(frc) if frc is not None else None
+    return cells, frame_dur, frc, dts_period, gpics, orphan_ts, pi + 1
+
+
+def cell_t0(c, frame_dur):
+    """Notional DTS of a cell's FIRST coded picture (its first timestamp, walked back)."""
+    return c["firstV"] - c["firstIdx"] * frame_dur
 
 
 def offsets_for(cells, frame_dur):
-    """Per-cell tick offsets: cell k's video starts one frame after cell k-1's video ends."""
+    """Per-cell tick offsets: cell k's first picture follows cell k-1's LAST picture exactly.
+
+    Cell k-1 shows `npics` pictures starting at its notional t0, so it ends - in the continuous
+    timeline - at `t0 + offset + npics * frame_dur`. That is an EXACT COUNT, not a remainder
+    inferred from where the timestamp chain happened to stop.
+    """
     offs = [0]
     for k in range(1, len(cells)):
-        prev_end = cells[k - 1]["lastV"] + offs[k - 1]
-        offs.append(prev_end + frame_dur - cells[k]["firstV"])
+        prev = cells[k - 1]
+        prev_end = cell_t0(prev, frame_dur) + offs[k - 1] + prev["npics"] * frame_dur
+        offs.append(prev_end - cell_t0(cells[k], frame_dur))
     return offs
+
+
+def assert_consistent(cells, frame_dur, frc, dts_period, gpics):
+    """The two refusals that make the picture count usable as a duration. Multi-cell only."""
+    if frame_dur is None:
+        if frc is None:
+            raise SystemExit("ERROR: no MPEG-2 sequence header found in the video payload, so "
+                             "the frame duration is unknown - refusing to guess a seam (exit 2)")
+        raise SystemExit(f"ERROR: sequence header frame_rate_code {frc} "
+                         f"({FRC_NAME.get(frc, '?')} fps) is not a whole number of 90 kHz "
+                         f"ticks - refusing (exit 2)")
+    if dts_period is not None and dts_period % frame_dur:
+        raise SystemExit(f"ERROR: modal DTS signalling interval {dts_period} ticks is not a "
+                         f"whole multiple of the {frame_dur}-tick frame duration - the two "
+                         f"disagree about this stream - refusing (exit 2)")
+    for k, c in enumerate(cells):
+        want = (c["lastIdx"] - c["firstIdx"]) * frame_dur
+        got = c["lastV"] - c["firstV"]
+        if got != want:
+            raise SystemExit(
+                f"ERROR: cell {k+1}: timestamp chain and picture chain DISAGREE - DTS spans "
+                f"{got} ticks over {c['lastIdx'] - c['firstIdx']} picture(s), which at "
+                f"{frame_dur} ticks/picture should be {want} ticks. Either the frame duration "
+                f"is wrong or a picture is held for other than one frame period (field repeat / "
+                f"pulldown). The seam cannot be placed from a picture count here - "
+                f"refusing (exit 2)")
+    tot = sum(c["npics"] for c in cells)
+    if tot != gpics:
+        raise SystemExit(f"ERROR: per-cell picture counts sum to {tot} but the whole carve "
+                         f"contains {gpics} coded picture(s) - {abs(tot - gpics)} picture(s) "
+                         f"unaccounted for at a cell boundary - refusing (exit 2)")
 
 
 def main():
@@ -172,18 +379,69 @@ def main():
     report_only = args[1] == "--report-only"
     dst = None if report_only else args[1]
 
-    cells, frame_dur, npacks = scan(src)
-    offs = offsets_for(cells, frame_dur)
+    cells, frame_dur, frc, dts_period, gpics, orphan_ts, npacks = scan(src)
+    multi = len(cells) > 1
+    if multi:
+        assert_consistent(cells, frame_dur, frc, dts_period, gpics)
 
+    fd_txt = (f"{frame_dur} ticks ({frame_dur/90000:.4f}s, frame_rate_code {frc} = "
+              f"{FRC_NAME.get(frc, '?')} fps)" if frame_dur else
+              f"UNKNOWN (frame_rate_code {frc})")
     print(f"retime-vob-cells: {os.path.basename(src)} - {npacks} packs, {len(cells)} cell(s), "
-          f"frame duration {frame_dur} ticks ({frame_dur/90000:.4f}s)")
-    for k, (c, o) in enumerate(zip(cells, offs)):
-        print(f"  cell {k+1:2d}: packs from {c['start']:8d}  videoDTS {c['firstV']/90000:9.3f}.."
-              f"{c['lastV']/90000:9.3f}  offset {o/90000:+10.3f}s")
-    total = (cells[-1]["lastV"] + offs[-1] + frame_dur - cells[0]["firstV"]) / 90000
-    print(f"  continuous video timeline: {total:.2f}s")
+          f"{gpics} coded picture(s), frame duration {fd_txt}")
+    if dts_period is not None:
+        per = f"{dts_period/frame_dur:g} frame(s)" if frame_dur and dts_period % frame_dur == 0 \
+              else "NOT a whole number of frames"
+        print(f"  DTS signalling period (modal interval, DIAGNOSTIC ONLY - never the frame "
+              f"duration): {dts_period} ticks = {per}")
+    if orphan_ts:
+        print(f"  note: {orphan_ts} video timestamp(s) reached no picture start in their own PES")
 
-    if len(cells) == 1:
+    if frame_dur is None:
+        # Single-cell only (assert_consistent would already have refused a multi-cell carve):
+        # nothing is retimed, so an unknown frame duration decides nothing.
+        offs = [0] * len(cells)
+        for k, c in enumerate(cells):
+            print(f"  cell {k+1:2d}: packs from {c['start']:8d}  {c['npics']:6d} picture(s)  "
+                  f"videoDTS {c['firstV']/90000:9.3f}..{c['lastV']/90000:9.3f}")
+    else:
+        offs = offsets_for(cells, frame_dur)
+        period = dts_period // frame_dur if dts_period and dts_period % frame_dur == 0 else None
+        partial = []
+        for k, (c, o) in enumerate(zip(cells, offs)):
+            trail = c["npics"] - 1 - c["lastIdx"]      # pictures after the last timestamped one
+            tag = ""
+            # A partial trailing group only MEANS anything where a seam follows it. On a
+            # single-cell carve nothing is retimed, so flagging one is noise.
+            if period is not None and multi:
+                if (c["npics"] % period) != 0:
+                    tag = f"  PARTIAL trailing group ({c['npics'] % period}/{period})"
+                    partial.append(k + 1)
+            print(f"  cell {k+1:2d}: packs from {c['start']:8d}  {c['npics']:6d} picture(s)  "
+                  f"videoDTS {c['firstV']/90000:9.3f}..{c['lastV']/90000:9.3f}  "
+                  f"(+{trail} untimestamped)  offset {o/90000:+10.3f}s{tag}")
+        frames = sum(c["npics"] for c in cells)
+        print(f"  continuous video timeline: {frames} frames = "
+              f"{frames * frame_dur / 90000:.2f}s")
+        if period is not None and partial:
+            # What the pre-2026-09-03 modal-interval arithmetic would have produced. Kept as a
+            # printed number because this defect's whole problem was being invisible.
+            #
+            # The number that MATTERS is the cumulative SEAM overshoot - the gap the encoder has
+            # to fill - which is the difference in the LAST cell's offset. A partial group in the
+            # final cell costs nothing, because no seam follows it; measured on the League angle-1
+            # carve, cell 1's 5/12 group put 7 frames of gap at its single seam and the old
+            # output declared 119.56 s against a true 2,982 pictures = 119.28 s.
+            old = [0]
+            for k in range(1, len(cells)):
+                old.append(cells[k - 1]["lastV"] + old[k - 1] + dts_period - cells[k]["firstV"])
+            delta = old[-1] - offs[-1]
+            print(f"  cell(s) {','.join(str(p) for p in partial)} end on a PARTIAL signalling "
+                  f"group; the pre-fix modal-interval arithmetic would have opened "
+                  f"{delta // frame_dur} frame(s) of gap at the seam(s) ({delta/90000:+.2f}s "
+                  f"cumulative)")
+
+    if not multi:
         print("  single cell / no resets - nothing to rewrite" +
               ("" if report_only else "; copying input to output unchanged"))
         if not report_only:
@@ -238,4 +496,15 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # `raise SystemExit("message")` prints the message but exits 1, NOT 2 - so every refusal in
+    # this script documented itself as "exit 2" while actually returning 1. transcode.ps1 tests
+    # `-ne 0` so it failed the item correctly either way, but the contract was a lie and any
+    # caller distinguishing "refused on structure" (2) from "crashed" (1) would be misled.
+    # Same wrapper as dvd-angle-cells.py, for the same reason.
+    try:
+        sys.exit(main())
+    except SystemExit as e:
+        if isinstance(e.code, str):
+            sys.stderr.write(e.code + "\n")
+            sys.exit(2)
+        raise
