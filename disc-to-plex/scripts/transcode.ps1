@@ -800,14 +800,44 @@ foreach($it in $items){
   # _rip-loop.ps1 prints the value when it identifies a gallery.
   #
   #   setpts=N*HOLD/TB   spaces every frame HOLD seconds apart
-  #   fps=24             fills the gaps so the result is a normal CFR video Plex can seek
+  #   fps=<rate>         fills the gaps so the result is a normal CFR video Plex can seek
   #
   # Applied INSTEAD of crop/deinterlace: a gallery is progressive full-frame artwork, and
   # cropdetect on a black-bordered still would eat the picture.
+  #
+  # ALSO COVERS A SINGLE STILL HELD UNDER AUDIO, not just an N-frame gallery. Middlemarch Disk 1
+  # dvdvideo title 5 ("The Music of Middlemarch") is ONE video packet against 1759.01 s of 5.1
+  # audio - a still card under a 29:20 score suite. `stillsHold` handles it: with one input frame
+  # the setpts gives that frame a HOLD-second duration and `fps` fills the whole span, so
+  # stillsHold = the AUDIO length yields a full-length video. The default read path yields 0.04 s,
+  # a file that passes every size check and looks merely small.
+  #
+  # THE RATE WAS HARD-CODED 24 AND THAT IS WRONG FOR PAL. Every DVD in this library is 25 fps;
+  # a 24 fps still item would be the only file in the show at another rate, and with audio present
+  # the nominal rate is no longer cosmetic. So derive it from the SOURCE - which is a measurement,
+  # not a guess - and let `stillsFps` state it explicitly when the source cannot say.
+  #
+  # The derived value is CLAMPED to 10-60 fps and falls back to 24. A degenerate still stream can
+  # report a nonsense r_frame_rate (a handful of frames 0.04 s apart inside a 125 s playlist can
+  # probe as 90000/1); accepting that unchecked would emit millions of frames and fill the disk,
+  # which is a far worse failure than the wrong nominal rate it is trying to fix.
   if($it.stillsHold){
     $hold = [double]$it.stillsHold
     if($hold -le 0){ throw "stillsHold must be > 0 on $($it.out)" }
-    $vf = "setpts=N*$hold/TB,fps=24"
+    $sfps = $null
+    if(Has $it 'stillsFps'){
+      $sfps = "$($it.stillsFps)"
+      Write-Output "   stills frame rate $sfps (explicit)"
+    } else {
+      $rfr = "$(& $fp -v error @inspec -select_streams v:0 -show_entries stream=r_frame_rate -of csv=p=0 2>$null | Select-Object -First 1)".Trim().TrimEnd(',')
+      if($rfr -match '^(\d+)/(\d+)$' -and [int]$Matches[2] -gt 0){
+        $rv = [double]$Matches[1] / [double]$Matches[2]
+        if($rv -ge 10 -and $rv -le 60){ $sfps = $rfr }
+      }
+      if($sfps){ Write-Output "   stills frame rate $sfps (from source)" }
+      else { $sfps = '24'; Write-Output "   stills frame rate 24 (source reported '$rfr', outside 10-60fps - falling back)" }
+    }
+    $vf = "setpts=N*$hold/TB,fps=$sfps"
     Write-Output ("   STILLS GALLERY - holding each frame {0:N1}s (setpts+fps)" -f $hold)
   }
   if(-not $it.stillsHold){
@@ -1058,6 +1088,27 @@ foreach($it in $items){
     }
   }
   if($ns -gt 0){ $a += @('-c:s','copy','-metadata:s:s:0','language=eng'); if($origLang -and $origLang -notin @('eng','en')){ $a += @('-disposition:s:0','default') } }  # default English subs ON for foreign originals
+  # FORCE THE MUXER TO INTERLEAVE ON A LONG `stillsHold` - the output is otherwise unseekable.
+  #
+  # With ONE input frame the setpts+fps chain emits NOTHING until the demuxer hits EOF, then floods
+  # out every generated frame at once. The audio, meanwhile, decodes and encodes in seconds. The
+  # muxer takes what it has: MEASURED on Middlemarch S00E03 (2026-09-03, 29:20 still + 5.1 suite),
+  # all 43,975 video packets landed in the LAST 20 MB of a 189 MB file, behind every audio packet -
+  # video t=0 at byte 169,727,762, audio t=0 at byte 71,394,398.
+  #
+  # That file plays from the start and probes perfectly: right duration, right packet counts, right
+  # geometry, ffmpeg exit 0. It only fails when you SEEK - `ffmpeg -ss 880` returned an EMPTY wav,
+  # zero samples, because the seek lands on a video keyframe past all the audio. Every gate in this
+  # pipeline passes it; a viewer scrubbing 30 seconds in gets silence. Characteristic failure shape.
+  #
+  # `-max_interleave_delta 0` makes the muxer buffer until every stream has data instead of flushing
+  # audio ahead of absent video. Cost is memory (~550 MB peak here, holding the encoded audio) and
+  # nothing is written until the video starts, so the output stays 0 bytes for the first minute -
+  # that is expected on this path, not a stall. After the fix, byte position tracks time on both
+  # streams and the same seeks return full audio.
+  #
+  # Scoped to stillsHold: an ordinary encode produces video and audio in step and needs no buffering.
+  if($it.stillsHold){ $a += @('-max_interleave_delta','0') }
   $a += @('-max_muxing_queue_size','1024',$it.out)
 
   if($env:TRANSCODE_DEBUG){ Write-Output ("   CMD: " + ($a -join ' ')) }

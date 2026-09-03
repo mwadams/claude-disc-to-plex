@@ -20,6 +20,55 @@ Part of the `disc-to-plex` gotchas set — see [gotchas.md](gotchas.md) for the 
 - [Killing a bad encode: kill the right PID, and delete the partial](#killing-a-bad-encode-kill-the-right-pid-and-delete-the-partial)
 - [Remuxing AVI to MKV silently produces a 0.4-second stub](#remuxing-avi-to-mkv-silently-produces-a-04-second-stub)
 - [An 8x slowdown from `-color_*` output options on untagged sources](#an-8x-slowdown-from--color_-output-options-on-untagged-sources)
+- [A STILL HELD UNDER AUDIO decodes to 0.04 s and ships as a plausible small file](#a-still-held-under-audio-decodes-to-004-s-and-ships-as-a-plausible-small-file)
+
+## A STILL HELD UNDER AUDIO decodes to 0.04 s and ships as a plausible small file
+
+**Middlemarch Disk 1, dvdvideo title 5 — "The Music of Middlemarch", 2026-09-03.** The title emits
+**ONE video packet** against **54,969 AC3 5.1 packets (1759.01 s)**. It is a single MPEG-2 still
+card — MIDDLEMARCH / MUSIC COMPOSED BY STANLEY MYERS AND CHRISTOPHER GUNNING — held for the whole
+29:20 score suite. That is the disc, not a truncation.
+
+**Why it is dangerous rather than merely odd.** `transcode.ps1`'s default DVD read path encodes it
+faithfully: exit 0, finalised container, one frame, **0.04 seconds**. Measured. Nothing in the
+pipeline objects — `Finalised-Output` asks the container for a duration and gets one, and the
+byte-size floor was already removed for being wrong in both directions. It is not a small file that
+looks broken; it is a small file that looks *small*, which is a shape a video-only extra legitimately
+has. The failure ships.
+
+**How to recognise it before you build.** `assert-stream-packets.ps1` is the check that names it: a
+video stream whose **declared** duration is minutes and whose **packet count is 1**. The declaration
+and the emission disagree by three orders of magnitude — the same class as the under-declaring
+`dvdvideo 4` on that disc, in the other direction.
+
+**How to build it.** `stillsHold` — documented for N-frame galleries — covers this case too, and is
+the whole fix:
+
+```json
+{ "kind": "DVD", "title": 5, "src": "D:/video/_stage/<disc>",
+  "stillsHold": 1759.01, "subTrack": "none",
+  "expectSeconds": 1759.01, "expectFrames": 43975 }
+```
+
+With one input frame the `setpts=N*HOLD/TB` gives that frame a HOLD-second duration and `fps` fills
+the span, so the still is held for the whole suite.
+
+Three things to get right, each of which has its own way of shipping something plausible:
+
+- **`stillsHold` is the AUDIO length, packet-counted — not the video's declared duration.** Here
+  the PGC declares 1760.00 s and the audio emits 1759.01 s. State `expectSeconds` against the audio.
+- **The frame rate is not 24.** It was hard-coded `fps=24` in the gallery path, which is fine for a
+  silent Blu-ray gallery and **wrong for a 25 fps PAL DVD** — a 24 fps item would be the only file
+  in the show at another rate. `stillsFps` now states it and, omitted, it is derived from the
+  source's `r_frame_rate` (clamped 10–60 fps, falling back to 24). Check the log line on a PAL item.
+- **A DECLARED subtitle stream that ships ZERO packets must be dropped, not copied.** VTS_02
+  declares `VTS_SPST_Ns=1`, ordinal 0, lang `en`; it emits nothing, and a stream-copy of it muxes
+  to an empty file. `subTrack: "none"`. Keeping it would stamp `language=eng` on nothing and route
+  the file to the OCR queue to OCR an empty stream.
+
+**And it is not a subtitle failure.** The item has audio, so it is transcribable in principle — but
+it is a music suite with no speech, and the transcribe track's own 4-cues-per-minute floor is what
+should withhold it as `not-applicable`. Do not pre-empt that by hand-writing an empty sidecar.
 
 ## `HVDVD_TS` symlinks make robocopy copy every disc TWICE (and break the byte gate)
 
