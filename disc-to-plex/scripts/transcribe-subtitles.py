@@ -41,6 +41,36 @@ MIN_DUR, MAX_DUR, GAP, WRAP = 1.0, 8.0, 0.04, 42
 MIN_COVERAGE = 0.80
 # Refuse output that is not recognisable English, mirroring the OCR pipeline's guard.
 MIN_ENGLISH = 0.35
+
+# WITHHOLD FLOOR - cues per MINUTE, not absolute cue count (a 22-cue trailer and a 3-cue gallery
+# must not be judged by the same raw count). Measured 2026-09-03 across 6 real files:
+#   real speech   - Danger Man Earl Cameron interview 17.7, Survivors episodes 13-14,
+#                   HP theatrical trailers 11-16, Double Double Hogwarts Choir 8.1
+#   music/silent  - HP Video Game Preview 2.0, DW Brain of Morbius Photo Gallery 0.65
+# Nothing observed lands between 2.0 and 8.1. 4.0 sits near the middle of that gap: more than
+# double the highest music-only reading, and well under half the lowest real-speech reading, so a
+# genuine 8+ cues/min item would have to lose over half its density before this floor could ever
+# touch it. A false 'not applicable' on real speech is far worse than a wasted transcription, so
+# the floor is set to protect the real-speech side of the gap, not to split it evenly.
+CUES_PER_MIN_FLOOR = 4.0
+
+# Recoverable homes for what this script would otherwise overwrite or discard, kept under D:/video
+# (NEVER derived from `out`, which is a NAS path whenever this runs over the published library -
+# see the scratch-WAV gotcha this pipeline already learned that lesson from).
+CORRECTION_ORIGINALS_DIR = 'D:/video/_correction-originals'
+# NOT directly under CORRECTION_ORIGINALS_DIR/<show>/<season>/ - that exact path is
+# apply-srt-corrections.py's own backup slot and already holds a DIFFERENT artefact (the
+# pre-correction original). Writing a redo backup there would silently clobber it.
+REDO_BACKUP_DIR = CORRECTION_ORIGINALS_DIR + '/_pre-redo'
+# Withheld (near-empty / music-only) transcripts - never shipped to the library, but kept here so
+# a wrong not-applicable call is inspectable and reversible rather than silently discarded.
+WITHHELD_DIR = 'D:/video/_transcribe-withheld'
+
+
+def safe_component(x):
+    return re.sub(r'[<>:"/\\|?*]', '_', x).strip() or '_'
+
+
 COMMON = set('the a an and or but if of to in on at for with from that this it is was are were '
              'be been being have has had do does did not no yes you i he she we they me him her '
              'them my your his our their what when where who how why can could will would should '
@@ -157,6 +187,79 @@ def english_fraction(segments):
     return ok / len(lines)
 
 
+def build_srt_rows(segments):
+    """Segment dicts -> (start, end, [display lines]) rows, one per SRT cue. Shared by the normal
+    write path and the withheld-transcript path so the two never drift apart."""
+    rows = []
+    for i, s in enumerate(segments):
+        start, end = s['start'], min(s['end'], s['start'] + MAX_DUR)
+        if end - start < MIN_DUR:
+            end = start + MIN_DUR
+        if i + 1 < len(segments):
+            end = min(end, segments[i + 1]['start'] - GAP)
+        if end <= start:
+            end = start + 0.6
+        rows.append((start, end, wrap(s['text'])))
+    return rows
+
+
+def write_srt_file(path, rows):
+    with open(path, 'w', encoding='utf-8') as fh:
+        for i, (st, en, lines) in enumerate(rows, 1):
+            fh.write(f'{i}\n{hhmmss(st)} --> {hhmmss(en)}\n' + '\n'.join(lines) + '\n\n')
+
+
+def backup_sidecars_before_redo(out):
+    """A --force redo is about to overwrite the CURRENT sidecar family for `out`. Preserve it
+    under REDO_BACKUP_DIR first (mirroring <show>/<season>/, same shape as
+    _correction-originals), so a regeneration that turns out worse is reversible. Timestamped so
+    repeat redos of the same file never collide or clobber an earlier backup."""
+    base = os.path.splitext(out)[0]      # '<name>.eng' - out already ends '.eng.srt'
+    family = {
+        'srt': out,
+        'corrections': base + '.corrections.json',
+        'provenance': base + '.provenance.json',
+    }
+    existing = [(label, p) for label, p in family.items() if os.path.exists(p)]
+    if not existing:
+        return []
+    parent = os.path.basename(os.path.dirname(out))
+    gp = os.path.basename(os.path.dirname(os.path.dirname(out)))
+    dest_dir = os.path.join(REDO_BACKUP_DIR, safe_component(gp), safe_component(parent))
+    os.makedirs(dest_dir, exist_ok=True)
+    stamp = datetime.datetime.now().strftime('%Y%m%dT%H%M%S')
+    saved = []
+    for label, src_path in existing:
+        dest = os.path.join(dest_dir, f'{stamp}.{os.path.basename(src_path)}')
+        shutil.copy2(src_path, dest)
+        saved.append(dest)
+        print(f'[info] redo backup: {os.path.basename(src_path)} -> {dest}')
+    return saved
+
+
+def withhold_srt(segments, src, out, reason, avg_no_speech_prob):
+    """Save a below-floor transcript OFF the library (WITHHELD_DIR, under D:/video - never
+    beside `out`, which is a NAS path whenever this runs over the published library) instead of
+    shipping or discarding it, so the not-applicable verdict stays inspectable and reversible."""
+    if not segments:
+        return None
+    parent = os.path.basename(os.path.dirname(out))
+    gp = os.path.basename(os.path.dirname(os.path.dirname(out)))
+    dest_dir = os.path.join(WITHHELD_DIR, safe_component(gp), safe_component(parent))
+    os.makedirs(dest_dir, exist_ok=True)
+    dest = os.path.join(dest_dir, os.path.basename(out))
+    write_srt_file(dest, build_srt_rows(segments))
+    rec = {
+        'srt': dest, 'source': src, 'reason': reason, 'cues': len(segments),
+        'avgNoSpeechProb': round(avg_no_speech_prob, 3) if avg_no_speech_prob is not None else None,
+        'generated': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'note': 'WITHHELD - below the cues/min floor, never shipped to the library',
+    }
+    with open(os.path.splitext(dest)[0] + '.withheld-provenance.json', 'w', encoding='utf-8') as fh:
+        json.dump(rec, fh, indent=1)
+    return dest
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('src')
@@ -190,11 +293,16 @@ def main():
         return 2
     out = a.out or (os.path.splitext(src)[0] + '.eng.srt')
 
-    # CREATE-ONLY. Never clobber a subtitle we did not make; this pipeline must not be able
-    # to overwrite an OCR'd or disc-derived sidecar.
-    if os.path.exists(out) and not a.force:
-        print(f'[skip] sidecar already exists: {os.path.basename(out)}')
-        return 0
+    # CREATE-ONLY UNLESS --force. Never clobber a subtitle we did not make; this pipeline must
+    # not be able to overwrite an OCR'd or disc-derived sidecar. --force is only ever used for a
+    # deliberate redo of our OWN prior transcript (see _transcribe-loop.ps1's Redo handling), and
+    # even then the existing sidecar family is preserved first - a regeneration that turns out
+    # worse must be reversible.
+    if os.path.exists(out):
+        if not a.force:
+            print(f'[skip] sidecar already exists: {os.path.basename(out)}')
+            return 0
+        backup_sidecars_before_redo(out)
 
     paths = json.load(open(TOOLS, encoding='utf-8'))
     ff = paths['ffmpeg']
@@ -239,7 +347,11 @@ def main():
             condition_on_previous_text=False,  # one bad guess must not cascade
             word_timestamps=True,
         )
-        segments = [{'start': s.start, 'end': s.end, 'text': s.text.strip()}
+        # no_speech_prob comes free with every segment faster-whisper already decoded - no
+        # second pass. Recorded for audit (see the cues/min-vs-no_speech_prob assessment in the
+        # withhold gate below); it does not gate anything itself.
+        segments = [{'start': s.start, 'end': s.end, 'text': s.text.strip(),
+                     'no_speech_prob': s.no_speech_prob}
                     for s in segs if s.text.strip()]     # consume inside the guard
     except subprocess.CalledProcessError as e:
         print(f'[failed] audio extraction failed: {e}')
@@ -253,9 +365,27 @@ def main():
         else:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
-    if not segments:
-        print('[failed] transcriber produced no segments')
-        return 2
+    # --- WITHHOLD GATE (2026-09-03) ------------------------------------------------------
+    # NOT APPLICABLE IS NOT FAILED, same principle as the no-audio-stream check in
+    # _transcribe-loop.ps1. A music-only artefact (stills gallery, silent montage) can pass the
+    # has-audio guard and still transcribe into a handful of stray/hallucinated cues over several
+    # minutes of near-silence - structurally a valid SRT, but not real content, and shipping it
+    # both counts a file as "covered" that has no usable subtitle and burns real API calls on a
+    # later correction pass (Brain of Morbius Photo Gallery: 0 corrections across 3 cues).
+    #
+    # Checked BEFORE the coverage/English guards below and before segments-empty is treated as a
+    # failure, because a truly silent file (0 segments) is just the cues/min=0 case, not a
+    # different error - and a sparse-but-'valid' transcript (few cues, high coverage, real English
+    # words in the few cues it has) would otherwise sail past both of those guards and ship.
+    cues_per_min = (len(segments) / (duration / 60)) if (segments and duration > 0) else 0.0
+    if cues_per_min < CUES_PER_MIN_FLOOR:
+        avg_nsp = (sum(s['no_speech_prob'] for s in segments) / len(segments)) if segments else None
+        reason = (f'{len(segments)} cue(s) over {duration / 60:.1f} min = {cues_per_min:.2f} '
+                  f'cues/min (floor {CUES_PER_MIN_FLOOR:.1f}) - too sparse to be real dialogue')
+        dest = withhold_srt(segments, src, out, reason, avg_nsp)
+        tail = f'; withheld transcript kept at {dest}' if dest else '; no cues to keep'
+        print(f'[na] {reason}{tail}')
+        return 0
 
     changed = apply_lexicon(segments, fixes)
 
@@ -288,21 +418,10 @@ def main():
         print(f'[info] lexicon names heard: {", ".join(seen[:8])}')
 
     # --- write -------------------------------------------------------------------------
-    rows = []
-    for i, s in enumerate(segments):
-        start, end = s['start'], min(s['end'], s['start'] + MAX_DUR)
-        if end - start < MIN_DUR:
-            end = start + MIN_DUR
-        if i + 1 < len(segments):
-            end = min(end, segments[i + 1]['start'] - GAP)
-        if end <= start:
-            end = start + 0.6
-        rows.append((start, end, wrap(s['text'])))
+    rows = build_srt_rows(segments)
 
     tmp = out + '.partial'
-    with open(tmp, 'w', encoding='utf-8') as fh:
-        for i, (st, en, lines) in enumerate(rows, 1):
-            fh.write(f'{i}\n{hhmmss(st)} --> {hhmmss(en)}\n' + '\n'.join(lines) + '\n\n')
+    write_srt_file(tmp, rows)
     os.replace(tmp, out)      # atomic: a reader never sees a half-written sidecar
 
     # --- provenance ---------------------------------------------------------------------
@@ -312,7 +431,7 @@ def main():
     rec = {
         'srt': out, 'source': src, 'work': a.work,
         'method': 'audio-transcription', 'model': a.model, 'device': dev,
-        'vad': False, 'cues': len(rows),
+        'vad': False, 'cues': len(rows), 'cuesPerMin': round(cues_per_min, 2),
         'coverage': round(coverage, 3), 'englishFraction': round(frac, 3),
         'lexicon': lexpath or None, 'lexiconPrompted': bool(prompt),
         'lexiconEpisodeKey': epkey or None, 'lexiconFixes': len(changed),
