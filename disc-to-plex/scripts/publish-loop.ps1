@@ -42,6 +42,17 @@ if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path 
 try { Start-Transcript -Path (Join-Path $logDir '_publish-loop.log') -Append | Out-Null } catch { }
 Write-Output ("=== publish loop up {0} ===" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
 
+# Artefact-type test, shared with publish-work.ps1 (see lib-artefact-types.ps1 for the rule and the
+# Champions .wrong-length incident). Used here only to keep NON-artefact files out of the pre-check
+# below: a quarantine file (`X.mkv.wrong-length`) is never published, so it is never on the NAS, so
+# comparing it would read as "missing -> work to do" on EVERY pass - the loop would re-invoke the
+# publish forever and, because the publish then verifies clean, never sleep. Same shape as the
+# Boston Legal scaffolding loop of 2026-09-02: measure the deliverable, not the litter.
+# Fail-OPEN if the lib is missing (worst case: extra publish attempts); publish-work.ps1 loads the
+# same lib fail-CLOSED, so the copy itself stays guarded either way.
+$artefactLib = 'D:/video/.claude/skills/disc-to-plex/scripts/lib-artefact-types.ps1'
+if (Test-Path -LiteralPath $artefactLib) { . $artefactLib }
+
 while ($true) {
   $published = 0
   foreach ($kind in @('Movies', 'Television Shows')) {
@@ -74,6 +85,10 @@ while ($true) {
       $subsOnly = Test-Path -LiteralPath (Join-Path $w.FullName '.subtitles-only')
       foreach ($f in Get-ChildItem -LiteralPath $w.FullName -Recurse -File -ErrorAction SilentlyContinue) {
         if ($subsOnly -and $f.Extension -ne '.srt') { continue }
+        # Quarantine litter and other non-artefacts never publish, so their absence from the NAS is
+        # not work to do - see the lib load above for the hot-loop this prevents.
+        if ((Get-Command Test-LibraryArtefact -ErrorAction SilentlyContinue) -and
+            -not (Test-LibraryArtefact -Name $f.Name)) { continue }
         $t = $f.FullName.Replace($w.FullName, $nas)
         if (-not (Test-Path -LiteralPath $t)) { $need = $true; continue }
         $ti = Get-Item -LiteralPath $t
@@ -127,9 +142,14 @@ while ($true) {
       #
       # PowerShell prefixes those source echoes with `<line number> | `, so drop them and keep the
       # rendered message.
+      # 'NOT PUBLISHING' is the artefact-type gate skipping a file (quarantine litter) while the
+      # rest of the work publishes - it must be surfaced ALONGSIDE the 'verified' line, not instead
+      # of it, hence keeping every match rather than the first: the downstream `-join ' '` renders
+      # an array as one line, and `$line -match 'verified'` is array-safe, so the verified
+      # bookkeeping is unchanged.
       $line = $out |
               Where-Object { "$_" -notmatch '^\s*\d+\s*\|' } |
-              Select-String 'verified|REFUSING' | Select-Object -First 1
+              Select-String 'verified|REFUSING|NOT PUBLISHING'
       # `-replace '^\s*\|\s*'` drops the leading pipe of PowerShell's error continuation line, which
       # survives the source-line filter above because it carries no line number.
       if ($line) { "{0,-46} {1}" -f $w.Name, ((($line -join ' ') -replace '\s+', ' ') -replace '^\s*\|\s*', '') }
@@ -172,5 +192,41 @@ while ($true) {
       }
     }
   }
+
+  # RETIRE LIST: refresh the hand-over list the moment a publish changes what is on the NAS.
+  #
+  # build-retire-list.ps1 only lists a superseded file once ITS REPLACEMENT is verified on the
+  # NAS, and this loop is the one place that just put a replacement there - so a publish is the
+  # earliest correct moment to refresh it. Leaving that to someone remembering to run the script
+  # by hand is exactly the manual step the user objected to for reclaim on 2026-09-02: "This
+  # should be driven by a manifest-like process so it is running in a loop and you provide the
+  # required reclaim, rather than hand running scripts." The reclaim track (_reclaim-loop.ps1) is
+  # the wrong home for this - it deletes LOCAL D: copies on a user-authored confirmation artefact
+  # and never touches the NAS at all; this is a read-only NAS-side listing, and publish is what
+  # changes NAS state.
+  #
+  # GATED ON $published -gt 0, not run every idle poll: the script rescans every manifest under
+  # _queue (480+) plus a Get-Item per candidate on the NAS for each pass, and nothing changes on
+  # the NAS between successful publishes, so an unconditional call would be pure NAS traffic for
+  # no new information every 90 s.
+  #
+  # ALWAYS THE SAME TWO FILES (its defaults, D:\video\_nas-retire.txt and
+  # D:\video\_nas-retire-detail.tsv) - one current hand-over list, overwritten in place, never a
+  # new timestamped file. It is READ-ONLY: it never deletes, moves or renames anything anywhere -
+  # removal on the NAS stays the user's. The other *-retire-*.txt files already in D:\video
+  # (VERIFIED / renamed / extras / dm-s00, plus the Boston Legal / Danger Man
+  # _nas-superseded-*.txt files) are one-off deliverables from earlier hand investigations
+  # (renames, extras re-homing, Season 00 identification) - they are history, not live output,
+  # and this loop does not touch them.
+  if ($published -gt 0) {
+    Write-Output '--- refreshing NAS retire list (supersedes -> verified replacement) ---'
+    try {
+      & pwsh -NoProfile -File 'D:\video\.claude\skills\disc-to-plex\scripts\build-retire-list.ps1' 2>&1 |
+        ForEach-Object { "    $_" }
+    } catch {
+      Write-Output "    build-retire-list.ps1 threw: $($_.Exception.Message)"
+    }
+  }
+
   if ($published -eq 0) { Start-Sleep -Seconds 90 }
 }

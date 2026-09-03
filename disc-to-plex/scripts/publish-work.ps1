@@ -60,6 +60,13 @@ if (-not (Get-Command Assert-TrackOwner -ErrorAction SilentlyContinue)) {
 }
 Assert-TrackOwner -Track Publish -Manual:$Manual
 
+# Same fail-closed load discipline as the track guard above: if this dot-source failed silently,
+# Test-LibraryArtefact would be undefined, every call would error WITHOUT stopping the script, and
+# the artefact-type gate below would approve everything it exists to block.
+. "$PSScriptRoot/lib-artefact-types.ps1"
+if (-not (Get-Command Test-LibraryArtefact -ErrorAction SilentlyContinue)) {
+  throw 'lib-artefact-types.ps1 failed to load - refusing to publish with the artefact-type gate undefined'
+}
 
 $src = Join-Path (Join-Path $LocalRoot $Kind) $Work
 $dst = Join-Path (Join-Path $NasRoot   $Kind) $Work
@@ -93,6 +100,42 @@ if ($SubtitlesOnly) {
   $local = @($local | Where-Object { $_.Extension -eq '.srt' })
   if (-not $local) {
     throw "-SubtitlesOnly but no .srt in $src - OCR has not run yet, or its sidecars are named differently. Refusing rather than publishing nothing and calling it success."
+  }
+}
+
+# PUBLISH ONLY KNOWN LIBRARY ARTEFACT TYPES - a positive rule, not a quarantine-suffix blocklist.
+#
+# transcode.ps1 moves a wrong-length output aside as `<name>.mkv.wrong-length` so the resume check
+# cannot mistake it for a good encode - and on 2026-09-03 two such quarantine artefacts were found
+# ON THE NAS (The Champions S00E05/E06). They got there because every guard in this file keys on
+# `$_.Extension -eq '.mkv'`, and `X.mkv.wrong-length` has extension `.wrong-length`: it was neither
+# duration-checked nor excluded, and robocopy /E copied it. Nothing in this pipeline may delete
+# from the NAS, so each one is a hand-removal chore for the user.
+#
+# Why the rule is positive - "ship only known artefact types" rather than "block known quarantine
+# suffixes" - is argued in lib-artefact-types.ps1: `.pre-retime-short` appears in no script at all,
+# so no blocklist could have anticipated it; the quarantine namespace is open-ended, the artefact
+# namespace is closed.
+#
+# SKIP THE FILE LOUDLY, DO NOT ABANDON THE WORK - same reasoning as the partial-file guard below:
+# throwing here would hold every finished episode in the folder hostage to one piece of quarantine
+# litter. And the skip must be excluded from the COPY as well as this list (see the /XF note at the
+# robocopy call) - /E copies the whole tree regardless of what $local holds. Refusals are also
+# appended to _logs/publish-refusals.log because the publish loop condenses this script's output
+# to a single summary line; a durable record must not depend on that filter.
+$nonArtefact = @($local | Where-Object { -not (Test-LibraryArtefact -Name $_.Name) })
+if ($nonArtefact.Count) {
+  $refusalLog = Join-Path $LocalRoot '_logs/publish-refusals.log'
+  $refusalDir = Split-Path $refusalLog
+  if (-not (Test-Path -LiteralPath $refusalDir)) { New-Item -ItemType Directory -Path $refusalDir | Out-Null }
+  foreach ($f in $nonArtefact) {
+    $msg = "NOT PUBLISHING (not a library artefact type): $($f.Name)"
+    Write-Output "   $msg"
+    Add-Content -LiteralPath $refusalLog -Value ("{0}  {1}  {2}" -f (Get-Date -Format s), $Work, $msg)
+  }
+  $local = @($local | Where-Object { $nonArtefact.FullName -notcontains $_.FullName })
+  if (-not $local) {
+    throw "REFUSING: nothing in $src is a known library artefact type - nothing to publish"
   }
 }
 
@@ -223,6 +266,9 @@ if (-not $Overwrite) { $flags += @('/XC','/XN','/XO') }
 # half-file on the server, which is strictly worse than the stall this change fixes. /XF takes full
 # paths and is the only thing that actually keeps them back.
 if ($partial.Count) { $flags += '/XF'; $flags += @($partial | ForEach-Object { $_.FullName }) }
+# Same again for non-artefact files (quarantine litter like .wrong-length): dropping them from
+# $local governs only what is reported and verified; this /XF is what keeps them off the NAS.
+if ($nonArtefact.Count) { $flags += '/XF'; $flags += @($nonArtefact | ForEach-Object { $_.FullName }) }
 # SAME REASONING FOR -SubtitlesOnly. robocopy's file spec is positional, before the switches, and
 # it is the only thing that stops /E dragging the .mkv along. Narrowing $local above governs what
 # is REPORTED and VERIFIED; this governs what actually moves.

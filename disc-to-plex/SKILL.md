@@ -420,7 +420,7 @@ Core pipeline, in the order you use them:
 |---|---|
 | `install-tools.ps1` | fetch a driver-compatible ffmpeg, SupMover, mkvextract, seconv |
 | `disc-identity.ps1` | **the permanent identity register on the NAS** — `Lookup` a disc before identifying it, `Claim`/`Record` what you establish, `Index` to build the reverse .mkv→disc lookup |
-| `build-retire-list.ps1` | read-only; turns manifest `supersedes` entries into `_nas-retire.txt` once each replacement is byte-verified on the NAS. Lists only — **removal stays the user's** |
+| `build-retire-list.ps1` | read-only; turns manifest `supersedes` entries into `_nas-retire.txt` once each replacement is byte-verified on the NAS. Lists only — **removal stays the user's**. Run automatically by `_publish-loop.ps1` after every pass that publishes something — never hand-run this in normal operation |
 | `assert-staged-complete.ps1` | **run BEFORE enumerating** — throws if the staging folder is still growing or short against source |
 | `scan-disc.ps1` | enumerate and classify DVD titles across a set of discs |
 | `prove-dvd-mapping.py` | prove tNN→dvdvideoTitle from TT_SRPT + VTS byte sizes, *without* duration |

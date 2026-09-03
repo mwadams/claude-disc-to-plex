@@ -18,9 +18,21 @@
   SO ELIGIBILITY REQUIRES POSITIVE EVIDENCE FROM THE DISC:
     * the disc-identity register has an output for this NAS file, AND
     * every source title behind it recorded subStreams = 0 at enumeration, AND
-    * the NAS file itself has no subtitle stream and no .srt sidecar.
+    * the NAS file itself has no subtitle stream and no .srt sidecar, AND
+    * the NAS file itself actually HAS an audio stream to transcribe.
   A work that has not been swept yet is simply not eligible. The queue therefore grows as the
   drives are worked through, which is the intended pace - it is not a backlog to be filled in.
+
+  A VIDEO-ONLY FILE IS NOT "NOT YET ELIGIBLE" - IT IS PERMANENTLY DONE.
+  A stills gallery, mute footage, or a promo reel has no dialogue track for whisper to decode,
+  so enqueuing it produces a 'failed' result on every single pass forever: the ffmpeg audio
+  extraction step has nothing to extract, and the loop cannot tell that failure apart from a
+  transient one. Two known instances - `Survivors - S00E08 - Publicity Stills.mkv` and
+  `The Champions S00E09.mkv` (aka "... - Merchandise Memorabilia Gallery.mkv") - sat in the
+  failed queue this way (2026-09-02). This script therefore probes every candidate file for an
+  audio stream BEFORE it is ever written to the queue; a file with none is written instead to
+  `$NotApplicable` with its reason, so the disposition is visible and countable without
+  polluting the transcribe loop's failure signal.
 
   TWO SOURCES OF THE DISC-TO-FILE LINK, and both are legitimate:
 
@@ -36,16 +48,23 @@
   subtitle-free disc somewhere. Danger Man's episodes were on the NAS long before this drive
   was swept; nothing says they came from these discs. The link must be to the FILE.
 
-  Read-only. Writes D:\video\_transcribe-queue.csv
+  Read-only. Writes D:\video\_transcribe-queue.csv and D:\video\_transcribe-not-applicable.csv
 #>
 param(
   [string]$Store = ([IO.Path]::Combine('\\NASTEAMV', 'Multimedia', '_disc-identity')),
   [string]$Out   = 'D:\video\_transcribe-queue.csv',
+  # Terminal, non-failure dispositions: files that can never be transcribed because they carry
+  # no audio stream at all (stills galleries, mute footage, promo reels). See Test-HasAudioStream
+  # below - this is the "distinct from failed" record the transcribe loop's failure count must
+  # not be polluted by. Countable and visible on purpose: silence here is how "we covered
+  # everything" gets claimed falsely.
+  [string]$NotApplicable = 'D:\video\_transcribe-not-applicable.csv',
   # An audit's transcribable set: JSON array of {work, rel, kind, disc, tid}. Produced when a
   # drive is analysed, for files judged "no re-rip needed" whose disc had zero subtitle streams.
   [string]$AuditSet = '',
   [int]$MinSeconds = 120,
-  # Required to replace a populated queue with a SMALLER one. See the guard before the write.
+  # Required to replace a populated queue (or not-applicable register) with a SMALLER one. See
+  # the guards before each write.
   [switch]$Force
 )
 $ErrorActionPreference = 'Continue'
@@ -54,14 +73,24 @@ $paths   = Get-Content 'D:\video\.transcode-tools\tool-paths.json' -Raw | Conver
 $ffprobe = Join-Path (Split-Path $paths.ffmpeg) 'ffprobe.exe'
 if (-not (Test-Path -LiteralPath $Store)) { throw "identity register not found: $Store" }
 
+# A file with no audio stream at all can never be transcribed - whisper has nothing to decode.
+# That is not a transient failure, it is a correct terminal outcome, and it must never reach the
+# transcribe queue: enqueuing it means the loop burns a 'failed' result on every pass forever,
+# because the work is permanently impossible, not permanently unlucky.
+function Test-HasAudioStream([string]$Path) {
+  $codecs = & $ffprobe -v error -select_streams a -show_entries stream=codec_name -of csv=p=0 -- $Path 2>$null
+  return @($codecs | Where-Object { $_ }).Count -gt 0
+}
+
 $records = @(Get-ChildItem -LiteralPath $Store -Filter *.json -File |
              Where-Object { $_.Name -ne '_index-by-output.json' })
 Write-Host "identity records: $($records.Count)"
 
-$rows = New-Object System.Collections.Generic.List[object]
+$rows   = New-Object System.Collections.Generic.List[object]
+$naRows = New-Object System.Collections.Generic.List[object]
 $stats = [ordered]@{
   outputs = 0; noRecordedOutput = 0; discHadSubs = 0; notPublished = 0
-  hasStream = 0; hasSidecar = 0; tooShort = 0; eligible = 0
+  hasStream = 0; hasSidecar = 0; tooShort = 0; noAudioStream = 0; eligible = 0
 }
 
 foreach ($rf in $records) {
@@ -93,6 +122,20 @@ foreach ($rf in $records) {
     $d = "$(& $ffprobe -v error -show_entries format=duration -of csv=p=0 -- $f.FullName 2>$null)".Trim()
     $sec = 0.0; [double]::TryParse($d, [ref]$sec) | Out-Null
     if ($sec -lt $MinSeconds) { $stats.tooShort++; continue }
+
+    if (-not (Test-HasAudioStream $f.FullName)) {
+      $stats.noAudioStream++
+      $naRows.Add([pscustomobject]@{
+        Kind = $rec.kind; Work = $o.work; Path = $f.FullName
+        Season = $o.season; Episode = $o.episode
+        Minutes = [math]::Round($sec / 60, 1)
+        DiscId = $rec.discId; DiscFolder = $rec.discFolder
+        Reason = 'no audio stream (video-only artefact) - cannot be transcribed'
+        Evidence = "disc titles $($srcTitles -join '+') enumerated with 0 subtitle streams"
+        When = (Get-Date -Format s)
+      })
+      continue
+    }
 
     $stats.eligible++
     $rows.Add([pscustomobject]@{
@@ -135,6 +178,20 @@ if ($AuditSet) {
     $sec = 0.0; [double]::TryParse($d, [ref]$sec) | Out-Null
     if ($sec -lt $MinSeconds) { $stats.tooShort++; continue }
 
+    if (-not (Test-HasAudioStream $f.FullName)) {
+      $stats.noAudioStream++
+      $naRows.Add([pscustomobject]@{
+        Kind = $a.kind; Work = $a.work; Path = $f.FullName
+        Season = ''; Episode = ''
+        Minutes = [math]::Round($sec / 60, 1)
+        DiscId = ''; DiscFolder = $a.disc
+        Reason = 'no audio stream (video-only artefact) - cannot be transcribed'
+        Evidence = "audit: no re-rip needed; disc '$($a.disc)' title t$($a.tid) has 0 subtitle streams"
+        When = (Get-Date -Format s)
+      })
+      continue
+    }
+
     $stats.eligible++; $added++
     $rows.Add([pscustomobject]@{
       Kind = $a.kind; Work = $a.work; Path = $f.FullName
@@ -172,6 +229,23 @@ if ($existing -gt 0 -and $rows.Count -lt $existing -and -not $Force) {
   exit 2
 }
 $rows | Sort-Object Work, Season, Episode | Export-Csv -LiteralPath $Out -NoTypeInformation -Encoding UTF8
+
+# Same anti-shrink protection as the queue above, and for the same reason: this run's source
+# scope (identity register alone, vs identity register + an -AuditSet) decides how much of the
+# not-applicable universe it can even see. A narrower run must not silently erase rows a wider
+# run already proved.
+$existingNA = 0
+if (Test-Path -LiteralPath $NotApplicable) {
+  $existingNA = @(Import-Csv -LiteralPath $NotApplicable -ErrorAction SilentlyContinue).Count
+}
+if ($existingNA -gt 0 -and $naRows.Count -lt $existingNA -and -not $Force) {
+  Write-Host ""
+  Write-Host "REFUSING to overwrite $NotApplicable - it holds $existingNA row(s) and this run produced $($naRows.Count)." -ForegroundColor Red
+  Write-Host "  Pass -Force if you really mean to replace it with the smaller set." -ForegroundColor Red
+} else {
+  $naRows | Sort-Object Work, Path | Export-Csv -LiteralPath $NotApplicable -NoTypeInformation -Encoding UTF8
+}
+
 Write-Host ''
 foreach ($k in $stats.Keys) { "  {0,-18} {1}" -f $k, $stats[$k] }
 Write-Host ''
@@ -179,4 +253,8 @@ Write-Host "QUEUED: $($rows.Count) -> $Out"
 if ($stats.discHadSubs) {
   Write-Host "NOTE: $($stats.discHadSubs) output(s) excluded because their disc DOES carry subtitles -" -ForegroundColor Yellow
   Write-Host "      those belong to the re-rip or OCR track, not here." -ForegroundColor Yellow
+}
+if ($stats.noAudioStream) {
+  Write-Host "NOT APPLICABLE: $($stats.noAudioStream) file(s) have no audio stream at all (video-only" -ForegroundColor Yellow
+  Write-Host "      artefacts) and can never be transcribed -> $NotApplicable" -ForegroundColor Yellow
 }
