@@ -23,7 +23,9 @@
 param(
   [string]$Stage     = 'D:/video/_stage',
   [string]$Catalogue = 'D:/video/_catalogue',
+  [string]$Queue     = 'D:/video/_queue',
   [string]$Analyzer  = 'D:/video/.claude/skills/disc-to-plex/scripts/analyze-tracks.py',
+  [string]$Lib       = 'D:/video/.claude/skills/disc-to-plex/scripts/lib-audio-evidence.ps1',
   [string]$ToolPaths = 'D:/video/.transcode-tools/tool-paths.json',
   [switch]$Once      # one pass then exit - for tests; production runs without it
 )
@@ -41,12 +43,144 @@ $toolCfg = Get-Content $ToolPaths -Raw | ConvertFrom-Json
 $ffprobe = Join-Path (Split-Path $toolCfg.ffmpeg) 'ffprobe.exe'
 if (-not (Test-Path -LiteralPath $ffprobe)) { throw "ffprobe not found at $ffprobe - refusing to run without the still-being-written check" }
 
+# The evidence-path rule and the "could this source ever be measured?" rule, shared with
+# assert-tracks-analysed.ps1. Two copies of these would drift, and the gate would then wait for a
+# file this loop had decided to write somewhere else.
+. $Lib
+if (-not (Get-Command Get-ManifestAudioWork -ErrorAction SilentlyContinue)) {
+  throw "$Lib did not load - refusing to run without the queued-manifest arm"   # dot-source failures do not throw
+}
+
 function Say($msg) { Write-Output ("[{0}] {1}" -f (Get-Date -Format 'HH:mm:ss'), $msg) }
 
-Say "analyse loop: watching $Stage rip folders (*-x, *-main, *-mkv)"
+# A `.HOLD` on a staged unit parks it deliberately. Arms 1 and 2 test the folder they iterate;
+# the queued-manifest arm starts from a FILE deep inside one, so walk up to the direct child of
+# $Stage and test that. (Fight Club Disk 2 carried a load-bearing .HOLD on 2026-09-04 while
+# another agent worked in it.)
+function Test-StageHold([string]$Path, [string]$StageRoot) {
+  try {
+    $full  = [IO.Path]::GetFullPath($Path)
+    $root  = [IO.Path]::GetFullPath($StageRoot).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+    if (-not $full.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    $rest  = $full.Substring($root.Length)
+    $first = $rest.Split([char[]]@('\', '/'), 2)[0]
+    if (-not $first) { return $false }
+    return (Test-Path -LiteralPath (Join-Path (Join-Path $StageRoot $first) '.HOLD'))
+  } catch { return $false }
+}
+
+# Reported ONCE per source, not once per pass: an unanalysable source is a standing condition and
+# a 120 s heartbeat of the same line is how a log stops being read.
+$saidUnanalysable = New-Object System.Collections.Generic.HashSet[string]
+
+Say "analyse loop: watching $Stage rip folders (*-x, *-main, *-mkv, *-rip), staged DVDs, and $Queue manifests"
 
 while ($true) {
   $did = $false
+
+  # ---- SOURCES A QUEUED MANIFEST NAMES. First, because these are BLOCKING A GPU LANE. ---------
+  #
+  # The two arms below find work by CONVENTION: a folder whose name ends -x/-main/-mkv/-rip, or a
+  # folder containing VIDEO_TS. Both miss whole classes of source, and the misses are silent.
+  #
+  #   * A RAW BLU-RAY STREAM is never in a rip folder. `bladerunner-d1.json` reads
+  #     `_stage/Bladerunner Disk 1/BDMV/STREAM/00047.m2ts` directly - deliberately, because ripping
+  #     that feature costs 23 GB on a volume already near its floor - so nothing here would ever
+  #     have written its evidence. It deferred at the queue from 02:41 on 2026-09-04 and would have
+  #     expired into failed\ four hours later having burned no CPU and learned nothing.
+  #   * The suffix list is described in the note below as "A LIABILITY, NOT A CONVENTION", and it
+  #     is: 70 already-shipped manifest items read `.mkv` files out of `dh2-extras`, `fyeo-extras`,
+  #     `goldfinger-rest`, `ser-feat` and friends, none of which it matches. Every one needed a
+  #     hand-run of analyze-tracks.py.
+  #
+  # A QUEUED MANIFEST NEEDS NO CONVENTION - it states exactly which sources are about to be
+  # encoded, and assert-tracks-analysed.ps1 is about to demand evidence for precisely those. So
+  # take the work list from the manifest itself (Get-ManifestAudioWork, shared with the gate so the
+  # two cannot disagree about where the evidence goes). Bounded by construction: only manifests in
+  # the queue, only items making an audio claim, only evidence that is missing or stale.
+  #
+  # `_gate-queue.ps1` is the only sanctioned route into `_queue` and it admits a manifest only once
+  # its staging is byte-verified, so a queued source is a COMPLETE source. The still-being-written
+  # triad is kept anyway - it costs 1.5 s on work we are about to spend whisper-minutes on.
+  foreach ($mf in @(
+      @(Get-ChildItem -LiteralPath $Queue -File -Filter '*.json' -ErrorAction SilentlyContinue) +
+      @(Get-ChildItem -LiteralPath (Join-Path $Queue 'pending') -File -Filter '*.json' -ErrorAction SilentlyContinue)
+    )) {
+    foreach ($w in @(Get-ManifestAudioWork -Manifest $mf.FullName)) {
+      if (-not $w.Analysable) {
+        # NOT this loop's problem to solve, but it IS its problem to say out loud. The gate now
+        # refuses these by name rather than deferring for ever, so this is corroboration.
+        $key = "$($mf.Name)|$($w.Src)"
+        if ($saidUnanalysable.Add($key)) {
+          Say "$($mf.Name): CANNOT ANALYSE '$($w.Src)' - $($w.Reason). No evidence will appear; assert-tracks-analysed.ps1 refuses this rather than waiting."
+        }
+        continue
+      }
+      if (Test-StageHold -Path $w.Src -StageRoot $Stage) { continue }
+
+      # A LONE `audioTracks: [0]` ON A ONE-STREAM SOURCE NEEDS NO EVIDENCE, and the gate exempts
+      # it. Blade Runner's Ridley Scott introduction is that shape; a disc of 37 short extras is
+      # 37 of them, and each would cost two whisper minutes to produce a file nothing reads.
+      if (Test-AudioClaimTrivial -Ffprobe $ffprobe -Row $w) {
+        $key = "trivial|$($w.Src)"
+        if ($saidUnanalysable.Add($key)) {
+          Say "$(Split-Path $w.Src -Leaf): single audio stream claimed as [0] - the gate exempts this, not analysing it"
+        }
+        continue
+      }
+
+      $isFile = Test-Path -LiteralPath $w.Src -PathType Leaf
+      if ($isFile) {
+        $d = "$(& $ffprobe -v error -show_entries format=duration -of csv=p=0 $w.Src 2>$null)".Trim()
+        if (-not $d -or $d -eq 'N/A') { continue }
+        $len1 = (Get-Item -LiteralPath $w.Src).Length
+        Start-Sleep -Milliseconds 1500
+        $len2 = (Get-Item -LiteralPath $w.Src -ErrorAction SilentlyContinue).Length
+        if ($null -eq $len2 -or $len1 -ne $len2) { continue }
+        $leaf = Split-Path $w.Src -Leaf
+        $writer = @(Get-CimInstance Win32_Process -Filter "Name='ffmpeg.exe' OR Name='makemkvcon64.exe'" -ErrorAction SilentlyContinue |
+                    Where-Object { $_.CommandLine -and $_.CommandLine.Contains($leaf) })
+        if ($writer.Count -gt 0) { continue }
+      }
+
+      # THE SAME LOCK NAMES THE OTHER TWO ARMS USE, so a source reachable both ways (a rip .mkv
+      # that a manifest also names) can never be analysed twice at once. A losing writer's json is
+      # silent corruption of the evidence a gate trusts.
+      $lockKey = if ($isFile) { $w.Src } else { "$(Split-Path $w.Src -Leaf)-title$($w.Title)" }
+      $handRun = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+                   Where-Object { $_.CommandLine -and $_.CommandLine -match 'analyze-tracks' -and
+                                  $_.CommandLine.Contains((Split-Path $w.Src -Leaf)) })
+      if ($handRun.Count -gt 0) {
+        Say "$(Split-Path $w.Src -Leaf): already being analysed by pid $($handRun[0].ProcessId) - leaving it alone"
+        continue
+      }
+      $qMutex = New-Object System.Threading.Mutex($false, ('Global\analyse-' + ($lockKey -replace '[^\w\-\.]', '_')))
+      $qOwned = $false
+      try { $qOwned = $qMutex.WaitOne(0) }
+      catch [System.Threading.AbandonedMutexException] { $qOwned = $true }
+      if (-not $qOwned) { $qMutex.Dispose(); continue }
+
+      try {
+        Say "ANALYSE (queued by $($mf.Name)): $($w.AnalyzerArgs -join ' ')"
+        $out = & python $Analyzer @($w.AnalyzerArgs) 2>&1
+        $code = $LASTEXITCODE
+        # THE ARTIFACT IS THE VERDICT, not the exit code alone - the analyzer writes its json as
+        # its final act, so a failed run leaves nothing and can never read as done.
+        if ($code -eq 0 -and (Test-Path -LiteralPath $w.Evidence)) {
+          Say ("  evidence written -> {0}" -f $w.Evidence)
+          @($out | Where-Object { "$_" -match '^\s*!!' }) | Select-Object -First 6 | ForEach-Object { Say ("    " + $_) }
+        } else {
+          Say ("  ANALYSIS FAILED for {0} (exit {1}) - NO evidence recorded; will retry next pass. Output tail:" -f (Split-Path $w.Src -Leaf), $code)
+          @($out | Where-Object { "$_" -match '\S' }) | Select-Object -Last 4 | ForEach-Object { Say ("    " + $_) }
+        }
+      } finally {
+        $qMutex.ReleaseMutex()
+        $qMutex.Dispose()
+      }
+      $did = $true
+    }
+  }
+
   # Rip folders ONLY - they hold MakeMKV output awaiting analysis. Disc folders (BDMV/VIDEO_TS)
   # are upstream of ripping and carry nothing to analyse.
   #

@@ -19,6 +19,16 @@ param(
 $ErrorActionPreference = 'Stop'
 $paths = Get-Content 'D:/video/.transcode-tools/tool-paths.json' -Raw | ConvertFrom-Json
 $ffprobe = Join-Path (Split-Path $paths.ffmpeg) 'ffprobe.exe'
+# Shared with _analyse-loop.ps1: the evidence path rule, the stream count, and - the point of the
+# whole file - whether an absent analysis is a WAIT or a permanent, nameable dead end.
+. "$PSScriptRoot/lib-audio-evidence.ps1"
+if (-not (Get-Command Test-AudioSourceAnalysable -ErrorAction SilentlyContinue)) {
+  # A dot-source failure is NON-terminating, and a guard that loads half of itself passes
+  # everything. assert-tracks-analysed.ps1's own sibling script was corrupted this way once and
+  # "the guard it implements never ran". Fail closed and say so.
+  Write-Warning 'lib-audio-evidence.ps1 did not load - refusing rather than gating with half a guard'
+  exit 2
+}
 
 $items = Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json
 if ($items -isnot [array]) { $items = @($items) }
@@ -124,17 +134,22 @@ foreach ($it in $items) {
       # and the next omission will be one that mattered.
       #
       # transcode.ps1 reads these with `-f dvdvideo -title N`; probe them the same way.
-      $probeArgs = @('-v','error','-select_streams','a','-show_entries','stream=index','-of','csv=p=0')
+      #
+      # AND COUNT THE STREAMS FROM JSON, NOT FROM CSV LINES. A raw Blu-ray stream is an MPEG-TS,
+      # and ffprobe prints every stream of a TS TWICE in csv mode - once under `programs`, once
+      # under `streams`, with a blank line between. Blade Runner's `00004.m2ts` (the Ridley Scott
+      # introduction, exactly ONE audio stream, claimed `audioTracks: [0]`) counted as THREE, so
+      # the single-stream exemption below could not fire for any Blu-ray extra and the item was
+      # sent away to wait for evidence it never needed. Get-AudioStreamCount reads the json.
       if (Test-Path -LiteralPath "$($it.src)" -PathType Container) {
         if ($null -eq $it.title) {
           $problems += "$(Split-Path $out -Leaf): DVD src is a folder but no 'title' is set - required for kind DVD"
           continue
         }
-        $probeArgs += @('-f','dvdvideo','-title',"$($it.title)")
       }
-      $probeArgs += @('-i',"$($it.src)")
-      $n = @(& $ffprobe @probeArgs 2>$null).Count
-      $probeRan = ($LASTEXITCODE -eq 0)
+      $probe = Get-AudioStreamCount -Ffprobe $ffprobe -Src "$($it.src)" -Title $it.title
+      $n = [int]$probe.Count
+      $probeRan = [bool]$probe.Probed
       if ($claimed.Count -eq 1 -and $n -eq 1) {
         $trivial = $true
       } elseif ($claimed.Count -eq 0) {
@@ -174,7 +189,31 @@ foreach ($it in $items) {
     }
   }
   if (-not (Test-Path -LiteralPath $ev)) {
-    $absent += "$(Split-Path $out -Leaf): NO EVIDENCE yet for $($it.src) (_analyse-loop.ps1 writes it)"
+    # A WAIT THAT CAN NEVER END IS NOT PATIENCE - IT IS A DEADLOCK WEARING PATIENCE'S CLOTHES.
+    #
+    # Exit 4 tells lane-runner "the analyse track has not caught up yet", and lane-runner returns
+    # the manifest to the queue. When nothing on the machine can EVER write this file, that loop
+    # runs until MaxDeferHours expires and the manifest lands in failed\ with the reason
+    # "evidence still absent after 4.0 h" - which names the symptom and not one word of the cause.
+    # `bladerunner-d1.json` spent the small hours of 2026-09-04 doing exactly that.
+    #
+    # So ask whether the source is analysable AT ALL before choosing patience. The four permanent
+    # cases (no src, src not on disk, a folder that is not a DVD, a concat list) are decided from
+    # the path alone - no probe, because this gate re-runs every ~20 s while a manifest defers.
+    # Anything that exists and could be opened still gets the old patient treatment, so a source
+    # that is merely slow, contended or briefly locked is never refused on a guess.
+    #
+    # This is the same lesson the `audioTracks: []` and DVD-folder branches above already record,
+    # generalised: a gate only satisfiable by a file no process will ever write must SAY SO.
+    $route = Test-AudioSourceAnalysable -Src "$($it.src)" -Title $it.title
+    if (-not $route.Analysable) {
+      $problems += "$(Split-Path $out -Leaf): NO EVIDENCE and NONE IS POSSIBLE for '$($it.src)' - " +
+                   "$($route.Reason). Waiting for '$(Split-Path $ev -Leaf)' would defer this " +
+                   "manifest until its grace period expired and tell you nothing"
+      continue
+    }
+    $absent += "$(Split-Path $out -Leaf): NO EVIDENCE yet for $($it.src) (_analyse-loop.ps1 writes " +
+               "it - its queued-manifest arm measures whatever a manifest in _queue names)"
     continue
   }
 

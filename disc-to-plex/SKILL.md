@@ -160,6 +160,23 @@ python scripts/dvd-still-cells.py --menu "<VIDEO_TS>" <vts> --list        # find
 python scripts/dvd-still-cells.py --menu "<VIDEO_TS>" <vts> <out> 12,...,31
 ```
 
+🔴 **THE TITLE DOMAIN AUTHORS A STILL SET IN THE OPPOSITE SHAPE, AND ITS CELLS LIE ABOUT ASPECT.**
+A menu still set is one cell per PGC; a title-domain still set is ONE PGC whose N **cells** are the
+N pages (Fight Club Disk 2, 2026-09-04: 21 sets of 8–99 cells, 746 pages). Carve it without
+`--menu`, build it with `build-still-slideshow.py --title-set` — `--pgcs` refuses a multi-cell PGC
+dir precisely because taking only `cell001.vob` would ship ONE page of a 99-page gallery at the
+right geometry. Two further traps, both measured on that disc:
+
+* **Terminator shape.** These sets end in a BLACK cell after a picture page (10,240-byte VOB, one
+  packet, a real 720×576 decode), not in a repeat of the previous page. `--drop-terminator` accepts
+  either shape and refuses everything else, **per title set** — a combined gallery split across
+  three title sets has three terminators, not one.
+* **Aspect.** A player takes a title's aspect from the IFO's VTS video attribute and never from the
+  elementary stream, so a 16:9 title can carry `4:3` in every cell's MPEG sequence header and
+  nothing on the disc notices. `ffprobe -f dvdvideo` reads the IFO and gets it right; a raw sector
+  carve cannot. **Check the video attribute (`0x5d00` = 16:9, `0x5300` = 4:3) and pass `--dar`** —
+  built from the cells, a US Letter storyboard sheet came out 0.572 wide-to-tall instead of 0.773.
+
 Two properties make the extraction provable rather than plausible, and both should be stated:
 **the menu PGC cells tile `VTS_xx_0.VOB` contiguously**, so a full tiling with no gap means no
 unaccounted sector can hold another still; and such a set is **self-delimiting in the pixels** —
@@ -495,6 +512,7 @@ Core pipeline, in the order you use them:
 | `assert-staged-complete.ps1` | **run BEFORE enumerating** — throws if the staging folder is still growing or short against source |
 | `scan-disc.ps1` | enumerate and classify DVD titles across a set of discs |
 | `dvd-still-cells.py` | carve a DVD still-set's cells straight out of the VOBs by sector arithmetic — the only way to reach a gallery/infopod no demuxer will emit. `--menu` reads the MENU domain (`VTSM_PGCI_UT`, sectors against `VTS_xx_0.VOB`) for a gallery that is not a title at all |
+| `build-still-slideshow.py` | assemble carved still cells into ONE video-only library item (the `naming.md` gallery rule). **No manifest can do this on a DVD** — `transcode.ps1`'s DVD branch returns before the `.txt` concat branch, and `stillsHold` adds `-trim false`, which opens a padding-cell title and emits ONE packet. `--pgcs` for the MENU shape (one cell per PGC), `--title-set` for the TITLE shape (one PGC of N cells); `--drop-terminator` removes a final page that repeats its predecessor **or** is uniform black, per chain, and refuses anything else; `--dar` overrides the aspect the cells declare. `--dwell` has no default on purpose — measure the library's existing galleries |
 | `dvd-angle-cells.py` | read ONE ANGLE of a multi-angle (ILVU-interleaved) title by walking each VOBU's NAV `vobu_vob_idn`/`vobu_c_idn`. `-f dvdvideo` has no angle selector and silently returns angle 1. An angle block is **not** a contiguous sector range, so it cannot be a `vobSectors` item: retime its output and ship it as `kind: "MKV"` with the retimed `.vob` as `src` |
 | `retime-vob-cells.py` | rewrite a multi-cell carve's per-cell SCR/PTS/DTS resets into one continuous timeline. Run automatically by `transcode.ps1` for `vobSectors`; run it **by hand** over a `dvd-angle-cells.py` carve before pointing `src` at it (`transcode.ps1` now refuses a `.vob` source that still reports more than one cell). Reads the frame duration from the MPEG-2 sequence header and allots each cell an **exact coded-picture count** — never the modal DTS interval, which is the VOBU signalling period and is per-disc |
 | `apply-proof.py` | rewrite a catalogue onto that proven mapping, **moving each evidence bundle with it** |
