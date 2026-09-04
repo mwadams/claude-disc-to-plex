@@ -144,15 +144,43 @@ if ("$Because".Trim().Length -lt 30) {
   exit 2
 }
 
-# ---- 3. the dispositions must carry the verdict marker ------------------------------------------
+# ---- 3. the ANALYSIS must carry the verdict - in the dispositions, or in a hash-pinned sidecar ----
+# Same rule and same sidecar as close-ships-nothing.ps1 (see its check 3): the dispositions may be
+# written before the item shipped by its other route (Quatermass Disks 1-2, 2026-09-04: the
+# dispositions proposed the production notes; they were built and published hours later), and a
+# closed, hashed dispositions file is never edited after the fact. The manifest agent that judged
+# them writes <disc>.closure-verdict.txt with the verdict line and the dispositionsSha256 it judged;
+# a sidecar whose hash no longer matches the file is STALE and refused.
 $dispRaw = Get-Content -LiteralPath $dispPath -Raw
+$dispSha = (Get-FileHash -LiteralPath $dispPath -Algorithm SHA256).Hash
 $verdictRx = '(?im)^.*SHIPPED\s+VIA\s+NON-MANIFEST\s+ROUTE.*$'
 $verdictLines = @([regex]::Matches($dispRaw, $verdictRx) | ForEach-Object { $_.Value.Trim() })
+$verdictSource = 'dispositions'
+$sidecarPath = Join-Path $CatalogueDir "$discName.closure-verdict.txt"
+if ($verdictLines.Count -eq 0 -and (Test-Path -LiteralPath $sidecarPath)) {
+  $scRaw = Get-Content -LiteralPath $sidecarPath -Raw
+  $scLines = @([regex]::Matches($scRaw, $verdictRx) | ForEach-Object { $_.Value.Trim() })
+  $scShaM = [regex]::Match($scRaw, '(?im)^\s*dispositionsSha256:\s*([0-9A-Fa-f]{64})\s*$')
+  $scSha = if ($scShaM.Success) { $scShaM.Groups[1].Value.ToUpperInvariant() } else { '' }
+  if ($scLines.Count -eq 0) {
+    Write-Output "REFUSE  $discName - a closure-verdict sidecar exists but does not state SHIPPED VIA NON-MANIFEST ROUTE: $sidecarPath"
+    Write-Output '(If it states NOTHING IS WORTH SHIPPING, the disc closes through close-ships-nothing.ps1 instead.)'
+    exit 2
+  }
+  if ($scSha -ne $dispSha.ToUpperInvariant()) {
+    Write-Output "REFUSE  $discName - the closure-verdict sidecar is STALE: it judged dispositions $(if ($scSha) { $scSha.Substring(0, 12) } else { '<no dispositionsSha256 line>' }) but the file is now $($dispSha.Substring(0, 12))."
+    Write-Output 'Re-read the dispositions and write the verdict again against the current file, or delete the sidecar.'
+    exit 2
+  }
+  $verdictLines = $scLines
+  $verdictSource = "closure-verdict sidecar ($sidecarPath)"
+}
 if ($verdictLines.Count -eq 0) {
   Write-Output "REFUSE  $discName - the dispositions never state the verdict."
   Write-Output 'The analysis that examined the disc must write "SHIPPED VIA NON-MANIFEST ROUTE"'
-  Write-Output '(with its reasoning) into the dispositions file. This script records that finding;'
-  Write-Output 'it does not substitute for it.'
+  Write-Output '(with its reasoning) into the dispositions file, or the manifest agent that judged'
+  Write-Output "them must write it into $discName.closure-verdict.txt beside them with the"
+  Write-Output 'dispositionsSha256 it judged. This script records that finding; it does not substitute for it.'
   exit 2
 }
 
@@ -263,7 +291,6 @@ if ($PlexShow -and $PlexEpisodeTitle) {
 }
 
 # ---- existing record: idempotent when nothing changed, refuse-by-default when it has -------------
-$dispSha = (Get-FileHash -LiteralPath $dispPath -Algorithm SHA256).Hash
 if ((Test-Path -LiteralPath $recPath) -and -not $Force) {
   $old = $null
   try { $old = Get-Content -LiteralPath $recPath -Raw | ConvertFrom-Json } catch { }
@@ -302,6 +329,7 @@ $record = [ordered]@{
   route               = $Route
   because             = "$Because".Trim()
   verdictLines        = $verdictLines
+  verdictSource       = $verdictSource
   nasPath             = $NasPath
   nasBytes            = $nasBytes
   nasSha256           = $nasSha

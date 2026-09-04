@@ -17,11 +17,13 @@
 
 .WHAT IT REFUSES - each is a real way a disc could be wrongly closed
   1. No dispositions file            -> nobody has looked; closure would be a default.
-  2. The dispositions never reach the verdict. The file must itself contain the line
-     "NOTHING IS WORTH SHIPPING" (case-insensitive; "NOTHING WORTH SHIPPING" also accepted):
-     the verdict belongs to the analysis that examined the disc, written where the per-title
-     evidence lives - not to whoever happens to invoke this script. A -Because argument alone
-     is an operator's say-so; the dispositions carrying the verdict is the analyst's finding.
+  2. The analysis never reaches the verdict. The dispositions file must itself contain the line
+     "NOTHING IS WORTH SHIPPING" (case-insensitive; "NOTHING WORTH SHIPPING" also accepted) - or,
+     since 2026-09-04, the sidecar <disc>.closure-verdict.txt beside it must, pinned by the
+     dispositions' SHA256 (see check 3 below for why and when). The verdict belongs to the
+     analysis that examined the disc, written where the per-title evidence lives - not to
+     whoever happens to invoke this script. A -Because argument alone is an operator's say-so;
+     the analysis carrying the verdict is the analyst's finding.
   3. A .authoring / .dispositioning marker is live in _pending -> an agent is mid-work on this
      disc; closing it now races that work.
   4. ANY manifest (in _manifests, _pending, _queue, running/, done/, failed/) references the
@@ -88,15 +90,46 @@ if ("$Because".Trim().Length -lt 30) {
   exit 2
 }
 
-# ---- 3. the dispositions must themselves carry the verdict -----------------------------------
+# ---- 3. the ANALYSIS must carry the verdict - in the dispositions, or in a hash-pinned sidecar ----
+#
+# The verdict belongs to the analysis that examined the disc, never to whoever invokes this script.
+# Two places qualify. (a) The dispositions file itself. (b) SINCE 2026-09-04: a closure-verdict
+# sidecar, <CatalogueDir>/<disc>.closure-verdict.txt, written by the MANIFEST agent that read the
+# dispositions - for files written before this phrase existed, which say "already published, no
+# subtitle/quality gain, supersedes none" in prose only (Magnolia Disk 1, Tinker Tailor Disks 1-2)
+# and must not be edited after the fact (each is hashed by the track and by these records). The
+# sidecar is only accepted when its `dispositionsSha256:` line equals the hash of the dispositions
+# as they are NOW - a verdict cannot outlive the evidence it was judged from.
 $dispRaw = Get-Content -LiteralPath $dispPath -Raw
+$dispSha = (Get-FileHash -LiteralPath $dispPath -Algorithm SHA256).Hash
 $verdictRx = '(?im)^.*NOTHING\s+(IS\s+)?WORTH\s+SHIPPING.*$'
 $verdictLines = @([regex]::Matches($dispRaw, $verdictRx) | ForEach-Object { $_.Value.Trim() })
+$verdictSource = 'dispositions'
+$sidecarPath = Join-Path $CatalogueDir "$discName.closure-verdict.txt"
+if ($verdictLines.Count -eq 0 -and (Test-Path -LiteralPath $sidecarPath)) {
+  $scRaw = Get-Content -LiteralPath $sidecarPath -Raw
+  $scLines = @([regex]::Matches($scRaw, $verdictRx) | ForEach-Object { $_.Value.Trim() })
+  $scShaM = [regex]::Match($scRaw, '(?im)^\s*dispositionsSha256:\s*([0-9A-Fa-f]{64})\s*$')
+  $scSha = if ($scShaM.Success) { $scShaM.Groups[1].Value.ToUpperInvariant() } else { '' }
+  if ($scLines.Count -eq 0) {
+    Write-Output "REFUSE  $discName - a closure-verdict sidecar exists but does not state NOTHING IS WORTH SHIPPING: $sidecarPath"
+    Write-Output '(If it states SHIPPED VIA NON-MANIFEST ROUTE, the disc closes through close-shipped-outside-manifest.ps1 instead.)'
+    exit 2
+  }
+  if ($scSha -ne $dispSha.ToUpperInvariant()) {
+    Write-Output "REFUSE  $discName - the closure-verdict sidecar is STALE: it judged dispositions $(if ($scSha) { $scSha.Substring(0, 12) } else { '<no dispositionsSha256 line>' }) but the file is now $($dispSha.Substring(0, 12))."
+    Write-Output 'Re-read the dispositions and write the verdict again against the current file, or delete the sidecar.'
+    exit 2
+  }
+  $verdictLines = $scLines
+  $verdictSource = "closure-verdict sidecar ($sidecarPath)"
+}
 if ($verdictLines.Count -eq 0) {
   Write-Output "REFUSE  $discName - the dispositions never state the verdict."
   Write-Output 'The analysis that examined the disc must write "NOTHING IS WORTH SHIPPING" (with its'
-  Write-Output 'reasoning) into the dispositions file. This script records that finding; it does not'
-  Write-Output 'substitute for it.'
+  Write-Output 'reasoning) into the dispositions file, or the manifest agent that judged the'
+  Write-Output "dispositions must write it into $discName.closure-verdict.txt beside them with the"
+  Write-Output 'dispositionsSha256 it judged. This script records that finding; it does not substitute for it.'
   exit 2
 }
 
@@ -152,7 +185,6 @@ if ($assertExit -ne 0) {
 }
 
 # ---- existing record: idempotent when nothing changed, refuse-by-default when it has ---------
-$dispSha = (Get-FileHash -LiteralPath $dispPath -Algorithm SHA256).Hash
 if ((Test-Path -LiteralPath $recPath) -and -not $Force) {
   $old = $null
   try { $old = Get-Content -LiteralPath $recPath -Raw | ConvertFrom-Json } catch { }
@@ -187,6 +219,7 @@ $record = [ordered]@{
   closedAt            = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss')
   because             = "$Because".Trim()
   verdictLines        = $verdictLines
+  verdictSource       = $verdictSource
   dispositionsFile    = "$dispPath"
   dispositionsSha256  = $dispSha
   kindCounts          = $kindCounts
