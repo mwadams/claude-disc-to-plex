@@ -159,9 +159,146 @@ finally {
   Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+
+# =================================================================================================
+# Get-RipRecreationRisk
+#
+# This one REPORTS rather than deletes, so the asymmetry runs the other way from Get-UnitStageTargets:
+# the dangerous answer is a FALSE NEGATIVE - "no, releasing this alone is fine" for a directory the
+# rip loop will re-create within 90 s, off staging that is still present. That is the reading that
+# put 30.2 GB of "recoverable" space on the board on 2026-09-04 when the true figure was 0.
+#
+# So every stop condition _rip-loop.ps1 actually has gets its own negative test, and the one case
+# where the answer is genuinely unknown (no unit resolvable) is asserted on its REASON TEXT, so a
+# later refactor cannot quietly turn "unknown" into a clearance while still returning $false.
+# =================================================================================================
+if (-not (Get-Command Get-RipRecreationRisk -ErrorAction SilentlyContinue)) {
+  Write-Output 'FAIL: Get-RipRecreationRisk did not load'
+  exit 1
+}
+
+$stage2 = Join-Path ([IO.Path]::GetTempPath()) ('lib-disk-rip-' + [guid]::NewGuid().ToString('N'))
+$cat2   = Join-Path $stage2 '_catalogue'
+$done2  = Join-Path $stage2 '_completed.txt'
+New-Item -ItemType Directory -Path $stage2 | Out-Null
+New-Item -ItemType Directory -Path $cat2 | Out-Null
+Set-Content -LiteralPath $done2 -Value @('# confirmed in Plex')
+
+function Stage2Dir([string]$name) { New-Item -ItemType Directory -Path (Join-Path $stage2 $name) -Force | Out-Null }
+function Disp2([string]$unit, [string[]]$lines) {
+  Set-Content -LiteralPath (Join-Path $cat2 "$unit.dispositions.txt") -Value $lines
+}
+function Risk([string]$dir) { Get-RipRecreationRisk -Dir $dir -Stage $stage2 -Catalogue $cat2 -Completed $done2 }
+
+try {
+  Write-Output '15. POSITIVE: disc still staged, dispositions name keep-titles -> the rip loop WOULD re-create it'
+  Stage2Dir 'Some Film Disk 1'
+  Stage2Dir 'somefilmdisk1-rip'
+  Disp2 'Some Film Disk 1' @('t00|feature|The Film|frame:x', 't03|extra|An Intro|speech:y', 't09|exclude|copyright reel|boilerplate:z')
+  $r = Risk 'somefilmdisk1-rip'
+  Check 'unit'      $r.Unit          'Some Film Disk 1'
+  Check 'recreate'  $r.WouldRecreate 'True'
+  Check 'titles'    $r.Titles        2      # the exclude row is not a keep-title
+
+  Write-Output '16. NEGATIVE (the mirror case): raw staging already released -> nothing re-creates it'
+  #    The 13 stranded "Danger Man Series 1964-1968" -rip folders. This is the ONE shape where an
+  #    intermediate really can be released on its own, and it must not be lumped in with the rest.
+  Stage2Dir 'stranded-rip'
+  Set-Content -LiteralPath (Join-Path (Join-Path $stage2 'stranded-rip') '.unit') -Value @('Gone Disc 4') -Encoding UTF8
+  Disp2 'Gone Disc 4' @('t00|feature|Whatever|frame:x')
+  $r = Risk 'stranded-rip'
+  Check 'unit'     $r.Unit          'Gone Disc 4'
+  Check 'recreate' $r.WouldRecreate 'False'
+  Check 'reason'   ($r.Reason -match 'already released') 'True'
+
+  Write-Output '17. NEGATIVE: unit named in _completed.txt -> the rip loop skips the disc'
+  Stage2Dir 'Done Disk 2'
+  Stage2Dir 'donedisk2-rip'
+  Disp2 'Done Disk 2' @('t00|feature|Finished|frame:x')
+  Add-Content -LiteralPath $done2 -Value 'Done Disk 2'
+  $r = Risk 'donedisk2-rip'
+  Check 'recreate' $r.WouldRecreate 'False'
+  Check 'reason'   ($r.Reason -match '_completed\.txt') 'True'
+
+  Write-Output '18. NEGATIVE: .HOLD on the disc -> the rip loop skips it'
+  Stage2Dir 'Held Disk 1'
+  Stage2Dir 'helddisk1-rip'
+  Disp2 'Held Disk 1' @('t00|feature|Parked|frame:x')
+  Set-Content -LiteralPath (Join-Path (Join-Path $stage2 'Held Disk 1') '.HOLD') -Value 'awaiting a missing disc'
+  Check 'recreate' (Risk 'helddisk1-rip').WouldRecreate 'False'
+
+  Write-Output '19. NEGATIVE: no dispositions file -> the rip loop has nothing to act on'
+  Stage2Dir 'Raw Disk 1'
+  Stage2Dir 'rawdisk1-rip'
+  Check 'recreate' (Risk 'rawdisk1-rip').WouldRecreate 'False'
+
+  Write-Output '20. NEGATIVE: dispositions still carry an unresolved ? -> the rip loop skips'
+  Stage2Dir 'Unsure Disk 1'
+  Stage2Dir 'unsuredisk1-rip'
+  Disp2 'Unsure Disk 1' @('t00|feature|Known|frame:x', 't01|?|unidentified|')
+  Check 'recreate' (Risk 'unsuredisk1-rip').WouldRecreate 'False'
+
+  Write-Output '21. the DVD/BD keep vocabulary differs - `episode` is not ripped on a DVD'
+  #    _rip-loop.ps1: a DVD manifest reads the disc folder with a title number, so ripping an
+  #    episode first is pure waste. Read the disc's shape; never assume one.
+  Stage2Dir 'Show DVD Disk 1'
+  Stage2Dir 'Show DVD Disk 1/VIDEO_TS'
+  Stage2Dir 'showdvddisk1-rip'
+  Disp2 'Show DVD Disk 1' @('t01|episode|S01E01|frame:x', 't02|episode|S01E02|frame:y')
+  Check 'DVD episodes are not ripped' (Risk 'showdvddisk1-rip').WouldRecreate 'False'
+  Stage2Dir 'Show BD Disk 1'
+  Stage2Dir 'showbddisk1-rip'
+  Disp2 'Show BD Disk 1' @('t01|episode|S01E01|frame:x', 't02|episode|S01E02|frame:y')
+  $r = Risk 'showbddisk1-rip'
+  Check 'BD episodes ARE ripped' $r.WouldRecreate 'True'
+  Check 'BD title count'         $r.Titles        2
+
+  Write-Output '22. a title written off in rip-problems.txt is never retried, so it is not coming back'
+  Stage2Dir 'Problem Disk 1'
+  Stage2Dir 'problemdisk1-rip'
+  Disp2 'Problem Disk 1' @('t00|feature|Fine|frame:x', 't05|extra|Looping gallery|frame:y')
+  Set-Content -LiteralPath (Join-Path $cat2 'Problem Disk 1.rip-problems.txt') -Value @('t05|rip did not verify after 2 attempts')
+  $r = Risk 'problemdisk1-rip'
+  Check 'recreate' $r.WouldRecreate 'True'
+  Check 'titles'   $r.Titles        1
+  Set-Content -LiteralPath (Join-Path $cat2 'Problem Disk 1.rip-problems.txt') -Value @('t00|no', 't05|no')
+  $r = Risk 'problemdisk1-rip'
+  Check 'all titles written off -> nothing to re-rip' $r.WouldRecreate 'False'
+
+  Write-Output '23. POSITIVE: a marker-declared directory that follows NO slug convention resolves'
+  Stage2Dir 'DIE_MUMINS_9'
+  Stage2Dir 'mumins9-mkv'
+  Set-Content -LiteralPath (Join-Path (Join-Path $stage2 'mumins9-mkv') '.unit') -Value @('DIE_MUMINS_9', '# provenance') -Encoding UTF8
+  Disp2 'DIE_MUMINS_9' @('t00|feature|Moomins|frame:x')
+  $r = Risk 'mumins9-mkv'
+  Check 'unit'     $r.Unit          'DIE_MUMINS_9'
+  Check 'recreate' $r.WouldRecreate 'True'
+
+  Write-Output '24. NEGATIVE: a name outside the intermediate namespace is not evaluated at all'
+  $r = Risk 'Some Film Disk 1'
+  Check 'recreate' $r.WouldRecreate 'False'
+  Check 'reason'   $r.Reason        'not an intermediate directory name'
+
+  Write-Output '25. UNKNOWN must not read as a clearance when no unit can be resolved'
+  Stage2Dir 'orphaned-rip'
+  $r = Risk 'orphaned-rip'
+  Check 'recreate'      $r.WouldRecreate 'False'
+  Check 'reason says so' ($r.Reason -match 'UNKNOWN, not as safe') 'True'
+
+  $script:reachedEnd2 = $true
+}
+catch {
+  Write-Output "  FAIL exception in the Get-RipRecreationRisk tests: $($_.Exception.Message)"
+  $script:fails++
+}
+finally {
+  Remove-Item -LiteralPath $stage2 -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 Write-Output ''
 # "Every Check passed" is NOT the same as "every Check ran" - see the catch above.
-if (-not $reachedEnd) { Write-Output 'the suite did not reach its end - treating as FAILED'; $fails++ }
+if (-not $reachedEnd)  { Write-Output 'the suite did not reach its end - treating as FAILED'; $fails++ }
+if (-not $reachedEnd2) { Write-Output 'the Get-RipRecreationRisk section did not reach its end - treating as FAILED'; $fails++ }
 if ($fails) { Write-Output "$fails test(s) FAILED"; exit 1 }
 Write-Output 'all tests passed'
 exit 0

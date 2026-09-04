@@ -246,3 +246,136 @@ function Get-UnitStageTargets {
 
   return ,$targets
 }
+
+<#
+.SYNOPSIS
+  Would _rip-loop.ps1 immediately RE-CREATE this intermediate directory if it were released on its
+  own, leaving its raw disc staging in place?
+
+.WHY THIS EXISTS
+  `_stallwatch.ps1` reports an unreferenced `-rip` folder as "redundant rip - no manifest reads it;
+  release it with its disc". That sentence is true and its advice is correct, but on 2026-09-04 it
+  was read as three independently releasable directories worth 30.2 GB while the volume sat at
+  94 GB against a 120 GB floor - which is exactly the moment somebody reaches for the biggest
+  number on the board.
+
+  Releasing those three ALONE would have freed nothing. `_rip-loop.ps1`'s "have I already ripped
+  this title?" test is THE PRESENCE OF A `*_t<NN>.mkv` FILE IN THAT DIRECTORY, and its only
+  disc-level stop conditions are: the raw staging gone, a `.HOLD`, the unit in `_completed.txt`,
+  no dispositions, an unresolved `?`, or no feature/extra/episode rows. None of those hold for a
+  disc that is mid-flight - so within one 90 s pass the loop re-rips every keep-title it can no
+  longer see, off the same staging, contending with the live encodes for the same NVMe.
+
+  That is the whole reason "release it WITH its disc" is the right advice: releasing both together
+  removes the raw folder, and the raw folder's absence is the rip loop's own stop condition. The
+  advice was never wrong; the size column simply made the wrong reading available. So state the
+  consequence rather than leaving it to be inferred - the pipeline's own rule, that a rule which
+  can be a check should be a check.
+
+  The MIRROR case is real and must keep reading differently: once a unit's raw staging is already
+  released, a stranded intermediate (the 13 "Danger Man Series 1964-1968" `-rip` folders, ~15 GB)
+  CAN be released on its own by naming the unit in a reclaim artefact, and the rip loop will not
+  re-create it because the disc folder it would rip from is gone.
+
+  This REPORTS; it gates nothing and it never widens what may be deleted. `Get-UnitStageTargets`
+  remains the sole authority on what a release touches, and `_release-completed.ps1`'s gates are
+  untouched.
+
+.PARAMETER Dir
+  The intermediate directory's NAME (a direct child of $Stage), e.g. `bladerunnerdisk1-rip`.
+
+.OUTPUTS
+  [pscustomobject] Unit, WouldRecreate ([bool]), Titles ([int]), Reason
+#>
+function Get-RipRecreationRisk {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory)][string]$Dir,
+    [Parameter(Mandatory)][string]$Stage,
+    [string]$Catalogue = 'D:/video/_catalogue',
+    [string]$Completed = 'D:/video/_completed.txt'
+  )
+
+  function New-Risk([string]$u, [bool]$recreate, [int]$n, [string]$why) {
+    [pscustomobject]@{ Unit = $u; WouldRecreate = $recreate; Titles = $n; Reason = $why }
+  }
+
+  # SAME SUFFIX CONSTRAINT AS Get-UnitStageTargets. A name outside the intermediate namespace is
+  # not something the rip lane produces, so nothing here applies to it.
+  if ($Dir -notmatch '-(rip|x|main|mkv|reel|audio)$') {
+    return (New-Risk '' $false 0 'not an intermediate directory name')
+  }
+
+  # Which unit? The marker is a RECORD written at rip time; the slug is only a convention. Prefer
+  # the record, exactly as Get-UnitStageTargets does.
+  $unit = ''
+  $marker = Join-Path (Join-Path $Stage $Dir) '.unit'
+  if (Test-Path -LiteralPath $marker -PathType Leaf) {
+    $claim = @(Get-Content -LiteralPath $marker -ErrorAction SilentlyContinue |
+               ForEach-Object { $_.Trim() } |
+               Where-Object { $_ -and -not $_.StartsWith('#') }) | Select-Object -First 1
+    if ($claim) { $unit = "$claim" }
+  }
+  if (-not $unit) {
+    foreach ($cand in @(Get-ChildItem -LiteralPath $Stage -Directory -ErrorAction SilentlyContinue)) {
+      $slug = ConvertTo-RipSlug $cand.Name
+      foreach ($sfx in @('-rip', '-x', '-main', '-mkv', '-reel', '-audio')) {
+        if ([string]::Equals($Dir, "$slug$sfx", [System.StringComparison]::OrdinalIgnoreCase)) { $unit = $cand.Name }
+      }
+    }
+  }
+  if (-not $unit) {
+    # NO UNIT RESOLVED IS NOT "SAFE" - it is UNKNOWN, and it must not read as a clearance. The rip
+    # loop is driven by dispositions keyed to a disc name, so without a disc name nothing here can
+    # be evaluated at all.
+    return (New-Risk '' $false 0 'no unit could be resolved for this directory - the rip lane cannot be evaluated; treat as UNKNOWN, not as safe')
+  }
+
+  # From here down this mirrors _rip-loop.ps1's own per-disc gate, in its order. If that loop's
+  # conditions ever change, this is the other place that has to change with them.
+  $discDir = Join-Path $Stage $unit
+  if (-not (Test-Path -LiteralPath $discDir -PathType Container)) {
+    return (New-Risk $unit $false 0 "its disc's raw staging is already released, which is the rip loop's own stop condition")
+  }
+  if (Test-Path -LiteralPath (Join-Path $discDir '.HOLD')) {
+    return (New-Risk $unit $false 0 'the disc is on .HOLD, which the rip loop skips')
+  }
+  $done = @(Get-Content -LiteralPath $Completed -ErrorAction SilentlyContinue |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ -and -not $_.StartsWith('#') })
+  if ($done -contains $unit) {
+    return (New-Risk $unit $false 0 'the unit is in _completed.txt, which the rip loop skips')
+  }
+  $disp = Join-Path $Catalogue "$unit.dispositions.txt"
+  if (-not (Test-Path -LiteralPath $disp)) {
+    return (New-Risk $unit $false 0 'the disc has no dispositions file, so the rip loop has nothing to act on')
+  }
+  $lines = @(Get-Content -LiteralPath $disp -ErrorAction SilentlyContinue)
+  if (@($lines | Where-Object { $_ -match '^t\d+\|\?\|' }).Count -gt 0) {
+    return (New-Risk $unit $false 0 'the dispositions still carry an unresolved ?, which the rip loop skips')
+  }
+
+  # KEEP VOCABULARY, AND WHY THE DVD/BD SPLIT MATTERS: _rip-loop.ps1 does not rip `episode` on a
+  # DVD, because a DVD manifest reads the disc folder directly. Read the disc's own shape rather
+  # than assuming one.
+  $isDvd = Test-Path -LiteralPath (Join-Path $discDir 'VIDEO_TS')
+  $keepTokens = if ($isDvd) { 'feature|extra' } else { 'feature|extra|episode' }
+  $keep = @()
+  foreach ($l in $lines) { if ($l -match ('^t(\d+)\|(' + $keepTokens + ')\|')) { $keep += [int]$Matches[1] } }
+
+  # A title written off in <disc>.rip-problems.txt is never retried, so it is not part of what
+  # would come back.
+  $problemFile = Join-Path $Catalogue "$unit.rip-problems.txt"
+  $problems = @{}
+  if (Test-Path -LiteralPath $problemFile) {
+    foreach ($l in Get-Content -LiteralPath $problemFile -ErrorAction SilentlyContinue) {
+      if ($l -match '^t(\d+)\|') { $problems[[int]$Matches[1]] = $true }
+    }
+  }
+  $wouldRip = @($keep | Where-Object { -not $problems.ContainsKey($_) })
+
+  if ($wouldRip.Count -eq 0) {
+    return (New-Risk $unit $false 0 'the dispositions name no rippable keep-title')
+  }
+  return (New-Risk $unit $true $wouldRip.Count 'the disc is still staged and the rip loop would not skip it')
+}

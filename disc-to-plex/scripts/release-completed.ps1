@@ -128,6 +128,38 @@ foreach ($u in $Units) {
     continue
   }
 
+  # A .HOLD ON THE STAGED DISC REFUSES, AND _completed.txt CANNOT OVERRIDE IT.
+  #
+  # `.HOLD` is this pipeline's one general "leave this alone" marker: _rip-loop.ps1, _analyse-loop.ps1,
+  # _catalogue-loop.ps1 and _stallwatch.ps1 all honour it. THIS SCRIPT DID NOT - the one place where
+  # ignoring it is irreversible.
+  #
+  # Found 2026-09-04 while auditing what protects Fight Club Disk 2. That disc's Stage A shipped and
+  # is in _queue/done, so no manifest is queued against it; assert-accounted passes; and its staging
+  # is still the source for Stage B (18 galleries carved out of the MENU domain, being built now) and
+  # Stage C (14 ILVU angle rows, not yet briefed) - neither of which any manifest can express, so
+  # neither leaves a trace this script's existing gates can see. Satisfy the register precondition on
+  # a temp copy, exactly as _reclaim-loop.ps1 does on a DryRun, and the verdict was:
+  #
+  #     WOULD   Fight Club Disk 2 - 12 path(s), 8.12 GB
+  #
+  # i.e. every gate passed on staging two further stages are actively reading. Nothing was wrong with
+  # those gates; the disc simply is not the shape they were built for. The only thing holding it back
+  # was that the artefact author had remembered to leave `units` empty - a fact carried in one
+  # person's head, which is the failure mode this project keeps converting into a check.
+  #
+  # So: honour the marker here too. It is a POSITIVE, human-authored record with its reason written
+  # in it, it is what every other track already reads, and it fails CLOSED - a stale .HOLD costs one
+  # visible refusal naming the file to look at, while its absence costs the only local copy.
+  $holdFile = Join-Path $dir '.HOLD'
+  if (Test-Path -LiteralPath $holdFile) {
+    $holdWhy = (Get-Content -LiteralPath $holdFile -Raw -ErrorAction SilentlyContinue)
+    $holdWhy = if ($holdWhy) { $holdWhy.Trim() } else { 'no reason recorded' }
+    Write-Output ("REFUSE  {0} - the staged disc carries a .HOLD: {1}. Remove {2} deliberately, once the work that needs this staging is finished." -f `
+                  $unit, $holdWhy, $holdFile)
+    continue
+  }
+
   # A UNIT CLOSED shipped-outside-manifest REFUSES BY DEFAULT, AND _completed.txt CANNOT OVERRIDE IT.
   # close-shipped-outside-manifest.ps1 (scripts/) exists for a disc whose one shippable item reached
   # the library by a route no manifest could take (Survivors Series 2 Disk 4's photo gallery:

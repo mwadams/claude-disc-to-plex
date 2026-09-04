@@ -35,8 +35,20 @@ param(
   # tested against a sandbox, and a hard-coded register would force every fixture disc to be
   # written into the REAL verified-copies file to be seen at all.
   [string]$FetchDoneFile = 'D:/video/_fetch-done.txt',
+  # Parameterised for the same reason as $FetchDoneFile: the redundant-rip branch below asks
+  # lib-disk.ps1 whether the rip lane would re-create an intermediate, and that question reads the
+  # confirmation register.
+  [string]$CompletedFile = 'D:/video/_completed.txt',
   [switch]$Quiet          # print nothing when every unit is either busy or held
 )
+
+# LOAD VERIFIED. A dot-source of a bad path raises a NON-TERMINATING error, so the function would
+# simply be undefined and the redundant-rip branch below would print an error instead of a verdict -
+# and a monitor that prints half an answer is worse than one that stops (see _release-completed.ps1).
+. 'D:/video/.claude/skills/disc-to-plex/scripts/lib-disk.ps1'
+if (-not (Get-Command Get-RipRecreationRisk -ErrorAction SilentlyContinue)) {
+  throw 'lib-disk.ps1 failed to load - refusing to report on rip intermediates without Get-RipRecreationRisk'
+}
 
 function Test-AnythingRunning {
   $names = 'ffmpeg', 'makemkvcon64', 'robocopy', 'tesseract', 'seconv', 'mkvextract'
@@ -254,8 +266,30 @@ foreach ($u in $units) {
     #
     # Reporting that as "needs MANIFEST" sends the operator to author a manifest for a folder that
     # should simply be released with its disc. Say which it is.
+    # "RELEASE IT WITH ITS DISC" IS THE WHOLE INSTRUCTION - AND THE SIZE COLUMN MAKES THE OTHER
+    # READING AVAILABLE.
+    #
+    # On 2026-09-04 three such folders (20.81 + 7.11 + 2.31 GB) were read off this board as 30.2 GB
+    # of recoverable space while the volume sat at 94 GB against a 120 GB floor with 17 discs unable
+    # to start. Releasing them on their own would have freed NOTHING: _rip-loop.ps1's "have I ripped
+    # this title?" test is the PRESENCE OF A `*_t<NN>.mkv` FILE IN THAT DIRECTORY, and none of its
+    # stop conditions (raw staging gone, .HOLD, unit in _completed.txt, no dispositions, an
+    # unresolved '?', no keep rows) hold for a disc that is mid-flight - so within one 90 s pass it
+    # re-rips every keep-title off the same staging, contending with the live encodes.
+    #
+    # Both halves of that are real and they read differently, so ASK rather than assert: once a
+    # unit's raw staging is already released, a stranded intermediate (the 13 "Danger Man Series
+    # 1964-1968" -rip folders, ~15 GB) genuinely can be released on its own by naming the unit in a
+    # reclaim artefact, because the disc the loop would rip from is gone.
     if ($isRip) {
-      $moving += "{0,-28} redundant rip - no manifest reads it; release it with its disc" -f $name
+      $risk = Get-RipRecreationRisk -Dir $name -Stage $Stage -Catalogue $Catalogue -Completed $CompletedFile
+      if ($risk.WouldRecreate) {
+        $moving += ("{0,-28} redundant rip - no manifest reads it; release it WITH its disc ('{1}'). NOT recoverable space on its own: _rip-loop.ps1 would re-rip {2} keep-title(s) off the still-staged disc within one pass" -f `
+                    $name, $risk.Unit, $risk.Titles)
+      } else {
+        $moving += ("{0,-28} redundant rip - no manifest reads it; releasable on its own ({1}) - name '{2}' in a reclaim artefact; the release gates still apply" -f `
+                    $name, $risk.Reason, $(if ($risk.Unit) { $risk.Unit } else { '<unit unknown>' }))
+      }
       continue
     }
 
