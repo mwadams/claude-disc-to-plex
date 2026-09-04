@@ -17,13 +17,20 @@ param(
   [switch]$IncludeLegacyMp4,
   # Pass the track guard's documented override down to ocr-subtitles.ps1.
   #
-  # The guard refuses a hand-run of ocr-subtitles.ps1 while _ocr-loop.ps1 is alive, because
+  # The guard refuses a hand-run of ocr-subtitles.ps1 while an OCR track is alive, because
   # the loop is stateless and a second worker DUPLICATES its work rather than sharing it -
   # two writers raced on one sidecar on 2026-08-23. That reasoning is about the LOCAL tree:
   # _ocr-loop.ps1 scans D:\video\Movies and D:\video\Television Shows. THIS script only ever
   # touches \\NASTEAMV\Multimedia, so the two work lists are disjoint and cannot collide.
   # Without this passthrough every single file here is refused and the campaign cannot run.
   # Still leave it OFF by default, so the guard applies unless the operator asks for it.
+  #
+  # 🔴 SINCE 2026-09-04 THE GUARD ALSO SEES `_ocr-queue-loop.ps1`, AND THAT ONE IS NOT DISJOINT
+  # FROM THIS SCRIPT - it drains _ocr-queue.csv, every row a \\NASTEAMV\Multimedia path, which is
+  # exactly this script's tree. The disjointness argument above holds ONLY against the local loop.
+  # So while the queue track is draining, -Manual here buys you the 2026-08-23 race back, on the
+  # same sidecar, over SMB. Stop that track first (drop D:\video\_ocr-queue-loop.stop, which it
+  # honours at a row boundary) rather than overriding past it.
   [switch]$Manual
 )
 

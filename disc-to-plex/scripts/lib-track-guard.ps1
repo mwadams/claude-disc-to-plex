@@ -38,7 +38,23 @@ function Assert-TrackOwner {
     [switch]$Manual
   )
 
-  $loopRx = if ($Track -eq 'OCR') { '_ocr-loop\.ps1' } else { '_publish-loop\.ps1' }
+  # BOTH OCR TRACKS COUNT. There are two self-draining OCR loops, not one: `_ocr-loop.ps1` (local
+  # D:\video\Movies|Television Shows, stateless rescan) and `_ocr-queue-loop.ps1` (library-wide,
+  # draining _ocr-queue.csv, every row a \\NASTEAMV path). This pattern used to name only the first,
+  # with two consequences, both observed live on 2026-09-04:
+  #   - A hand-run of ocr-subtitles.ps1 while ONLY the queue track was draining sailed straight past
+  #     the guard at the `$live.Count -eq 0` return - unguarded against exactly the two-workers-one-
+  #     sidecar race this file exists to prevent, and a hand-run on a NAS file is precisely how that
+  #     campaign is worked.
+  #   - The queue loop's own worker child was classified as a HAND-RUN (its ancestor command line
+  #     says `_ocr-queue-loop.ps1`, which this pattern did not match), so it could only run by
+  #     hard-coding -Manual - which printed "refusing to hand-run" above 544 successful conversions.
+  # Matching both names fixes both: the queue loop's child is now recognised as the track doing its
+  # job, and a real hand-run is refused whichever OCR track is live.
+  # It stays deliberately COARSE - "is an OCR track alive", never "does its work overlap mine". The
+  # two loops' roots are disjoint by construction, but this guard cannot prove that for an arbitrary
+  # hand-run path, and refusing a disjoint hand-run (escapable with -Manual) is the cheap error.
+  $loopRx = if ($Track -eq 'OCR') { '_ocr(-queue)?-loop\.ps1' } else { '_publish-loop\.ps1' }
   $worker = if ($Track -eq 'OCR') { 'ocr-subtitles.ps1' } else { '_publish.ps1 / publish-work.ps1' }
 
   # Classify by HOW the process was launched, not by whether the name appears in its arguments.
@@ -72,6 +88,17 @@ function Assert-TrackOwner {
     "after stopping the loop."
   ) -join "`n"
 
-  if ($Manual) { Write-Warning "OVERRIDDEN: $msg"; return }
+  # SAY WHAT ACTUALLY HAPPENS NEXT. `$msg` is the REFUSAL, and it must only ever be printed when
+  # something is genuinely refused. Prefixing it with "OVERRIDDEN:" and returning left a warning
+  # reading "refusing to hand-run ocr-subtitles.ps1" one line above the successful conversion it
+  # claimed to have prevented - 544 times in _ocr-queue-loop.log before anyone read it closely
+  # (2026-09-04). Nothing was corrupted, but a guard whose output contradicts the next line teaches
+  # a reader to stop believing guard output, which is the whole value of having guards.
+  if ($Manual) {
+    Write-Warning ("$Track track is running (pid $pids) - PROCEEDING ANYWAY because -Manual was " +
+      "passed. Nothing was refused: $worker runs alongside the track, so it is the caller's job to " +
+      "know this work does not overlap it.")
+    return
+  }
   throw $msg
 }
