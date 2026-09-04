@@ -160,6 +160,40 @@ foreach ($u in $Units) {
     continue
   }
 
+  # AN OUTSTANDING RE-RIP OBLIGATION REFUSES, AND _completed.txt CANNOT OVERRIDE IT.
+  #
+  # This is the gap that made the re-rip programme losable. A disc could ship its NEW content, be
+  # confirmed in Plex, be written into _completed.txt - and have its raw staging released while the
+  # thing it was fetched FOR (recovering subtitles, replacing a legacy .mp4, picking up content the
+  # first pass never took) was never done. Nothing in this script had any concept of it, so
+  # releasing the staging is precisely what turned a pending obligation into a re-fetch off a slow
+  # USB spindle. Colditz, The League of Gentlemen, Rumpole, Chocky, Doctor Who and The Box of
+  # Delights were all released this way. Most turned out to be discharged or refuted anyway - but
+  # NOTHING CHECKED, which is the defect regardless of how the roll of the dice came out.
+  #
+  # `_completed.txt` answers "did the user see the shipped item in Plex". That is a different
+  # question from "does this disc still owe the library a re-rip", exactly as it is for the
+  # shipped-outside-manifest class below, so this runs BEFORE -Completed is consulted.
+  #
+  # The register (D:/video/_rerip-worklist.tsv) is the evidenced override, in the spirit of
+  # authorise-staging-release.ps1: closing a row needs a Status of DISCHARGED/REFUTED/WAIVED AND a
+  # non-empty Evidence cell. A blank Evidence cell is read as OPEN, so a row cannot be silently
+  # ticked off. Exit 3 means the script could not read its register at all - that is refused too,
+  # because a gate that answers "fine" when it could not ask the question is worse than no gate.
+  $reripGate = 'D:/video/rerip-obligation.ps1'
+  if (-not (Test-Path -LiteralPath $reripGate -PathType Leaf)) {
+    Write-Output ("REFUSE  {0} - {1} is MISSING, so the re-rip obligation cannot be checked. Restore it rather than releasing staging unchecked." -f $unit, $reripGate)
+    continue
+  }
+  # Captured into a variable, NOT piped: an exit code read through a pipe reports the PIPE's status.
+  $reripOut  = & pwsh -NoProfile -File $reripGate -Disc $unit 2>&1
+  $reripCode = $LASTEXITCODE
+  if ($reripCode -ne 0) {
+    Write-Output ("REFUSE  {0} - re-rip obligation NOT discharged (rerip-obligation.ps1 exit {1}):" -f $unit, $reripCode)
+    foreach ($l in @($reripOut)) { Write-Output ("        {0}" -f $l) }
+    continue
+  }
+
   # A UNIT CLOSED shipped-outside-manifest REFUSES BY DEFAULT, AND _completed.txt CANNOT OVERRIDE IT.
   # close-shipped-outside-manifest.ps1 (scripts/) exists for a disc whose one shippable item reached
   # the library by a route no manifest could take (Survivors Series 2 Disk 4's photo gallery:
