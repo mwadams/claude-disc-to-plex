@@ -24,6 +24,7 @@ loading it whole crowds out the work, and a summary of it loses exactly the oper
 | Anything after the encode: matching, extras, posters | [gotchas-plex.md](gotchas-plex.md) |
 | Staging, copying, gates, encode settings, killing jobs | [gotchas-pipeline.md](gotchas-pipeline.md) |
 | Deciding whether you are *done*, or trusting a check | [gotchas-process.md](gotchas-process.md) |
+| Looking for a script that already measures or does it (BEFORE writing one) | [`scripts/INDEX.md`](../scripts/INDEX.md) — generated from every script's header |
 
 ## The six that cost the most
 
