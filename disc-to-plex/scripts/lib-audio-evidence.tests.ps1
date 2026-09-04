@@ -226,17 +226,23 @@ try {
   #    loop analyses a source the gate never reads (wasted whisper).
   if ((HaveTs $tsOne) -and (Test-Path -LiteralPath $tsMany)) {
     $mt = Manifest 'trivia.json' @(
-      @{ out = 'p.mkv'; src = $tsOne;  audioTracks = @(0) },                               # exempt
-      @{ out = 'q.mkv'; src = $tsOne;  audioTracks = @(0, 1) },                            # two claimed
-      @{ out = 'r.mkv'; src = $tsOne;  audioTracks = @(0); commentary = @(1) },            # claims a commentary
-      @{ out = 's.mkv'; src = $tsMany; audioTracks = @(0) }                                # ten streams
+      @{ out = 'p.mkv'; src = $tsOne; audioTracks = @(0) },                               # exempt
+      @{ out = 'q.mkv'; src = $tsOne; audioTracks = @(0, 1) },                            # two claimed
+      @{ out = 'r.mkv'; src = $tsOne; audioTracks = @(0); commentary = @(1) }             # claims a commentary
     )
     $rows = @(Get-ManifestAudioWork -Manifest $mt)
-    Check 'rows' $rows.Count 4
+    Check 'rows' $rows.Count 3
     Check 'one-stream [0]   -> skip'     (Test-AudioClaimTrivial -Ffprobe $ffprobe -Row $rows[0]) 'True'
     Check 'one-stream [0,1] -> analyse'  (Test-AudioClaimTrivial -Ffprobe $ffprobe -Row $rows[1]) 'False'
     Check 'commentary claim -> analyse'  (Test-AudioClaimTrivial -Ffprobe $ffprobe -Row $rows[2]) 'False'
-    Check 'ten-stream [0]   -> analyse'  (Test-AudioClaimTrivial -Ffprobe $ffprobe -Row $rows[3]) 'False'
+    # THE TEN-STREAM CASE IS BUILT BY HAND, and that is not laziness. `$tsMany` now carries its
+    # evidence, so Get-ManifestAudioWork correctly DROPS it from the work list - which is the right
+    # behaviour and made an index-based test blow up the first time the analysis landed. The
+    # predicate under test here is the exemption, not the work list; feed it the row shape directly
+    # so the assertion stays true whatever has or has not been measured.
+    $manyRow = [pscustomobject]@{ Src = $tsMany; Title = $null; AudioTracks = @(0)
+                                  HasCommentary = $false; HasAudioDescr = $false }
+    Check 'ten-stream [0]   -> analyse'  (Test-AudioClaimTrivial -Ffprobe $ffprobe -Row $manyRow) 'False'
     Write-Output '    ...and the GATE agrees on each of those four, item for item'
     Check 'gate one-stream [0]'    (GateExit (Manifest 't1.json' @(@{ out = 'p.mkv'; src = $tsOne;  audioTracks = @(0) }))) 0
     Check 'gate one-stream [0,1]'  (GateExit (Manifest 't2.json' @(@{ out = 'q.mkv'; src = $tsOne;  audioTracks = @(0, 1) }))) 4
