@@ -71,10 +71,6 @@ if (-not (Get-Command Get-WorkOutstanding -ErrorAction SilentlyContinue)) {
 
 while ($true) {
   $published = 0
-  # Files that STILL have to reach the NAS when this pass ends, across every work. It gates the
-  # expensive full subtitle-coverage sweep at the bottom of the pass - see there for why.
-  $stillOutstanding = 0
-  $worksOutstanding = @()
   foreach ($kind in @('Movies', 'Television Shows')) {
     $root = Join-Path 'D:\video' $kind
     if (-not (Test-Path -LiteralPath $root)) { continue }
@@ -179,8 +175,6 @@ while ($true) {
       # early stays exactly as it was; only the CLAIM now waits for the files.
       $after  = @(Get-WorkOutstanding -WorkDir $w.FullName -NasDir $nas)
       $landed = $outstanding.Count - $after.Count
-      $stillOutstanding += $after.Count
-      if ($after.Count -gt 0) { $worksOutstanding += $w.Name }
       if ($landed -gt 0) { $published++ }
 
       if ($after.Count -gt 0) {
@@ -293,113 +287,25 @@ while ($true) {
       Write-Output "    build-retire-list.ps1 threw: $($_.Exception.Message)"
     }
 
-    # FULL SUBTITLE-COVERAGE REPORT - refreshed periodically, not every pass. The per-work trigger
-    # above catches what THIS loop just published; this is the wider "one current picture" (every
-    # work, both areas, the legacy backlog total, stale-provenance and genuinely-missed lists) that
-    # D:/video/_subtitle-coverage.csv is supposed to be.
+    # THE FULL LIBRARY-WIDE COVERAGE SWEEP NO LONGER RUNS HERE. It is its own track,
+    # D:/video/_coverage-loop.ps1 ('coverage' in _loops.ps1 and _bounce-track.ps1).
     #
-    # COST WENT UP 2026-09-03: a full sweep now ffprobes EVERY file with no current sidecar for a
-    # bitmap subtitle stream (the awaiting-ocr check, widened to the whole library per the user's
-    # ruling that OCR eligibility must be probed on the file, not inferred from a manifest) - about
-    # 5,600 files, ~25-30 minutes, not the ~30-40s a metadata-only sweep took before. Raised the
-    # throttle from 30 to 240 minutes accordingly - at 30 the sweep would have been running back to
-    # back, which is exactly the "NAS is remote and slow, don't rescan on every idle poll" guard
-    # this loop otherwise follows everywhere else.
+    # It was a 30-55 minute SYNCHRONOUS child of this SERIAL loop, so for its whole duration
+    # nothing published. That stalled the line twice on 2026-09-04: once starting four minutes
+    # before the Fight Club feature finished encoding (2.86 GB still local at 01:22, disk 10 GB
+    # under its fetch floor, 19 discs waiting), and once starting at 01:53:15 with Fight Club
+    # Disk 2's 27 extras completing at 02:12:53, twenty minutes into it.
     #
-    # REPORT ONLY - never -Queue here. The 'awaiting-transcription' backlog across the WHOLE
-    # library this pipeline has ever produced runs into four figures - committing that to the
-    # transcribe queue in one shot is the kind of decision this loop must surface, not make
-    # unattended. Only the scoped per-work call above queues anything, and only for the work that
-    # just published (both its OCR and its transcription eligibility).
-    $coverageFullSweepEveryMin = 240
-    $coverageCheckpoint = 'D:/video/_subtitle-coverage-last-full.txt'
-    $dueForFullSweep = $true
-    # How long since the last CLEAN sweep. Also used by the deliverable-first gate below, so it is
-    # computed here rather than inside the throttle's own if.
-    $sinceLastSweepMin = [double]::MaxValue
-    if (Test-Path -LiteralPath $coverageCheckpoint) {
-      $last = Get-Content -LiteralPath $coverageCheckpoint -Raw -ErrorAction SilentlyContinue
-      # MUST BE TYPED. `$lastTime = $null` is untyped, and TryParse's [ref] parameter needs a
-      # [DateTime]-typed variable to bind to - an untyped $null cannot bind, so the call THROWS
-      # (MethodException: "Cannot find an overload for TryParse and the argument count: 2") on
-      # EVERY pass, regardless of what $last contains. Confirmed live in _publish-loop.log at
-      # 18:20 today, repeating on every publish cycle since this block was written.
-      #
-      # That throw is NON-TERMINATING at script scope (no try/catch here previously, and none
-      # needed to reach the next statement) - PowerShell prints the error and moves on, so the
-      # loop never crashed and nothing looked broken. But it aborts the `if` before
-      # $dueForFullSweep is ever reassigned away from its default $true, so the 240-minute
-      # throttle silently never engaged: the 30-45 minute full sweep ran on EVERY publish pass
-      # instead of every 4 hours, and the loop's log has sat frozen mid-sweep since 18:20 while
-      # this checkpoint still read 17:32 - Edge of Darkness work queued behind it the whole time.
-      [DateTime]$lastTime = [DateTime]::MinValue
-      try {
-        if ([DateTime]::TryParse($last, [ref]$lastTime)) {
-          $sinceLastSweepMin = ((Get-Date) - $lastTime).TotalMinutes
-          $dueForFullSweep = $sinceLastSweepMin -ge $coverageFullSweepEveryMin
-        } else {
-          # Same failure class as the TV-reindex incident (follow-up.md, 2026-09-03): a throttle
-          # that degrades silently into "always run" reads as ordinary slowness for days, not as
-          # a defect. This loop keeps operator-log lines only where they match this script's own
-          # 'verified|REFUSING|NOT PUBLISHING' convention (see the per-work publish block above),
-          # so reuse REFUSING here too even though this path never touches that filter directly -
-          # it is the greppable word this pipeline already looks for.
-          Write-Output ("    REFUSING to trust subtitle-coverage checkpoint '{0}' - content is not a parseable date ('{1}') - forcing a full sweep this pass" -f $coverageCheckpoint, $last)
-        }
-      } catch {
-        Write-Output ("    REFUSING to trust subtitle-coverage checkpoint '{0}' - {1} - forcing a full sweep this pass" -f $coverageCheckpoint, $_.Exception.Message)
-      }
-    }
-    # THE DELIVERABLE COMES BEFORE THE REPORT.
+    # A "defer the sweep while work is outstanding" guard was tried first and is NOT ENOUGH: it can
+    # stop a sweep STARTING, never interrupt one already under way, and encodes finish at arbitrary
+    # times - so any batch landing mid-sweep recreates the stall. The window cannot be tightened
+    # shut. A library-wide REPORT has no business on the critical path of the loop that ships the
+    # deliverable, so it now lives entirely off that path; the coverage track owns the throttle,
+    # the checkpoint and the single-instance guard. See its header.
     #
-    # This sweep is a synchronous child of a SERIAL loop, so for its whole 30-55 minutes nothing is
-    # published. On 2026-09-04 it started at 00:27:25 - four minutes before the Fight Club feature
-    # finished encoding at 00:31:38 - and the film was still not on the NAS at 01:22, on a disk
-    # 10 GB under its fetch floor with 19 discs waiting. Nothing was wedged; the publish was simply
-    # queued behind a report. That is the wrong priority in a pipeline whose stated rule is
-    # "publish immediately, gate only the reclaim": the user cannot confirm a unit in Plex until it
-    # is on the NAS, and the coverage CSV helps nobody while the line is stopped.
-    #
-    # So: if any work still has files to publish, defer. The sweep is report-only, it is
-    # interrupt-safe by design (it accumulates in memory and writes the CSV exactly once at the
-    # end), and being 90 seconds later costs nothing.
-    #
-    # BUT NEVER SILENTLY FOREVER. A work with a permanently partial file (a show encoding across
-    # hours, or an abandoned output) would otherwise starve the sweep indefinitely and the coverage
-    # report would quietly rot - the same "degrades silently into never" failure the throttle bug
-    # above was. At twice the throttle the sweep runs anyway, and says that it is doing so.
-    if ($dueForFullSweep -and $stillOutstanding -gt 0) {
-      if ($sinceLastSweepMin -ge (2 * $coverageFullSweepEveryMin)) {
-        Write-Output ("--- full subtitle-coverage sweep deferred behind unpublished files for {0:N0} min (2x the {1} min throttle) - running it now anyway; {2} file(s) still outstanding in: {3} ---" -f `
-                      $sinceLastSweepMin, $coverageFullSweepEveryMin, $stillOutstanding, (($worksOutstanding | Select-Object -Unique) -join ', '))
-      } else {
-        Write-Output ("--- DEFERRING the full subtitle-coverage sweep: {0} file(s) still have to reach the NAS in {1} - publishing comes first, and this sweep blocks this loop for 30-55 min ---" -f `
-                      $stillOutstanding, (($worksOutstanding | Select-Object -Unique) -join ', '))
-        $dueForFullSweep = $false
-      }
-    }
-    if ($dueForFullSweep) {
-      Write-Output '--- refreshing full subtitle-coverage report (report-only, no auto-queue) ---'
-      try {
-        & pwsh -NoProfile -File 'D:\video\.claude\skills\disc-to-plex\scripts\subtitle-coverage.ps1' 2>&1 |
-          Select-String 'unclassified,|awaiting-transcription,|awaiting-ocr,|LEGACY BACKLOG|TRANSCRIPTION-DEFERRED|genuinely-missed \(ours\)|stale-provenance \(ours\)' |
-          ForEach-Object { "    $_" }
-        # STAMP ONLY ON A CLEAN EXIT. subtitle-coverage.ps1 runs with $ErrorActionPreference =
-        # 'Stop' and exits 2 on a refused/invalid run, 0 on a completed sweep - so $LASTEXITCODE
-        # is a real signal here, not prose to match. Stamping unconditionally would let a failed
-        # sweep look identical to a good one for the next 240 minutes; not stamping at all would
-        # otherwise re-run every pass forever exactly like the bug above, which is why this checks
-        # the code instead of assuming the pipeline reaching Set-Content means success.
-        if ($LASTEXITCODE -eq 0) {
-          Set-Content -LiteralPath $coverageCheckpoint -Value (Get-Date -Format s)
-        } else {
-          Write-Output ("    REFUSING to stamp the coverage checkpoint - subtitle-coverage.ps1 exited {0} - next pass will retry the full sweep" -f $LASTEXITCODE)
-        }
-      } catch {
-        Write-Output "    subtitle-coverage.ps1 (full sweep) threw: $($_.Exception.Message)"
-      }
-    }
+    # WHAT STAYS HERE is the SCOPED per-work `subtitle-coverage.ps1 -Works X -Queue` call above:
+    # it is about the one work that just published, it is the event that creates the coverage gap,
+    # and it is the only place anything is ever QUEUED.
   }
-
   if ($published -eq 0) { Start-Sleep -Seconds 90 }
 }
