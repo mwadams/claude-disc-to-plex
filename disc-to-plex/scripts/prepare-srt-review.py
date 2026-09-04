@@ -28,14 +28,15 @@ SUSPECT = [
 ]
 
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from srt_cues import parse_srt as _parse_cues      # noqa: E402  (ONE parser - see srt_cues.py)
+
+
 def parse_srt(path):
-    raw = io.open(path, encoding='utf-8', errors='replace').read().replace('\r', '')
-    out = []
-    for blk in raw.split('\n\n'):
-        lines = [l for l in blk.split('\n') if l.strip() != '']
-        if len(lines) >= 3 and '-->' in lines[1]:
-            out.append((lines[0].strip(), lines[1], ' '.join(lines[2:])))
-    return out
+    """-> [(number, timing_line, joined text)]. The number is the label written in the file
+    (what apply-srt-corrections.py resolves first), position only for an unlabelled cue."""
+    return [(label if label is not None else str(pos), timing, ' '.join(text))
+            for pos, (label, timing, text) in enumerate(_parse_cues(path), 1)]
 
 
 def load_lexicon(srt_path):

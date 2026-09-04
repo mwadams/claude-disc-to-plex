@@ -45,8 +45,13 @@ NAS_GOVERNOR_CONFIG = os.environ.get('NAS_GOVERNOR_CONFIG', r'D:/video/_nas-gove
 NAS_GOVERNOR_DEFAULTS = {'readCeilingMbps': 50.0, 'nasPathPattern': r'^\\\\NASTEAMV\\'}
 
 
-def nas_readrate_args(src, duration_s):
-    """ffmpeg INPUT options (must precede -i) that hold a NAS read to the governor's ceiling."""
+def nas_readrate_plan(src, duration_s):
+    """-> (ffmpeg INPUT options that must precede -i, one-line explanation for the log).
+
+    The explanation is printed whether or not the read is governed, because a governor whose
+    effect is not in the log has to be confirmed with a stopwatch and a directory listing
+    (2026-09-04: the OCR queue's staging figures were computed and then filtered out of its log).
+    An empty option list is the safe failure (an ungoverned read), and the line says WHY."""
     cfg = dict(NAS_GOVERNOR_DEFAULTS)
     try:
         with open(NAS_GOVERNOR_CONFIG, encoding='utf-8') as fh:
@@ -57,17 +62,27 @@ def nas_readrate_args(src, duration_s):
         pass
     try:
         if not re.match(cfg['nasPathPattern'], src, re.IGNORECASE):
-            return []
+            return [], '[governor] local source - read not paced'
         ceiling = float(cfg['readCeilingMbps'])
-        if ceiling <= 0 or not duration_s or duration_s <= 0:
-            return []
-        native_mbps = os.path.getsize(src) * 8.0 / duration_s / 1e6
+        if ceiling <= 0:
+            return [], '[governor] NOT paced: readCeilingMbps is %s in %s' % (ceiling, NAS_GOVERNOR_CONFIG)
+        if not duration_s or duration_s <= 0:
+            return [], '[governor] NOT paced: no duration for the source'
+        size = os.path.getsize(src)
+        native_mbps = size * 8.0 / duration_s / 1e6
         if native_mbps <= 0:
-            return []
+            return [], '[governor] NOT paced: zero-length source'
         rate = round(ceiling / native_mbps, 3)
-    except (OSError, ValueError, TypeError):
-        return []
-    return ['-readrate', repr(rate), '-readrate_initial_burst', '2']
+    except (OSError, ValueError, TypeError) as e:
+        return [], '[governor] NOT paced: %s' % e
+    note = ('[governor] NAS read paced: -readrate %.3fx of native %.1f Mbps -> ceiling %.0f Mbps '
+            '(%.0f MB, expect ~%.0f s)' % (rate, native_mbps, ceiling, size / 1e6, size * 8 / (ceiling * 1e6)))
+    return ['-readrate', repr(rate), '-readrate_initial_burst', '2'], note
+
+
+def nas_readrate_args(src, duration_s):
+    """ffmpeg INPUT options (must precede -i) that hold a NAS read to the governor's ceiling."""
+    return nas_readrate_plan(src, duration_s)[0]
 
 # A cue longer than this is unreadable; shorter than this flashes past.
 MIN_DUR, MAX_DUR, GAP, WRAP = 1.0, 8.0, 0.04, 42
@@ -128,6 +143,15 @@ def wrap(text, width=WRAP):
     for w in words:
         if len(cur) + len(w) + 1 <= width:
             cur = (cur + ' ' + w).strip()
+        elif not cur:
+            # A single word longer than the width, at the start of a line. Appending the EMPTY
+            # `cur` here put a blank line between the timing and the text, which splits the cue
+            # in two at the SRT's blank-line boundary: every parser then sees one cue fewer than
+            # the file numbers, and every cue after it is off by one between "the number printed
+            # in the file" and "the Nth cue parsed". Danger Man S01E32 cue 225,
+            # "Tom-dee-tom-dee-tom-dee-deedle-dee-tom-deedle-dee-tom-tom." (58 chars), did exactly
+            # that and made every correction pass on the episode refuse (2026-09-04).
+            cur = w
         else:
             lines.append(cur)
             cur = w
@@ -371,8 +395,19 @@ def main():
     wav = os.path.join(tmpdir, 'audio.tmp16k.wav')
 
     try:
-        subprocess.run([ff, '-v', 'error', *nas_readrate_args(src, duration), '-i', src,
+        rate_args, rate_note = nas_readrate_plan(src, duration)
+        print(rate_note, flush=True)
+        t_read = datetime.datetime.now()
+        subprocess.run([ff, '-v', 'error', *rate_args, '-i', src,
                         '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', '-y', wav], check=True)
+        # THE MEASUREMENT REACHES THE LOG. Whole-file size over wall time is what the link saw
+        # from this reader (ffmpeg must read every packet to demux the audio), independent of the
+        # adapter counter Invoke-NasRead reports around the whole call - two figures, two methods.
+        read_s = max((datetime.datetime.now() - t_read).total_seconds(), 0.001)
+        src_mb = os.path.getsize(src) / 1e6
+        print('[governor] audio extracted: %.0f MB in %.0f s = %.1f Mbps -> %s (local scratch, %s)'
+              % (src_mb, read_s, src_mb * 8 / read_s, wav, 'NAS source' if rate_args else 'not paced'),
+              flush=True)
         model, dev = load_model(a.model, prefer_cuda=True, verbose=False)
         segs, info = model.transcribe(
             wav, language='en', beam_size=5,

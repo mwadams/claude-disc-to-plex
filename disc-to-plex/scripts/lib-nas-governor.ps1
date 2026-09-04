@@ -440,9 +440,13 @@ function Invoke-NasRead {
     Exit-NasReadSlot $slot
     $cfg = Get-NasGovernorConfig
     $pace = Get-NasPaceSeconds -Bytes $bytes -ElapsedSeconds $elapsed -CeilingMbps $cfg.readCeilingMbps -MaxPaceSeconds $cfg.maxPaceSeconds
-    if ($pace -ge 10) {
-      Write-NasSay $Say ("{0}: pulled {1:N0} MB in {2:N0} s ({3:N0} Mbps) - pacing {4:N0} s to hold the {5} Mbps ceiling" -f $Label, ($bytes / 1MB), $elapsed, ($bytes * 8 / [math]::Max($elapsed, 0.001) / 1e6), $pace, $cfg.readCeilingMbps)
-    }
+    # ALWAYS SAY WHAT THE ITEM COST - one line per governed item, pacing or not. The earlier
+    # version only spoke when it had to pace 10 s or more, so a reader that was already under the
+    # ceiling (the whole point) left no trace at all, and "is the governor working?" could only be
+    # answered with a stopwatch and a directory listing (2026-09-04).
+    Write-NasSay $Say ("[governor] {0}: pulled {1:N0} MB in {2:N0} s = {3:N1} Mbps (adapter total; ceiling {4} Mbps){5}" -f
+      $Label, ($bytes / 1MB), $elapsed, ($bytes * 8 / [math]::Max($elapsed, 0.001) / 1e6), $cfg.readCeilingMbps,
+      $(if ($pace -gt 0) { " - pacing {0:N0} s to hold the ceiling on average" -f $pace } else { ' - under the ceiling, no pacing' }))
     if ($pace -gt 0) {
       $end = (Get-Date).AddSeconds($pace)
       while ((Get-Date) -lt $end) { Start-Sleep -Seconds ([math]::Min(5, [math]::Max(1, [int]($end - (Get-Date)).TotalSeconds))) }

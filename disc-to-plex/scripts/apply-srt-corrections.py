@@ -95,17 +95,8 @@ def _backup_path(srt, backup_dir):
     return os.path.join(backup_dir, safe(gp), safe(parent), os.path.basename(srt))
 
 
-def parse_srt(path):
-    """-> [(index, timing_line, [text lines])]. Timing lines are never touched."""
-    raw = io.open(path, encoding='utf-8', errors='replace').read().replace('\r', '')
-    blocks = []
-    for blk in raw.split('\n\n'):
-        lines = [l for l in blk.split('\n') if l.strip() != '']
-        if len(lines) >= 3 and '-->' in lines[1]:
-            blocks.append([lines[0].strip(), lines[1], lines[2:]])
-        elif len(lines) >= 2 and '-->' in lines[0]:
-            blocks.append([None, lines[0], lines[1:]])
-    return blocks
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from srt_cues import parse_srt, label_positions      # noqa: E402  (ONE parser - see srt_cues.py)
 
 
 def write_srt(path, blocks):
@@ -177,6 +168,17 @@ def main():
     if not blocks:
         print('[failed] parsed 0 cues from %s - refusing' % a.srt)
         return 2
+    # RESOLVE A PROPOSAL'S CUE NUMBER THE WAY THE REVIEWER SAW IT. prepare-srt-review.py prints
+    # the label written in the file; position is only the fallback for an unlabelled cue. When
+    # the two disagree anywhere, say so - it means the file is malformed or renumbered, and it is
+    # the single fact that explained 1,122 refused passes on one episode (see srt_cues.py).
+    by_label, off_by = label_positions(blocks)
+    if off_by:
+        print('[warn] %d cue label(s) differ from their parse position in %s - resolving proposals '
+              'by LABEL; the rewrite will renumber the file 1..%d' % (off_by, os.path.basename(a.srt), len(blocks)))
+
+    def resolve(ci):
+        return by_label.get(str(ci), ci)
 
     # ---- validate BEFORE changing anything.
     # Two kinds of complaint, kept apart on purpose:
@@ -192,7 +194,7 @@ def main():
             fatal.append('correction %d is missing %s' % (n, ', '.join('"%s"' % k for k in missing)))
             continue
         try:
-            ci = int(f['cue'])
+            ci = resolve(int(f['cue']))
         except (TypeError, ValueError):
             fatal.append('correction %d has a non-numeric cue %r' % (n, f['cue']))
             continue

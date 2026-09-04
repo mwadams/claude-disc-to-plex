@@ -34,7 +34,7 @@ function Get-AncestorCommandLines {
 
 function Assert-TrackOwner {
   param(
-    [Parameter(Mandatory)][ValidateSet('OCR', 'Publish')][string]$Track,
+    [Parameter(Mandatory)][ValidateSet('OCR', 'Publish', 'Optical')][string]$Track,
     [switch]$Manual
   )
 
@@ -54,8 +54,12 @@ function Assert-TrackOwner {
   # It stays deliberately COARSE - "is an OCR track alive", never "does its work overlap mine". The
   # two loops' roots are disjoint by construction, but this guard cannot prove that for an arbitrary
   # hand-run path, and refusing a disjoint hand-run (escapable with -Manual) is the cheap error.
-  $loopRx = if ($Track -eq 'OCR') { '_ocr(-queue)?-loop\.ps1' } else { '_publish-loop\.ps1' }
-  $worker = if ($Track -eq 'OCR') { 'ocr-subtitles.ps1' } else { '_publish.ps1 / publish-work.ps1' }
+  # OPTICAL (2026-09-04): the archive track owns the USB DVD drive while it runs. A hand-run
+  # backup-disc.ps1 alongside it is two makemkvcon processes racing for one spindle - the loop
+  # stands down while any makemkvcon exists, but the window between its probe and its launch is
+  # real, and the hand-run would then be the one that started second and failed.
+  $loopRx = switch ($Track) { 'OCR' { '_ocr(-queue)?-loop\.ps1' } 'Optical' { '_optical-loop\.ps1' } default { '_publish-loop\.ps1' } }
+  $worker = switch ($Track) { 'OCR' { 'ocr-subtitles.ps1' } 'Optical' { 'backup-disc.ps1' } default { '_publish.ps1 / publish-work.ps1' } }
 
   # Classify by HOW the process was launched, not by whether the name appears in its arguments.
   # `-match '_fetch-one'` once matched the MONITOR, whose inline -Command text merely mentions the
@@ -79,6 +83,10 @@ function Assert-TrackOwner {
     $(if ($Track -eq 'OCR') {
       "_ocr-loop.ps1 is stateless and re-derives its work list every pass, so a second worker does"
       "not share the work - it duplicates it, and both race to write the same sidecar."
+    } elseif ($Track -eq 'Optical') {
+      "_optical-loop.ps1 owns the optical drive: it will back up whatever disc is loaded on its own."
+      "Two makemkvcon processes on one spindle both fail. If you want a hand-run, stop the loop"
+      "first (New-Item D:/video/_optical-loop.stop) and wait for the mutex to release."
     } else {
       "_publish-loop.ps1 is strictly serial by design; concurrent robocopy jobs contend on the same"
       "NAS link and nothing completes."
