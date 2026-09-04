@@ -39,6 +39,18 @@ param(
   # lib-disk.ps1 whether the rip lane would re-create an intermediate, and that question reads the
   # confirmation register.
   [string]$CompletedFile = 'D:/video/_completed.txt',
+  # A MACHINE-READABLE COPY OF THIS RUN'S VERDICT (2026-09-04). Everything this board knows was
+  # only ever printed, so nothing could ACT on "the line is FULLY STOPPED" unless a human ran the
+  # script and read it - and on 2026-09-04 the line stood for six hours while nobody did.
+  # _stall-alarm.ps1 reads this file and raises a toast. '' disables the write; every existing
+  # caller sees exactly the same printed output as before.
+  [string]$StateFile = 'D:/video/_stallwatch-state.json',
+  [string]$ReclaimRoot = 'D:/video/_reclaim-queue',
+  # Written by discharge-rerip.ps1: re-rip rows that PUBLISHED but delivered fewer than owed.
+  [string]$DischargePending = 'D:/video/_rerip-discharge-pending.json',
+  # A .dispositioning / .authoring marker older than this with nothing written reads as an agent
+  # that died, not one still working - and is reported as a stall rather than as "moving".
+  [double]$MarkerStaleHours = 6,
   [switch]$Quiet          # print nothing when every unit is either busy or held
 )
 
@@ -61,6 +73,18 @@ function Test-AnythingRunning {
   return ($procs.Count -gt 0)
 }
 
+# Liveness of a TRACK is its mutex - the rule every loop here follows; never a process match.
+function Test-TrackAlive([string]$mutexShortName) {
+  $h = $null; $alive = $false
+  try { $alive = [System.Threading.Mutex]::TryOpenExisting(('Global' + [char]92 + $mutexShortName), [ref]$h) } catch { $alive = $false }
+  if ($h) { $h.Dispose() }
+  return $alive
+}
+function Get-FirstLine([string]$path) {
+  $l = @(Get-Content -LiteralPath $path -ErrorAction SilentlyContinue | Where-Object { "$_".Trim() } | Select-Object -First 1)
+  if ($l.Count) { return "$($l[0])".Trim() } else { return '' }
+}
+
 $busy       = Test-AnythingRunning
 $queued     = @(Get-ChildItem "$Queue/*.json" -ErrorAction SilentlyContinue).Count
 $running    = @(Get-ChildItem "$Queue/running/*.json" -ErrorAction SilentlyContinue).Count
@@ -72,6 +96,10 @@ $fetchDone  = @(Get-Content -LiteralPath $FetchDoneFile -ErrorAction SilentlyCon
 $stalls = @()
 $held   = @()
 $moving = @()
+# Collected for the state file (see -StateFile): what the alarm can name without re-parsing prose.
+$needsValidation = @(); $briefsReady = @(); $reclaimFailed = @(); $reclaimFailedStale = @(); $dischargePendingNames = @()
+$spaceBlocked = $false
+$dispTrackAlive = Test-TrackAlive 'video-dispositions-loop'
 
 foreach ($u in $units) {
   $name = $u.Name
@@ -79,7 +107,16 @@ foreach ($u in $units) {
   $hold = Join-Path $u.FullName '.HOLD'
   if (Test-Path -LiteralPath $hold) {
     $why = (Get-Content -LiteralPath $hold -Raw -ErrorAction SilentlyContinue).Trim()
-    $held += "{0,-28} HELD - {1}" -f $name, $(if ($why) { $why } else { 'no reason recorded' })
+    # A HOLD WRITTEN BY THE DISPOSITIONS TRACK IS A STALL, NOT A PARK. _dispositions-loop.ps1 parks
+    # a unit whose agent output a guard refused or whose agent reported low confidence, so that the
+    # rip/analyse tracks do not act on it - but that unit is WAITING ON THE OPERATOR to validate,
+    # which is exactly this board's definition of a stall. The hold text says which it is.
+    if ($why -match '(?i)^NEEDS VALIDATION') {
+      $stalls += "{0,-28} needs VALIDATION - {1}" -f $name, ($why -replace '\s+', ' ')
+      $needsValidation += $name
+    } else {
+      $held += "{0,-28} HELD - {1}" -f $name, $(if ($why) { $why } else { 'no reason recorded' })
+    }
     continue
   }
 
@@ -131,10 +168,34 @@ foreach ($u in $units) {
       # indistinguishable from "nobody has started", so the monitor reported discs as blocked on a
       # four-minute cycle while agents were actively working them. A monitor that cries wolf gets
       # skimmed, and then the one real stall is skimmed too.
-      if (Test-Path -LiteralPath (Join-Path $Pending ($name + '.dispositioning'))) {
-        $moving += "{0,-28} dispositions being written (subagent working)" -f $name
+      # THE DISPOSITIONS TRACK (2026-09-04) drives this step itself. Four states it can leave a
+      # unit in, each reported differently because each needs a different response:
+      #   NEEDS-VALIDATION  the track gave up (guard refused twice / low confidence) - a STALL that
+      #                     names the operator's validation, which is the one review left to them;
+      #   marker, fresh     an agent is working (the track's, or one the main session spawned);
+      #   marker, STALE     nothing written for hours - the agent died; a stall, not "moving";
+      #   brief, no marker  the track has NO AUTHENTICATED RUNNER and wrote the brief for someone
+      #                     to hand to an agent - a stall whose remedy is one line.
+      $nvFile   = Join-Path $Pending ($name + '.NEEDS-VALIDATION.txt')
+      $marker   = Join-Path $Pending ($name + '.dispositioning')
+      $brief    = Join-Path $Pending ($name + '.dispositions-brief.md')
+      if (Test-Path -LiteralPath $nvFile) {
+        $stalls += "{0,-28} needs VALIDATION - {1} (see {2})" -f $name, (Get-FirstLine $nvFile), $nvFile
+        $needsValidation += $name
+      } elseif (Test-Path -LiteralPath $marker) {
+        $mAge = (Get-Date) - (Get-Item -LiteralPath $marker).LastWriteTime
+        if ($mAge.TotalHours -gt $MarkerStaleHours) {
+          $stalls += "{0,-28} dispositions marker is STALE ({1:N1} h, nothing written) - the agent likely died; inspect {2}, then remove the marker" -f $name, $mAge.TotalHours, $marker
+        } else {
+          $moving += "{0,-28} dispositions being written (subagent working, {1:N0} min)" -f $name, $mAge.TotalMinutes
+        }
+      } elseif (Test-Path -LiteralPath $brief) {
+        $stalls += "{0,-28} BRIEF READY, no authenticated runner -> spawn an agent with: Follow the brief at {1} exactly" -f $name, $brief
+        $briefsReady += $name
+      } elseif ($dispTrackAlive) {
+        $moving += "{0,-28} queued for _dispositions-loop" -f $name
       } else {
-        $stalls += "{0,-28} needs DISPOSITIONS -> write {1}" -f $name, (Split-Path $disp -Leaf)
+        $stalls += "{0,-28} needs DISPOSITIONS -> write {1} (or start _dispositions-loop.ps1)" -f $name, (Split-Path $disp -Leaf)
       }
       continue
     }
@@ -312,10 +373,27 @@ foreach ($u in $units) {
       # IS SOMEONE ALREADY WRITING IT? A manifest subagent takes minutes, and during that time
       # nothing exists to find - so this looked exactly like "nobody has started", and the monitor
       # said so on a four-minute cycle. The marker is dropped when the agent is briefed.
-      if (Test-Path -LiteralPath (Join-Path $Pending ($name + '.authoring'))) {
-        $moving += "{0,-28} manifest being authored (subagent working)" -f $name
+      # Same four states as the dispositions step above; same reasons.
+      $nvFile2  = Join-Path $Pending ($name + '.NEEDS-VALIDATION.txt')
+      $marker2  = Join-Path $Pending ($name + '.authoring')
+      $brief2   = Join-Path $Pending ($name + '.manifest-brief.md')
+      if (Test-Path -LiteralPath $nvFile2) {
+        $stalls += "{0,-28} needs VALIDATION - {1} (see {2})" -f $name, (Get-FirstLine $nvFile2), $nvFile2
+        $needsValidation += $name
+      } elseif (Test-Path -LiteralPath $marker2) {
+        $mAge2 = (Get-Date) - (Get-Item -LiteralPath $marker2).LastWriteTime
+        if ($mAge2.TotalHours -gt $MarkerStaleHours) {
+          $stalls += "{0,-28} manifest marker is STALE ({1:N1} h, nothing written) - the agent likely died; inspect {2}, then remove the marker" -f $name, $mAge2.TotalHours, $marker2
+        } else {
+          $moving += "{0,-28} manifest being authored (subagent working, {1:N0} min)" -f $name, $mAge2.TotalMinutes
+        }
+      } elseif (Test-Path -LiteralPath $brief2) {
+        $stalls += "{0,-28} BRIEF READY, no authenticated runner -> spawn an agent with: Follow the brief at {1} exactly" -f $name, $brief2
+        $briefsReady += $name
+      } elseif ($dispTrackAlive) {
+        $moving += "{0,-28} queued for _dispositions-loop (manifest step)" -f $name
       } else {
-        $stalls += "{0,-28} needs MANIFEST     -> author one and drop it in _queue" -f $name
+        $stalls += "{0,-28} needs MANIFEST     -> author one and drop it in _queue (or start _dispositions-loop.ps1)" -f $name
       }
     }
     continue
@@ -340,7 +418,16 @@ foreach ($u in $units) {
   if ($failed.Count -gt 0) {
     $stalls += "{0,-28} manifest FAILED the gate or the encode -> {1}" -f $name, ($failed -join ", ")
   } elseif ($orphan.Count -gt 0) {
-    $stalls += "{0,-28} manifest AUTHORED BUT NEVER QUEUED -> _gate-queue.ps1 ({1})" -f $name, ($orphan -join ", ")
+    # A manifest sitting in _pending while the dispositions track is alive is about to be validated
+    # and gated by that track (its manifest step) - not waiting on the operator. Anywhere else, or
+    # with the track down, it is the stall it always was.
+    $pendingN = (($Pending -replace '\\', '/').TrimEnd('/')) + '/'
+    $orphanElsewhere = @($mentioned | Where-Object { $orphan -contains $_.Name -and -not (($_.FullName -replace '\\', '/').StartsWith($pendingN, [StringComparison]::OrdinalIgnoreCase)) })
+    if ($dispTrackAlive -and $orphanElsewhere.Count -eq 0) {
+      $moving += "{0,-28} manifest in _pending - queued for _dispositions-loop to validate and gate ({1})" -f $name, ($orphan -join ", ")
+    } else {
+      $stalls += "{0,-28} manifest AUTHORED BUT NEVER QUEUED -> _gate-queue.ps1 ({1})" -f $name, ($orphan -join ", ")
+    }
   } elseif ($live.Count -gt 0) {
     $moving += "{0,-28} in the queue / encoding" -f $name
   } elseif ($done.Count -eq $mNames.Count) {
@@ -350,7 +437,14 @@ foreach ($u in $units) {
   }
 }
 
-if ($stalls.Count -eq 0 -and $Quiet) { return }
+if ($stalls.Count -eq 0 -and $Quiet) {
+  # The -Quiet early exit skips the audits below, so the state file is written here with what is
+  # known - a quiet, un-stalled board - rather than left stale from an earlier, louder run.
+  if ($StateFile) {
+    try { ([ordered]@{ at = (Get-Date).ToString('s'); stalls = @(); moving = @($moving); held = @($held); busy = [bool]$busy; queued = [int]$queued; running = [int]$running; unitsStaged = [int]$units.Count; fullyStopped = $false; nothingStaged = [bool]($units.Count -eq 0 -and -not $busy); spaceBlocked = $false; reclaimFailed = @(); reclaimFailedStale = @(); needsValidation = @(); briefsReady = @(); dischargePending = @(); quietRun = $true } | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $StateFile -Encoding UTF8 } catch { }
+  }
+  return
+}
 
 $stamp = Get-Date -Format 'HH:mm:ss'
 if ($stalls.Count -gt 0) {
@@ -404,14 +498,74 @@ if (Test-Path -LiteralPath $relaudit) { & pwsh -NoProfile -File $relaudit }
 # condition nobody is ever told about. Silence through a real stop is worse than a false alarm,
 # because it actively reassures.
 $spaceaudit = 'D:/video/.claude/skills/disc-to-plex/scripts/audit-space-block.ps1'
-if (Test-Path -LiteralPath $spaceaudit) { & pwsh -NoProfile -File $spaceaudit }
+if (Test-Path -LiteralPath $spaceaudit) {
+  # Captured then re-printed unchanged, so the state file can carry the verdict too.
+  $spaceOut = @(& pwsh -NoProfile -File $spaceaudit 2>&1 | ForEach-Object { "$_" })
+  foreach ($l in $spaceOut) { Write-Output $l }
+  $spaceBlocked = @($spaceOut | Where-Object { $_ -match 'SPACE-BLOCKED' }).Count -gt 0
+}
+
+# AND THE OPTICAL ARCHIVE TRACK: ITS SPACE WARNING AND ITS DRIVE (2026-09-04, a user requirement).
+#
+# _optical-loop.ps1 archives DVDs to C:\Users\matth\Videos\DVD and writes _optical-status.json after
+# every pass. The user asked for a WARNING when that drive drops below ~10 GB free, DISTINCT from
+# the floor that refuses to start a backup, and for it to reach THIS board - "not just a log line
+# nobody reads". Eight Jeeves discs at DVD9 are ~60 GB against ~70 GB free, so it will fire.
+#
+# Free space is RE-MEASURED here rather than trusted from the file, so a stale file cannot
+# reassure; the file supplies only what cannot be measured from outside: the thresholds the track
+# is running with, the drive having dropped off the bus, a read in flight, what is quarantined.
+# The block prints nothing when there is nothing to say, and it is additive: nothing above it
+# changes for any existing caller.
+$optStatusPath = 'D:/video/_optical-status.json'
+if (Test-Path -LiteralPath $optStatusPath) {
+  try {
+    $os = Get-Content -LiteralPath $optStatusPath -Raw | ConvertFrom-Json
+    $optAlive = $false
+    try {
+      $optH = $null
+      $optAlive = [System.Threading.Mutex]::TryOpenExisting(('Global' + [char]92 + 'video-optical-loop'), [ref]$optH)
+      if ($optH) { $optH.Dispose() }
+    } catch { $optAlive = $false }
+    $optRoot = "$($os.archive)"
+    $optQual = (Split-Path -Qualifier $optRoot)
+    $optWarnGB = [double]$os.warnGB; $optFloorGB = [double]$os.floorGB
+    $optFreeGB = [math]::Round(([IO.DriveInfo]::new($optQual + '\')).AvailableFreeSpace / 1GB, 1)
+    $optQuar = @($os.quarantined)
+    $optLines = @()
+    if ($optFreeGB -lt $optWarnGB) {
+      $optLines += ("*** OPTICAL ARCHIVE LOW SPACE: {0} has {1} GB free - below the {2} GB warning line (the {3} GB floor refuses the next disc). Free space on {0}; the archive is {4}." -f $optQual, $optFreeGB, $optWarnGB, $optFloorGB, $optRoot)
+    }
+    if ($optAlive) {
+      if ($os.driveAbsent) {
+        $optLines += ("*** OPTICAL DRIVE GONE: {0}: is not enumerated (USB drop). The track is waiting for it - nothing was killed; re-seat the cable / power-cycle the drive. Last seen: '{1}'." -f "$($os.driveLetter)", "$($os.disc.label)")
+      }
+      if ("$($os.action)" -eq 'space-hold') {
+        $optLines += ("*** OPTICAL SPACE-HOLD: '{0}' is in the drive and cannot start - {1} is under the {2} GB floor ({3} GB free)." -f "$($os.disc.label)", $optQual, $optFloorGB, $optFreeGB)
+      }
+      if (-not $Quiet -and $os.inFlight) {
+        $optLines += ("   optical: {0} '{1}' since {2}" -f "$($os.inFlight.mode)", "$(if ($os.inFlight.mode -eq 'verify') { $os.inFlight.partial } else { $os.inFlight.target })", "$($os.inFlight.since)")
+      }
+    }
+    # A dvdbackup.exe running while the track is NOT alive is a hand-run (backup-dvd-folder.ps1
+    # by hand); its ".partial-" is in flight, not stranded, and must not be reported as waiting.
+    $optHandRun = @(Get-Process -Name dvdbackup -ErrorAction SilentlyContinue)
+    if ($optQuar.Count -gt 0) {
+      $optNames = @($optQuar | ForEach-Object { "$($_.name)" + $(if ($_.failed) { ' [FAILED]' } else { '' }) }) -join ', '
+      if ($optAlive) { if (-not $Quiet) { $optLines += ("   optical: {0} quarantined partial(s) under {1} - resumed by fingerprint when their disc is back, else read afresh; never deleted by the track: {2}" -f $optQuar.Count, $optRoot, $optNames) } }
+      elseif ($optHandRun.Count -gt 0) { if (-not $Quiet) { $optLines += ("   optical track not running; a hand-run dvdbackup.exe (pid {0}) is reading the drive - {1} partial(s) under {2}, at least one in flight: {3}" -f $optHandRun[0].Id, $optQuar.Count, $optRoot, $optNames) } }
+      else { $optLines += ("   optical track NOT running; {0} quarantined partial(s) wait under {1} (start the track and re-insert their disc to finish them by fingerprint): {2}" -f $optQuar.Count, $optRoot, $optNames) }
+    }
+    foreach ($l in $optLines) { Write-Output $l }
+  } catch { Write-Output "   optical status unreadable ($optStatusPath): $($_.Exception.Message)" }
+}
 
 # AND THE RECLAIM QUEUE: a FAILED reclaim is a user confirmation that did NOT execute, and a
 # queued artefact with no loop behind it sits forever looking like it is being handled. Both are
 # invisible everywhere else - the release scripts only speak when invoked, and the whole point of
 # the reclaim track is that nobody invokes them by hand any more. (Added 2026-09-02 with
 # _reclaim-loop.ps1; the artefact format is documented in that loop's header.)
-$rqRoot = 'D:/video/_reclaim-queue'
+$rqRoot = $ReclaimRoot
 if (Test-Path -LiteralPath $rqRoot) {
   $rqFailed  = @(Get-ChildItem "$rqRoot/failed/*.json"  -ErrorAction SilentlyContinue)
   $rqPending = @(Get-ChildItem "$rqRoot/*.json"         -ErrorAction SilentlyContinue)
@@ -444,9 +598,31 @@ if (Test-Path -LiteralPath $rqRoot) {
     $supersededNote = Join-Path $f.DirectoryName ($f.BaseName + '.superseded.txt')
     if (Test-Path -LiteralPath $supersededNote -PathType Leaf) {
       Write-Output ("   reclaim {0} - FAILED and SUPERSEDED; closed by other artefacts, do NOT requeue. Why: {1}" -f $f.Name, $supersededNote)
+      $reclaimFailedStale += $f.Name
+      continue
+    }
+    # A FAILURE THAT WAS SINCE RETRIED AND COMPLETED IS HISTORY, NOT AN OPEN FAULT. Retrying moves
+    # the .json back to the queue and, on success, into done/ - but the failed/ copy of its .json
+    # and .result.txt stay behind (failed/ is never emptied, by design), so this line kept shouting
+    # "RECLAIM FAILED" for three reclaims that had completed at 18:13 on 2026-09-04. Equally, an
+    # operator who reads only the two DONE result files reports success while three sit failed.
+    # Both misreadings come from the same gap: nobody compared the two folders. Compare them.
+    $failStamp  = $f.LastWriteTime
+    $failResult = Join-Path $f.DirectoryName ($f.BaseName + '.result.txt')
+    if (Test-Path -LiteralPath $failResult -PathType Leaf) { $failStamp = (Get-Item -LiteralPath $failResult).LastWriteTime }
+    $doneResult = Join-Path (Join-Path $rqRoot 'done') ($f.BaseName + '.result.txt')
+    $retriedOk  = $false
+    if (Test-Path -LiteralPath $doneResult -PathType Leaf) {
+      $dr = Get-Item -LiteralPath $doneResult
+      if ($dr.LastWriteTime -gt $failStamp -and ((Get-Content -LiteralPath $doneResult -Raw -ErrorAction SilentlyContinue) -match 'verdict\s*:\s*DONE')) { $retriedOk = $true }
+    }
+    if ($retriedOk) {
+      Write-Output ("   reclaim {0} - FAILED at {1:MM-dd HH:mm} but a LATER retry completed at {2:MM-dd HH:mm} (done/{3}.result.txt says DONE). The failed/ copy is stale history; nothing to do." -f $f.Name, $failStamp, (Get-Item -LiteralPath $doneResult).LastWriteTime, $f.BaseName)
+      $reclaimFailedStale += $f.Name
       continue
     }
     Write-Output ("*** RECLAIM FAILED: {0} - a CONFIRMED reclaim did not complete. Read {1}/failed/{2}.result.txt, fix the cause, move the .json back into _reclaim-queue/ to retry." -f $f.Name, $rqRoot, $f.BaseName)
+    $reclaimFailed += $f.Name
   }
   foreach ($f in $rqRunning) {
     if (-not $rqAlive) {
@@ -471,3 +647,42 @@ if (Test-Path -LiteralPath $rqRoot) {
 # found it by looking at Plex, which was the only place the outcome was visible.
 $freshaudit = 'D:/video/.claude/skills/disc-to-plex/scripts/audit-publish-freshness.ps1'
 if (Test-Path -LiteralPath $freshaudit) { & pwsh -NoProfile -File $freshaudit }
+
+# AND RE-RIP OBLIGATIONS THAT PUBLISHED BUT DID NOT CLOSE. discharge-rerip.ps1 runs after every
+# completed publish and closes a register row only on NAS-verified evidence; a row that published
+# and still could not close (fewer verified than owed, or a candidate row) is written here so it
+# is NAMED rather than discovered at the next refused reclaim.
+if ($DischargePending -and (Test-Path -LiteralPath $DischargePending -PathType Leaf)) {
+  try {
+    $dp = Get-Content -LiteralPath $DischargePending -Raw | ConvertFrom-Json
+    foreach ($p in $dp.PSObject.Properties) {
+      $e = $p.Value
+      Write-Output ("*** RE-RIP NOT DISCHARGED: '{0}' published into '{1}' but delivered {2} of {3} owed ({4}). The register row stays {5}, so its staging cannot release - settle it by hand in D:/video/_rerip-worklist.tsv, or supply the missing evidence. Details: D:/video/_rerip-discharge-pending.json" -f `
+                    $p.Name, "$($e.work)", $e.delivered, $e.owed, "$($e.reason)", "$($e.status)")
+      $dischargePendingNames += $p.Name
+    }
+  } catch { Write-Output "   re-rip discharge report unreadable ($DischargePending): $($_.Exception.Message)" }
+}
+
+# THE STATE FILE - last, so it carries every verdict above. See the -StateFile parameter.
+if ($StateFile) {
+  $stateDoc = [ordered]@{
+    at             = (Get-Date).ToString('s')
+    stalls         = @($stalls)
+    moving         = @($moving)
+    held           = @($held)
+    busy           = [bool]$busy
+    queued         = [int]$queued
+    running        = [int]$running
+    unitsStaged    = [int]$units.Count
+    fullyStopped   = [bool]($stalls.Count -gt 0 -and -not $busy -and $queued -eq 0 -and $running -eq 0)
+    nothingStaged  = [bool]($units.Count -eq 0 -and -not $busy)
+    spaceBlocked   = [bool]$spaceBlocked
+    reclaimFailed  = @($reclaimFailed)
+    reclaimFailedStale = @($reclaimFailedStale)
+    needsValidation = @($needsValidation)
+    briefsReady    = @($briefsReady)
+    dischargePending = @($dischargePendingNames)
+  }
+  try { ($stateDoc | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $StateFile -Encoding UTF8 } catch { }
+}

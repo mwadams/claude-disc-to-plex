@@ -349,6 +349,23 @@ while ($MaxPasses -le 0 -or $pass -lt $MaxPasses) {
           Write-Output ("    *** {0} IS PUBLISHED AND THE DISK IS BELOW THE FETCH FLOOR ({1} GB)." -f $w.Name, $freeGB)
           Write-Output  '        Confirm it in Plex so its local copy can be reclaimed - the line is waiting on this.'
         }
+
+        # AUTO-DISCHARGE THE RE-RIP REGISTER (2026-09-04). A completed publish is the earliest
+        # moment the evidence for "this disc delivered what it owed" can exist, and it is the
+        # moment nothing was ever written down: two discs sat IN-FLIGHT after delivering, the
+        # release gate (correctly) refused their staging three times, and 18 GB stayed on disk.
+        # discharge-rerip.ps1 stats the NAS itself - it never takes this loop's word for anything -
+        # and closes a row only when the owed count is met with a .eng.srt / .mkv actually there.
+        # A row it cannot close is written to _rerip-discharge-pending.json for the board.
+        if (-not $NoDownstream) {
+          try {
+            $dcOut = @(& pwsh -NoProfile -File 'D:/video/discharge-rerip.ps1' -Work $w.Name 2>&1 | ForEach-Object { "$_" })
+            foreach ($dl in $dcOut) {
+              if ($dl -match '^no open re-rip obligation') { continue }   # the common case; not worth a line per publish
+              Write-Output ("    [rerip-discharge] {0}" -f $dl)
+            }
+          } catch { Write-Output "    discharge-rerip.ps1 threw: $($_.Exception.Message)" }
+        }
       }
     }
   }
