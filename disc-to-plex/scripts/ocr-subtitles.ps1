@@ -65,7 +65,29 @@ param(
   # viewer fix timing themselves, non-destructively. Baking an offset in takes that choice away.
   [int]$OffsetMs = 0,
   [string]$ToolsDir = 'D:\video\.transcode-tools',
-  [switch]$Manual   # override the track guard (see lib-track-guard.ps1)
+  [switch]$Manual,  # override the track guard (see lib-track-guard.ps1)
+  # STAGING (2026-09-04). A REMOTE source (UNC path or a mapped network drive) is copied to the
+  # LOCAL per-run work dir before extraction, and every whole-file read after that - mkvextract,
+  # the non-mkv shim remux, the sparse-track packet count, a -Mode Mux remux - reads the local copy.
+  # mkvextract has to walk the entire Matroska container to gather the interleaved subtitle
+  # clusters, so a direct read drags the whole 0.6-4 GB file across SMB to write a ~1 MB .idx/.sub;
+  # measured on Red Dwarf S02E04 (616 MiB): 623 MiB received either way, ~9 s on an idle link. The
+  # copy is bytes-neutral for a single extraction; what it buys is ONE sequential streaming read
+  # instead of a container walk, and every subsequent pass over the file for free - the packet
+  # count and Mux paths were each a second full read across the network.
+  #
+  # THE STAGING PATH IS NEVER DERIVED FROM THE INPUT OR OUTPUT PATH. Both are NAS paths when the
+  # queue runs, and a scratch path built from either lands scratch on the NAS - which this pipeline
+  # cannot delete and the user has already had to clean up by hand once (transcribe-subtitles.py's
+  # .tmp16k.wav, see CLAUDE.md). The copy lives under $ToolsDir\work\ocr<pid>, local and fixed.
+  #
+  # -NoStage restores the direct read; a local-path input is never copied (nothing to gain).
+  [switch]$NoStage,
+  # Free space that must REMAIN on the staging volume after the copy, or the file is read directly
+  # instead. D: sat at ~99 GB against a 120 GB pipeline fetch floor on the day this was written, so
+  # the fall-back is the direct read (the old behaviour), never a refusal - a queue that stalls on
+  # disk space is worse than one that reads over the network for a while.
+  [long]$StageReserveBytes = 10GB
 )
 
 # The guard must be IMPOSSIBLE to skip by failing to load. A dot-source of a bad path raises a
@@ -90,6 +112,21 @@ if (-not (Test-Path -LiteralPath $subsLib)) { throw "subtitle library missing: $
 if (-not (Get-Command Repair-OcrGlyphs -ErrorAction SilentlyContinue)) {
   throw 'lib-subtitles.ps1 failed to load - refusing to run without the OCR glyph repairs'
 }
+
+# THE NAS GOVERNOR (2026-09-04). Every whole-file read of a NAS source in this script - the staging
+# copy above all, and the direct mkvextract when staging is declined - goes through
+# lib-nas-governor.ps1: the kill switch (D:/video/_nas-hold, honoured before each file and INSIDE
+# the staging copy, which stops within one 4 MB chunk), a machine-wide cap on concurrent NAS
+# readers, and the throughput ceiling. Ungoverned, mkvextract/Copy-Item pulled a file at 435-543
+# Mbps - the only reader in the pipeline that reaches link speed. A local source is never touched
+# by any of this (Test-NasPath decides), so the local ocr track is not paced.
+$govLib = "$PSScriptRoot/lib-nas-governor.ps1"
+if (-not (Test-Path -LiteralPath $govLib)) { throw "nas governor missing: $govLib" }
+. $govLib
+if (-not (Get-Command Copy-NasFileThrottled -ErrorAction SilentlyContinue)) {
+  throw 'lib-nas-governor.ps1 failed to load - refusing to read the NAS ungoverned'
+}
+$govSay = { param($m) Write-Host "  [governor] $m" }
 
 
 $ErrorActionPreference = 'Stop'
@@ -409,17 +446,96 @@ function Get-EnglishWordSet {
   return ,$set
 }
 
+# ---------------------------------------------------------------------------------------------
+# STAGING HELPERS - see the -NoStage parameter comment for the why.
+# ---------------------------------------------------------------------------------------------
+function Test-IsRemotePath([string]$P) {
+  if ($P -match '^(\\\\|//)') { return $true }          # UNC
+  $root = $null
+  try { $root = [IO.Path]::GetPathRoot($P) } catch { return $false }
+  if (-not $root) { return $false }
+  try { return ([IO.DriveInfo]::new($root).DriveType -eq [IO.DriveType]::Network) } catch { return $false }
+}
+
+# A killed run cannot run its own finally. Its work\ocr<pid> folder - now potentially holding a
+# multi-gigabyte staged copy, not just a 1 MB .idx - stays behind until something removes it, and
+# nothing did: 27 such folders from August were sitting in work\ when this was written. Sweep them
+# at startup, but ONLY where the pid is provably dead; a live pid (another worker's, or a reused
+# number) keeps its folder. Local scratch under $ToolsDir only - this never looks anywhere else.
+function Remove-StaleOcrWorkDirs([string]$WorkRoot, [int]$KeepPid) {
+  $gone = @()
+  foreach ($d in @(Get-ChildItem -LiteralPath $WorkRoot -Directory -Filter 'ocr*' -ErrorAction SilentlyContinue)) {
+    if ($d.Name -notmatch '^ocr(\d+)$') { continue }
+    $owner = [int]$Matches[1]
+    if ($owner -eq $KeepPid) { continue }
+    if (Get-Process -Id $owner -ErrorAction SilentlyContinue) { continue }
+    Remove-Item -LiteralPath $d.FullName -Recurse -Force -ErrorAction SilentlyContinue
+    if (-not (Test-Path -LiteralPath $d.FullName)) { $gone += $d.Name }
+  }
+  if ($gone.Count) { Write-Host ("  swept {0} stale work folder(s) left by dead runs: {1}" -f $gone.Count, ($gone -join ', ')) }
+  return ,$gone
+}
+
+# Copy a remote source to $Dest and VERIFY the byte count. Returns Path=$null with a Reason when
+# the caller should read the source directly instead - never throws, because a failed stage is a
+# degraded path, not a failed file.
+function Copy-SourceToStage {
+  param([Parameter(Mandatory)][IO.FileInfo]$File, [Parameter(Mandatory)][string]$Dest, [long]$Reserve)
+  $sw = [Diagnostics.Stopwatch]::StartNew()
+  $free = $null; $root = ''
+  # GetPathRoot on the destination itself. NOT `Split-Path -LiteralPath ... -Parent`: that pair is
+  # an unresolvable parameter set on pwsh 7.6, it threw on every call, and the catch below turned
+  # the throw into "NOT staged (could not read free space)" - a graceful fall-back that silently
+  # made the whole feature a no-op. Caught only because the first live run was READ, not trusted.
+  try {
+    $root = [IO.Path]::GetPathRoot($Dest)
+    $free = [IO.DriveInfo]::new($root).AvailableFreeSpace
+  } catch { }
+  if ($null -eq $free) {
+    return [pscustomobject]@{ Path = $null; Seconds = 0; Reason = "could not read free space for '$Dest'" }
+  }
+  if (($free - $File.Length) -lt $Reserve) {
+    return [pscustomobject]@{ Path = $null; Seconds = 0; Reason = ('free space on {0} is {1:N1} GB; staging {2:N2} GB would leave less than the {3:N0} GB reserve' -f $root, ($free / 1GB), ($File.Length / 1GB), ($Reserve / 1GB)) }
+  }
+  # THE GOVERNED COPY (lib-nas-governor.ps1): a level stream at the configured ceiling, not a burst
+  # - Copy-Item pulled Red Dwarf S02E04 (616 MiB) at 435-543 Mbps. It also honours the kill switch
+  # between 4 MB chunks (stop within ~0.6 s, discard, restart when released) and verifies the byte
+  # count itself; the check below stays as a second opinion. A local (non-NAS) source is copied
+  # by the same function with no pacing, so nothing changes for it.
+  try {
+    $ceiling = if (Test-NasPath $File.FullName) { -1 } else { 0 }   # -1 = the config's ceiling; 0 = none
+    $cp = Copy-NasFileThrottled -Source $File.FullName -Destination $Dest -CeilingMbps $ceiling -Say $govSay -Label "stage $($File.Name)"
+    Write-Host ("  [governor] staged at {0:N0} Mbps{1}" -f $cp.Mbps, $(if ($cp.Restarts) { " after $($cp.Restarts) hold restart(s)" } else { '' }))
+  }
+  catch {
+    Remove-Item -LiteralPath $Dest -Force -ErrorAction SilentlyContinue
+    return [pscustomobject]@{ Path = $null; Seconds = $sw.Elapsed.TotalSeconds; Reason = "copy failed: $($_.Exception.Message)" }
+  }
+  $got = if (Test-Path -LiteralPath $Dest) { (Get-Item -LiteralPath $Dest).Length } else { -1 }
+  if ($got -ne $File.Length) {
+    Remove-Item -LiteralPath $Dest -Force -ErrorAction SilentlyContinue
+    return [pscustomobject]@{ Path = $null; Seconds = $sw.Elapsed.TotalSeconds; Reason = "staged copy is $got bytes, source is $($File.Length) - discarded" }
+  }
+  return [pscustomobject]@{ Path = $Dest; Seconds = $sw.Elapsed.TotalSeconds; Reason = '' }
+}
+
 $targets = if ((Get-Item $Path).PSIsContainer) {
   Get-ChildItem -LiteralPath $Path -Recurse -File -Filter *.mkv
 } else { @(Get-Item -LiteralPath $Path) }
 
 Write-Host "files to consider: $($targets.Count)"
-$work = Join-Path $ToolsDir ("work\ocr$PID")
+$workRoot = Join-Path $ToolsDir 'work'
+$work = Join-Path $workRoot "ocr$PID"
 New-Item -ItemType Directory -Force $work | Out-Null
+[void](Remove-StaleOcrWorkDirs -WorkRoot $workRoot -KeepPid $PID)
 
 $done = 0; $skipped = 0; $failed = 0
 
 foreach ($f in $targets) {
+  # THE KILL SWITCH, at the file boundary (a NAS source only - a local file has nothing to stand
+  # down for). The staging copy below re-checks it between chunks.
+  if (Test-NasPath $f.FullName) { [void](Wait-NasHold -Say $govSay -Who 'ocr') }
+
   # ---- pick the track: bitmap, in the wanted language (untagged counts - discs often omit it)
   $info = & $ffprobe -v error -select_streams s `
             -show_entries stream=index,codec_name:stream_tags=language -of csv=p=0 $f.FullName 2>$null
@@ -481,24 +597,54 @@ foreach ($f in $targets) {
 
   if (-not $PSCmdlet.ShouldProcess($f.Name, "OCR subtitle track $($track.Index) ($($track.Codec))")) { continue }
 
+  $staged = $null
   try {
+    # STAGE A REMOTE SOURCE LOCALLY FIRST - see the -NoStage parameter. Everything below that has
+    # to read the whole file reads $readFrom; $f.FullName is only ever used for the header probe
+    # above, for naming the sidecar, and (Mux) as the destination the remux is moved over.
+    # Inside the try on purpose: the per-file finally is what removes the copy on every exit path.
+    $readFrom = $f.FullName
+    if (-not $NoStage -and (Test-IsRemotePath $f.FullName)) {
+      # Invoke-NasRead = a shared read slot (the machine-wide concurrency cap) around the copy; its
+      # pacing costs ~nothing here because the copy itself already ran at the ceiling.
+      $st = Invoke-NasRead -Path $f.FullName -Label "ocr stage $($f.Name)" -Say $govSay -Do {
+        Copy-SourceToStage -File $f -Dest "$stem.src$($f.Extension)" -Reserve $StageReserveBytes
+      }
+      if ($st.Path) {
+        $staged = $st.Path; $readFrom = $staged
+        Write-Host ("  staged locally: {0:N0} MB in {1:N1}s" -f ($f.Length / 1MB), $st.Seconds)
+      } else {
+        Write-Host ("  NOT staged ({0}) - reading the remote file directly" -f $st.Reason)
+      }
+    }
+
     # mkvextract reads MATROSKA ONLY. A library also contains .mp4 rips that legitimately carry
     # dvd_subtitle tracks, and on those mkvextract exits quietly having written nothing - which
     # reads as an OCR failure when it is really a container mismatch. Remux just the wanted
     # subtitle stream into a temporary single-track mkv first (stream copy, no re-encode); inside
     # that file the track is always id 0.
-    $extractFrom = $f.FullName
+    $extractFrom = $readFrom
     $extractId   = $track.Index
     $shim        = $null
-    if ($f.Extension -ne '.mkv') {
-      $shim = "$stem.shim.mkv"
-      & $ffmpeg -v error -i $f.FullName -map 0:$($track.Index) -c copy -y $shim 2>&1 | Out-Null
-      if (-not (Test-Path $shim)) { throw "could not remux $($f.Extension) subtitle track into mkv for extraction" }
-      $extractFrom = $shim
-      $extractId   = 0
+    # When staging was declined (disk space) $readFrom is still the NAS file and the remux and/or
+    # mkvextract below read ALL of it, at whatever rate SMB gives them (mkvextract has no rate
+    # control). Invoke-NasRead cannot slow that read down, but it does take a read slot for it and
+    # then PACES afterwards, so the file's average stays at the ceiling - and for a local
+    # $readFrom (the normal, staged case, or a local library file) it runs the block straight
+    # through with no slot, no measurement and no sleep.
+    $extractBlock = {
+      if ($f.Extension -ne '.mkv') {
+        $script:shim = "$stem.shim.mkv"
+        & $ffmpeg -v error -i $readFrom -map 0:$($track.Index) -c copy -y $script:shim 2>&1 | Out-Null
+        if (-not (Test-Path $script:shim)) { throw "could not remux $($f.Extension) subtitle track into mkv for extraction" }
+        $script:extractFrom = $script:shim
+        $script:extractId   = 0
+      }
+      & $mkvx tracks $script:extractFrom "$($script:extractId):$bmp" 2>&1 | Out-Null
     }
-
-    & $mkvx tracks $extractFrom "${extractId}:$bmp" 2>&1 | Out-Null
+    $script:shim = $shim; $script:extractFrom = $extractFrom; $script:extractId = $extractId
+    Invoke-NasRead -Path $readFrom -Label "ocr extract $($f.Name)" -Say $govSay -Do $extractBlock | Out-Null
+    $shim = $script:shim; $extractFrom = $script:extractFrom; $extractId = $script:extractId
     if (-not (Test-Path $bmp)) { throw "mkvextract produced nothing" }
 
     # A track can be DECLARED in the header and hold no packets at all - the stream shows up in
@@ -602,7 +748,7 @@ foreach ($f in $targets) {
     # unreadable cues and passed. Scale both ways - about one cue per 15 s for short clips (so a
     # 22-second deleted scene needs only one), and for anything over 5 minutes require a rate a
     # real dialogue track easily clears (a feature runs 600-1500 cues, so duration/4 is generous).
-    $durSec = [double]("$(& $ffprobe -v error -show_entries format=duration -of csv=p=0 $f.FullName 2>$null)".Trim() -replace '^$','0')
+    $durSec = [double]("$(& $ffprobe -v error -show_entries format=duration -of csv=p=0 $readFrom 2>$null)".Trim() -replace '^$','0')
     $durMin = $durSec / 60
     $minCues = if ($durMin -gt 5) { [int][math]::Floor($durMin / 4) }
                else { [math]::Max(1, [math]::Min(5, [int][math]::Floor($durSec / 15))) }
@@ -614,7 +760,8 @@ foreach ($f in $targets) {
     # set plus a clearing packet per cue, so packets/2 is the ceiling on recoverable cues. Counted
     # only when the file is about to fail, so features pay nothing for it.
     if ($cues -lt $minCues) {
-      $pkts = @(& $ffprobe -v error -select_streams s -show_packets -show_entries packet=stream_index -of csv=p=0 $f.FullName 2>$null)
+      # A FULL pass over the container - reads the staged copy when there is one, never the NAS twice.
+      $pkts = @(& $ffprobe -v error -select_streams s -show_packets -show_entries packet=stream_index -of csv=p=0 $readFrom 2>$null)
       $perStream = $pkts | Where-Object { $_ } | Group-Object | ForEach-Object { $_.Count }
       $trackCap  = if ($perStream) { [int][math]::Ceiling(($perStream | Measure-Object -Maximum).Maximum / 2) } else { 0 }
       if ($trackCap -gt 0 -and $minCues -gt $trackCap) {
@@ -786,8 +933,10 @@ foreach ($f in $targets) {
       for ($i = 0; $i -lt $nSubs; $i++) { $disp += @("-disposition:s:$i", '0') }   # clear the originals
       $disp += @("-disposition:s:$nSubs", 'default')                                # flag the SRT
 
+      # The remux INPUT is the staged copy when there is one (a third full read of the source
+      # otherwise); the OUTPUT is still moved over $f.FullName below, wherever that is.
       $tmp = Join-Path $work ("mux_" + $f.Name)
-      & $ffmpeg -v error -i $f.FullName -i $srt -map 0 -map 1 -c copy `
+      & $ffmpeg -v error -i $readFrom -i $srt -map 0 -map 1 -c copy `
           -metadata:s:s:$nSubs "language=$Lang" @disp `
           -y $tmp 2>&1 | Out-Null
       if (-not (Test-Path $tmp) -or (Get-Item $tmp).Length -lt (0.9 * $f.Length)) { throw "remux output too small" }
@@ -810,11 +959,16 @@ foreach ($f in $targets) {
     $failed++
   }
   finally {
+    # The staged copy first and by name - it is the one file here that can be gigabytes - then
+    # everything else this file's stem produced. Runs on success, on throw, and on `continue`.
+    if ($staged) { Remove-Item -LiteralPath $staged -Force -EA SilentlyContinue }
     Get-ChildItem $work -File -Filter ([IO.Path]::GetFileNameWithoutExtension($stem) + '*') -EA SilentlyContinue |
       Remove-Item -Force -EA SilentlyContinue
   }
 }
 
+# A run that dies before reaching this line leaves work\ocr<pid> behind; the next run's
+# Remove-StaleOcrWorkDirs sweep (above) removes it once the pid is dead.
 Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host ""
 Write-Host "ocr: $done converted, $skipped skipped, $failed failed"

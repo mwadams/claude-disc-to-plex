@@ -5,6 +5,43 @@
 # awaiting OCR (bitmap subs, no sidecar), so this loop can run continuously and simply skips what
 # is not ready yet, picking it up on a later pass once OCR catches up.
 #
+# EVERY PARAMETER DEFAULTS TO PRODUCTION. They exist so that publish-loop.tests.ps1 can run THIS
+# script - not a copy of its logic - against a scratch local root, a scratch "NAS" and a stub
+# publish script, and prove the circuit breaker from the outside. _bounce-track.ps1 relaunches the
+# loop with no arguments, i.e. these defaults.
+param(
+  [string]$LocalRoot       = 'D:\video',
+  [string]$NasRoot         = '\\NASTEAMV\Multimedia',
+  [string]$PublishScript   = 'D:\video\_publish.ps1',
+  [string]$LogDir          = 'D:\video\_logs',
+  [string]$Register        = 'D:/video/_awaiting-verification.txt',
+  [string]$BreakerRegister = 'D:/video/_publish-breaker.txt',
+  # THE CIRCUIT BREAKER (lib-publish-state.ps1). A work whose publish attempt changes nothing on
+  # the NAS $MaxNoProgress times in a row is refused until its outstanding set changes; after
+  # $MaxNoProgressLifetime fruitless attempts in this process it is refused until the track is
+  # bounced. 2,166 attempts (Boston Legal, 2026-09-02) must be structurally impossible.
+  [int]$MaxNoProgress         = 5,
+  [int]$MaxNoProgressLifetime = 40,
+  [int]$IdleSleepSeconds  = 90,
+  # THE PASS-RATE FLOOR. The 2026-09-02 hot loop ran passes 5 s apart for three hours because a
+  # pass that "published" skipped the idle sleep entirely. A pass that landed something still
+  # sleeps this long before the next - a floor on the rate, not a delay on the work.
+  [int]$MinPassSeconds    = 10,
+  [int]$MaxPasses         = 0,          # 0 = forever; tests use a finite number
+  [switch]$NoDownstream,                # skip the subtitle-coverage / retire-list children (tests)
+  [string]$MutexName      = 'video-publish-loop'
+)
+
+# A NON-DEFAULT MUTEX NAME IS FOR TESTS ONLY, and a test never runs on the production root. Two
+# loops on the real library racing the same work is the exact contention this loop's serialness
+# exists to avoid, so the override is refused unless the root is somewhere else.
+$prodRoot = 'D:\video'
+$isProduction = ($LocalRoot.TrimEnd([char]92, [char]47) -ieq $prodRoot)
+if ($isProduction -and $MutexName -ne 'video-publish-loop') {
+  Write-Output "refusing a non-default mutex name ('$MutexName') on the production root - that would allow two publish loops on the live library"
+  exit 1
+}
+
 # SINGLE INSTANCE. This was the only loop without a mutex, and the absence bit twice in one minute
 # on 2026-08-25: probing for a mutex that did not exist reported the loop DEAD while it had been
 # running since 04:55, and starting a "replacement" then succeeded - twice - because nothing
@@ -15,8 +52,8 @@
 # NOTE the string build: `'Global' + [char]92 + 'name'`. Written as New-Object with a comma inside
 # a concatenation, the arguments parse as one 4-element ARRAY and New-Object returns $null - which
 # fails OPEN. That is why the null check below is not decoration.
-$mutexName = 'Global' + [char]92 + 'video-publish-loop'
-$mutex = New-Object System.Threading.Mutex($false, $mutexName)
+$mutexFull = 'Global' + [char]92 + $MutexName
+$mutex = New-Object System.Threading.Mutex($false, $mutexFull)
 if ($null -eq $mutex) {
   Write-Output 'could not create the single-instance mutex - refusing to run unguarded'
   exit 1
@@ -37,10 +74,13 @@ if (-not $mutex.WaitOne(0)) {
 # A loop that cannot be observed gets misdiagnosed, and the misdiagnosis is what leads to killing
 # healthy pipeline processes. Transcript, not redirection, so it holds however it is started - and
 # it captures a terminating error too, which a `> log` from the launcher would also have lost.
-$logDir = 'D:\video\_logs'
-if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path $logDir | Out-Null }
-try { Start-Transcript -Path (Join-Path $logDir '_publish-loop.log') -Append | Out-Null } catch { }
+if (-not (Test-Path -LiteralPath $LogDir)) { New-Item -ItemType Directory -Path $LogDir | Out-Null }
+try { Start-Transcript -Path (Join-Path $LogDir '_publish-loop.log') -Append | Out-Null } catch { }
 Write-Output ("=== publish loop up {0} ===" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
+if (-not $isProduction) {
+  Write-Output ("    TEST MODE: local {0} | nas {1} | publish {2} | breaker {3}/{4} | passes {5}" -f `
+    $LocalRoot, $NasRoot, $PublishScript, $MaxNoProgress, $MaxNoProgressLifetime, $MaxPasses)
+}
 
 # THE DEFINITION OF "PUBLISHED", loaded FAIL-CLOSED.
 #
@@ -62,17 +102,31 @@ if (-not (Test-Path -LiteralPath $stateLib)) {
   exit 1
 }
 . $stateLib
-if (-not (Get-Command Get-WorkOutstanding -ErrorAction SilentlyContinue)) {
-  # A dot-source failure is NON-TERMINATING: without this check the function would simply be
-  # undefined and every call would error and carry on.
-  Write-Output 'lib-publish-state.ps1 failed to load - refusing to run without the definition of "published"'
+. 'D:/video/.claude/skills/disc-to-plex/scripts/lib-nas-governor.ps1'
+if (-not (Get-Command Wait-NasHold -ErrorAction SilentlyContinue)) {
+  Write-Output 'lib-nas-governor.ps1 failed to load - refusing to run a NAS-writing track without the kill switch'
   exit 1
 }
+foreach ($fn in 'Get-WorkOutstanding', 'Get-OutstandingFingerprint', 'New-PublishBreaker',
+                'Get-PublishBreakerVerdict', 'Register-PublishBreakerAttempt', 'Write-PublishBreakerRegister') {
+  if (-not (Get-Command $fn -ErrorAction SilentlyContinue)) {
+    # A dot-source failure is NON-TERMINATING: without this check the function would simply be
+    # undefined and every call would error and carry on - for the breaker, that is "no breaker".
+    Write-Output "lib-publish-state.ps1 failed to load ($fn undefined) - refusing to run without the definition of 'published' and its circuit breaker"
+    exit 1
+  }
+}
 
-while ($true) {
+# THE CIRCUIT BREAKER. Per-process state; the register file is the durable, operator-visible view.
+$breaker = New-PublishBreaker -MaxNoProgress $MaxNoProgress -MaxNoProgressLifetime $MaxNoProgressLifetime
+Write-PublishBreakerRegister -Breaker $breaker -Path $BreakerRegister
+
+$pass = 0
+while ($MaxPasses -le 0 -or $pass -lt $MaxPasses) {
+  $pass++
   $published = 0
   foreach ($kind in @('Movies', 'Television Shows')) {
-    $root = Join-Path 'D:\video' $kind
+    $root = Join-Path $LocalRoot $kind
     if (-not (Test-Path -LiteralPath $root)) { continue }
     foreach ($w in Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue) {
       # cheap pre-check: is anything actually missing on the NAS for this work?
@@ -93,10 +147,28 @@ while ($true) {
       # hot-loop (the local .mkv of a `.subtitles-only` work differs from the NAS copy permanently
       # and by design), and the Michael J. Fox Interview re-encode that came out byte-for-byte the
       # SAME SIZE at a different aspect ratio, which is why an mtime difference counts too.
-      $nas = Join-Path (Join-Path '\\NASTEAMV\Multimedia' $kind) $w.Name
+      $nas = Join-Path (Join-Path $NasRoot $kind) $w.Name
       $subsOnly = Test-Path -LiteralPath (Join-Path $w.FullName '.subtitles-only')
       $outstanding = @(Get-WorkOutstanding -WorkDir $w.FullName -NasDir $nas)
       if ($outstanding.Count -eq 0) { continue }
+      $before = Get-OutstandingFingerprint $outstanding
+
+      # THE BREAKER, CONSULTED BEFORE ANYTHING IS PRINTED OR INVOKED. A refused work prints one
+      # throttled reminder rather than a "republishing" line it is not going to act on - the
+      # 2,166-line band this guards against was made of exactly such lines.
+      $verdict = Get-PublishBreakerVerdict -Breaker $breaker -Work $w.Name -Fingerprint $before
+      if (-not $verdict.Allow) {
+        if ($verdict.Skipped -eq 1 -or ($verdict.Skipped % 20) -eq 0) {
+          "{0,-46} BREAKER OPEN ({1}) - NOT re-publishing; {2} pass(es) refused so far, {3} file(s) outstanding and unchanged. See {4}" -f `
+            $w.Name, $verdict.State, $verdict.Skipped, $outstanding.Count, $BreakerRegister
+        }
+        continue
+      }
+      if ($verdict.State -eq 'rearmed') {
+        "{0,-46} breaker RE-ARMED - the outstanding set has changed since it tripped; trying once more" -f $w.Name
+        Write-PublishBreakerRegister -Breaker $breaker -Path $BreakerRegister
+      }
+
       $stale = @($outstanding | Where-Object { $_.Reason -ne 'missing' }).Count -gt 0
       foreach ($o in @($outstanding | Where-Object { $_.Reason -eq 'timestamp' })) {
         "{0,-46} '{1}' differs by TIMESTAMP not size - re-publishing" -f $w.Name, $o.Name
@@ -104,8 +176,16 @@ while ($true) {
 
       # -NoProfile: avoids the Terminal-Icons half-written-theme Import-Clixml noise on concurrent
       # pwsh starts; _publish.ps1 has no profile dependence (checked 2026-09-02).
-      $args = @('-NoProfile', '-File', 'D:\video\_publish.ps1', '-Work', $w.Name, '-Kind', $kind)
+      $args = @('-NoProfile', '-File', $PublishScript, '-Work', $w.Name, '-Kind', $kind)
       if ($stale) { $args += '-Overwrite'; "{0,-46} wrong-size copy on NAS -> republishing with -Overwrite" -f $w.Name }
+
+      # THE NAS KILL SWITCH (lib-nas-governor.ps1, 2026-09-04): while D:/video/_nas-hold exists
+      # nothing new is pushed to the NAS. Checked HERE, between works, because a robocopy already
+      # running must finish its work (a kill mid-copy is the partial-file-on-the-NAS risk this loop
+      # exists to avoid). This is the only governor touch on the publish path: robocopy itself
+      # cannot be rate-limited (/IPG measured to do nothing on this link), so the upload direction
+      # is stop/go, not paced.
+      [void](Wait-NasHold -Say { param($m) Write-Output ("    {0}" -f $m) } -Who 'publish')
 
       # SIDECARS ONLY, IF THE WORK SAYS SO. A `.subtitles-only` marker in the work folder means the
       # media is ALREADY on the NAS and correct, and only the .srt should travel - the case where a
@@ -177,6 +257,27 @@ while ($true) {
       $landed = $outstanding.Count - $after.Count
       if ($landed -gt 0) { $published++ }
 
+      # THE BREAKER, FED. "Progress" is the outstanding set having changed at all - a file landed,
+      # or a new one appeared - measured by the same function that decided there was work to do.
+      $afterFp = Get-OutstandingFingerprint $after
+      $trip = Register-PublishBreakerAttempt -Breaker $breaker -Work $w.Name -Before $before -After $afterFp
+      if ($trip -ne 'ok') {
+        $bw = Get-PublishBreakerWork $breaker $w.Name
+        Write-PublishBreakerRegister -Breaker $breaker -Path $BreakerRegister
+        if ($trip -eq 'hard-tripped') {
+          "    *** CIRCUIT BREAKER HARD-TRIPPED: '{0}' - {1} publish attempts in this loop's lifetime changed NOTHING on the NAS ({2} attempts in all)." -f $w.Name, $bw.NoProgressLifetime, $bw.Attempts
+          "        REFUSING to re-publish it again until the publish track is bounced (pwsh -File D:/video/_bounce-track.ps1 -Track publish)."
+        } else {
+          "    *** CIRCUIT BREAKER TRIPPED: '{0}' - {1} consecutive publish attempts changed NOTHING on the NAS." -f $w.Name, $bw.NoProgress
+          "        REFUSING to re-publish it until its outstanding set changes (a file arrives locally, or the NAS copy is replaced)."
+        }
+        "        Something is stopping the copy from taking effect - a refusal upstream (see the line above), a locked or unreplaceable NAS file,"
+        "        or a comparison the copy can never satisfy. Investigate; do not just bounce. Register: {0}" -f $BreakerRegister
+        foreach ($o in ($after | Select-Object -First 5)) {
+          "{0,-46}    {1} ({2}, local {3} / nas {4})" -f '', $o.Name, $o.Reason, $o.LocalLength, $o.NasLength
+        }
+      }
+
       if ($after.Count -gt 0) {
         # SAY WHAT IS MISSING, EVERY PASS. The old code said nothing here at all - a partly
         # published work looked identical to a finished one in this log, which is how the feature
@@ -190,7 +291,7 @@ while ($true) {
 
       # SCOPED SUBTITLE-COVERAGE runs on $landed, not on the word 'verified': the event that creates
       # a coverage gap is a file ARRIVING on the NAS, and that is true of a partial publish too.
-      if ($landed -gt 0) {
+      if ($landed -gt 0 -and -not $NoDownstream) {
         # SUBTITLE-COVERAGE TRIGGER, right at the event that creates the gap. "I am surprised it
         # published without SRT" (user, 2026-09-03): the publish gate only refuses a file with a
         # BITMAP subtitle awaiting OCR - a file with no subtitle stream at all sails through,
@@ -236,13 +337,12 @@ while ($true) {
         # This is the request, raised at the event that creates it. The register is what
         # audit-space-block.ps1 reads to name units rather than guess at them, and it is the queue
         # the reclaim drains: a work leaves it when its disc is written to _completed.txt.
-        $reg = 'D:/video/_awaiting-verification.txt'
         $already = @()
-        if (Test-Path -LiteralPath $reg) {
-          $already = @(Get-Content -LiteralPath $reg | ForEach-Object { ($_ -split '\|')[-1].Trim() })
+        if (Test-Path -LiteralPath $Register) {
+          $already = @(Get-Content -LiteralPath $Register | ForEach-Object { ($_ -split '\|')[-1].Trim() })
         }
         if ($already -notcontains $w.Name) {
-          Add-Content -LiteralPath $reg -Value ("{0}|{1}" -f (Get-Date -Format s), $w.Name)
+          Add-Content -LiteralPath $Register -Value ("{0}|{1}" -f (Get-Date -Format s), $w.Name)
         }
         $freeGB = [math]::Round([IO.DriveInfo]::new('D').AvailableFreeSpace / 1GB, 1)
         if ($freeGB -lt 120) {
@@ -278,7 +378,7 @@ while ($true) {
   # _nas-superseded-*.txt files) are one-off deliverables from earlier hand investigations
   # (renames, extras re-homing, Season 00 identification) - they are history, not live output,
   # and this loop does not touch them.
-  if ($published -gt 0) {
+  if ($published -gt 0 -and -not $NoDownstream) {
     Write-Output '--- refreshing NAS retire list (supersedes -> verified replacement) ---'
     try {
       & pwsh -NoProfile -File 'D:\video\.claude\skills\disc-to-plex\scripts\build-retire-list.ps1' 2>&1 |
@@ -307,5 +407,11 @@ while ($true) {
     # it is about the one work that just published, it is the event that creates the coverage gap,
     # and it is the only place anything is ever QUEUED.
   }
-  if ($published -eq 0) { Start-Sleep -Seconds 90 }
+
+  # SLEEP: the idle interval when nothing landed, and NEVER LESS THAN THE FLOOR when something did.
+  # The 2026-09-02 Boston Legal band was 1,441 zero-byte robocopy runs at a median 5 s apart: the
+  # old rule ("published something -> go straight round again") turned a work that could never
+  # settle into a spin. Progress still shortens the wait; it no longer removes it.
+  if ($published -eq 0) { Start-Sleep -Seconds $IdleSleepSeconds }
+  elseif ($MinPassSeconds -gt 0) { Start-Sleep -Seconds $MinPassSeconds }
 }

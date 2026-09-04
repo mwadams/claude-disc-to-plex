@@ -32,8 +32,39 @@
   re-walks the whole NAS. Omit -Works for a full sweep; only a full sweep (re)writes the report CSV
   and is eligible to run -RefilterTranscribeQueue (which needs the whole queue's files classified).
 
+  INCREMENTAL BY DEFAULT (2026-09-04). A full sweep used to ffprobe every one of ~5,600 no-sidecar
+  files on the NAS from scratch every four hours whether or not anything had changed - 30-55 min
+  on a quiet link, over three hours under contention on 2026-09-04, and the sustained SMB traffic
+  was one of the two reasons the machine was force-rebooted that morning. The enumeration is
+  cheap (a full metadata walk of the tree is seconds); it is the per-file ffprobe that costs.
+
+  So the report CSV now doubles as a PROBE CACHE. Each row records what ffprobe found in the media
+  file (BitmapProbe, AudioProbe) together with the file's size and LastWriteTimeUtc ticks at the
+  moment it was probed. On the next run the tree is walked again in full, every file's
+  classification is RE-DERIVED from scratch against the current sidecars, manifests and registers,
+  and only the two ffprobe answers are looked up rather than re-measured - provided the media
+  file's size AND write time are unchanged. That is the whole validity argument: a file's stream
+  inventory cannot change unless its bytes change, and its bytes cannot change without moving
+  either figure. Everything that CAN change without the media file changing - a .srt appearing or
+  disappearing beside it, a manifest completing, a register row - is never cached, because the
+  classifier is re-run in full every pass; only the probe is memoised. A stale-provenance row still
+  pays its duration ffprobe each pass (it is a header read, and there are ~280 of them).
+
+    ProbeSource column   'measured'   ffprobe ran on this file THIS pass - evidence
+                         'cached'     carried forward from a previous pass, file unchanged - inference
+                         'not-needed' a sidecar is present, so nothing was probed
+                         'unavailable' a probe was wanted but ffprobe is not installed
+    ProbedAt             when the measurement actually happened (carried forward with 'cached')
+    CacheSchema          'cov-probe-2' - a report written by an older script (no such column, or a
+                         different value) is NOT trusted as a cache; the sweep rebuilds in full.
+
+  The cache is also rebuilt in full when the previous report is missing or unreadable, and on
+  demand with -Full (alias -NoCache). The end-of-run summary says how many rows were reused
+  versus re-probed, so nobody has to infer it from the runtime.
+
   USAGE
-    pwsh -File subtitle-coverage.ps1                                   # full report, read-only
+    pwsh -File subtitle-coverage.ps1                                   # full report, read-only, incremental
+    pwsh -File subtitle-coverage.ps1 -Full                              # same, but re-probe every file (ignore the cache)
     pwsh -File subtitle-coverage.ps1 -Queue                             # full report + enqueue (OCR library-wide, transcription narrowed)
     pwsh -File subtitle-coverage.ps1 -Works 'Survivors' -Queue          # scoped post-publish trigger
     pwsh -File subtitle-coverage.ps1 -Queue -RefilterTranscribeQueue    # also re-validate every row already in _transcribe-queue.csv
@@ -54,6 +85,9 @@ param(
   # (OCR has no such switch - OCR is library-wide unconditionally, per the user's 2026-09-03 ruling.)
   [switch]$IncludeLegacy,
   [switch]$Report,
+  # Ignore the probe cache carried in the previous report and ffprobe every file again - the
+  # pre-2026-09-04 behaviour. The escape hatch for "I do not trust the cache"; never the default.
+  [Alias('NoCache')][switch]$Full,
   [string]$NasRoot = '\\NASTEAMV\Multimedia',
   [string]$ReportCsv = 'D:/video/_subtitle-coverage.csv',
   [string]$QueueCsv = 'D:/video/_transcribe-queue.csv',
@@ -73,6 +107,8 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'lib-subtitle-coverage.ps1')
 . (Join-Path $PSScriptRoot 'lib-queue-guard.ps1')
+. (Join-Path $PSScriptRoot 'lib-nas-governor.ps1')
+if (-not (Get-Command Invoke-NasRead -ErrorAction SilentlyContinue)) { throw 'lib-nas-governor.ps1 failed to load - a full sweep must not run ungoverned' }
 
 $fullSweep = ($Works.Count -eq 0)
 $writeReport = $Report.IsPresent -or $fullSweep
@@ -91,10 +127,140 @@ if (Test-Path -LiteralPath $toolPaths) {
 }
 if (-not $ffprobe) { Write-Output 'WARNING: ffprobe not found - the bitmap-stream probe cannot run this pass, so no-sidecar files fall back to "unclassified" rather than a guess.' }
 
+# ---------------------------------------------------------------------------------------------
+# PROBE CACHE - see the header. Only the two ffprobe answers the classifier asks for are memoised
+# (bitmap subtitle codec, audio present), keyed on the media file's size + LastWriteTimeUtc ticks.
+#
+# HOW IT PLUGS IN WITHOUT TOUCHING THE LIBRARY. lib-subtitle-coverage.ps1's classifier calls
+# Test-BitmapSubtitleStream and Test-CoverageHasAudioStream BY NAME, and both are defined in this
+# script's scope by the dot-source above. Re-defining a function of the same name here REPLACES it
+# for every caller in this scope - the classifier included - which is exactly the shadowing hazard
+# the library's own header warns about, used here on purpose. The library's originals are captured
+# as script blocks FIRST so the shadows can fall through to them on a cache miss; nothing about how
+# a probe is measured lives here, only whether it needs measuring again.
+# ---------------------------------------------------------------------------------------------
+$script:ProbeCacheSchema = 'cov-probe-2'
+$script:ProbeCache = @{}    # mkv path (lower) -> @{ Size; Ticks; Bitmap; Audio; ProbedAt }  from the previous report
+$script:ProbeLog   = @{}    # mkv path (lower) -> @{ Bitmap; Audio; Source; ProbedAt }        what THIS pass used
+$script:FileMeta   = @{}    # mkv path (lower) -> @{ Size; Ticks }                            this pass's metadata walk
+$script:ProbeStats = @{ Loaded = 0; Reused = 0; Measured = 0 }
+
+# Load the previous report as a cache. Returns $null when it loaded, otherwise the REASON it was
+# not used - printed, so a silent fall-back to a full re-probe cannot masquerade as the cache working.
+function Import-CoverageProbeCache {
+  param([string]$Csv, [switch]$Force)
+  if ($Force) { return 'forced full rebuild (-Full / -NoCache)' }
+  if (-not (Test-Path -LiteralPath $Csv)) { return "no previous report at $Csv" }
+  $rows = $null
+  try { $rows = @(Import-Csv -LiteralPath $Csv -ErrorAction Stop) } catch { return "previous report unreadable: $($_.Exception.Message)" }
+  if ($rows.Count -eq 0) { return 'previous report is empty' }
+  $cols = @($rows[0].PSObject.Properties.Name)
+  foreach ($need in 'CacheSchema', 'MkvPath', 'MkvSize', 'MkvWriteTicks', 'BitmapProbe', 'AudioProbe', 'ProbeSource', 'ProbedAt') {
+    if ($cols -notcontains $need) { return "previous report predates the probe cache (no '$need' column)" }
+  }
+  $seen = "$($rows[0].CacheSchema)"
+  if ($seen -ne $script:ProbeCacheSchema) { return "previous report carries cache schema '$seen', this script writes '$($script:ProbeCacheSchema)'" }
+  foreach ($r in $rows) {
+    if ("$($r.ProbeSource)" -notin 'measured', 'cached') { continue }   # only rows that hold real probe evidence
+    # TYPED, so TryParse's [ref] can bind (an untyped $null throws - see _coverage-loop.ps1's Read-Checkpoint).
+    [long]$size = 0; [long]$ticks = 0
+    if (-not [long]::TryParse("$($r.MkvSize)", [ref]$size)) { continue }
+    if (-not [long]::TryParse("$($r.MkvWriteTicks)", [ref]$ticks)) { continue }
+    $bitmap = $null
+    switch ("$($r.BitmapProbe)") { '' { $bitmap = $null } 'none' { $bitmap = '' } default { $bitmap = $_ } }
+    $audio = $null
+    switch ("$($r.AudioProbe)") { 'yes' { $audio = $true } 'no' { $audio = $false } default { $audio = $null } }
+    if ($null -eq $bitmap -and $null -eq $audio) { continue }
+    $script:ProbeCache["$($r.MkvPath)".ToLowerInvariant()] = @{ Size = $size; Ticks = $ticks; Bitmap = $bitmap; Audio = $audio; ProbedAt = "$($r.ProbedAt)" }
+  }
+  $script:ProbeStats.Loaded = $script:ProbeCache.Count
+  return $null
+}
+
+# A cached entry is only returned when THIS pass's metadata walk saw the file with the SAME size
+# and write ticks. No metadata (file appeared between the two walks) means no cache, never a guess.
+function Get-CoverageProbeCacheEntry([string]$Path) {
+  $key = $Path.ToLowerInvariant()
+  $meta = $script:FileMeta[$key]
+  if (-not $meta) { return $null }
+  $e = $script:ProbeCache[$key]
+  if (-not $e) { return $null }
+  if ($e.Size -ne $meta.Size -or $e.Ticks -ne $meta.Ticks) { return $null }
+  return $e
+}
+
+function Add-CoverageProbeLog([string]$Path, [string]$Kind, $Value, [string]$Source, [string]$ProbedAt) {
+  $key = $Path.ToLowerInvariant()
+  if (-not $script:ProbeLog.ContainsKey($key)) { $script:ProbeLog[$key] = @{ Bitmap = $null; Audio = $null; Source = ''; ProbedAt = '' } }
+  $l = $script:ProbeLog[$key]
+  $l[$Kind] = $Value
+  # 'measured' dominates: if ANY probe on this file ran fresh this pass the row is evidence, and its
+  # ProbedAt is now. A row is 'cached' only when everything it needed came from the previous report.
+  if ($Source -eq 'measured' -or -not $l.Source) { $l.Source = $Source; $l.ProbedAt = $ProbedAt }
+}
+
+$script:LibBitmapProbe = (Get-Command Test-BitmapSubtitleStream -CommandType Function).ScriptBlock
+$script:LibAudioProbe  = (Get-Command Test-CoverageHasAudioStream -CommandType Function).ScriptBlock
+if (-not $script:LibBitmapProbe -or -not $script:LibAudioProbe) { throw 'lib-subtitle-coverage.ps1 did not define the probe functions - refusing to shadow nothing' }
+
+function Test-BitmapSubtitleStream {
+  param([Parameter(Mandatory)][string]$Path, [string]$ffprobe)
+  $e = Get-CoverageProbeCacheEntry $Path
+  if ($e -and $null -ne $e.Bitmap) {
+    $script:ProbeStats.Reused++
+    Add-CoverageProbeLog $Path 'Bitmap' $e.Bitmap 'cached' $e.ProbedAt
+    return $e.Bitmap
+  }
+  $r = & $script:LibBitmapProbe -Path $Path -ffprobe $ffprobe
+  if ($null -ne $r) {   # $null = "could not check" - never cached, never counted as a measurement
+    $script:ProbeStats.Measured++
+    Add-CoverageProbeLog $Path 'Bitmap' $r 'measured' (Get-Date -Format s)
+  }
+  return $r
+}
+function Test-CoverageHasAudioStream {
+  param([Parameter(Mandatory)][string]$Path, [string]$ffprobe)
+  $e = Get-CoverageProbeCacheEntry $Path
+  if ($e -and $null -ne $e.Audio) {
+    $script:ProbeStats.Reused++
+    Add-CoverageProbeLog $Path 'Audio' $e.Audio 'cached' $e.ProbedAt
+    return $e.Audio
+  }
+  $r = & $script:LibAudioProbe -Path $Path -ffprobe $ffprobe
+  if ($null -ne $r) {
+    $script:ProbeStats.Measured++
+    Add-CoverageProbeLog $Path 'Audio' $r 'measured' (Get-Date -Format s)
+  }
+  return $r
+}
+
+# The cheap half of the incremental sweep: one recursive METADATA walk (names, sizes, write times -
+# no file is opened) so every cache lookup can be validated against what is on the NAS right now.
+# Scoped to the named works on a -Works run, so the publish loop's per-work call stays cheap.
+function Get-CoverageFileMeta {
+  param([string]$NasRoot, [string[]]$Works = @())
+  $meta = @{}
+  foreach ($area in 'Movies', 'Television Shows') {
+    $areaRoot = Join-Path $NasRoot $area
+    if (-not (Test-Path -LiteralPath $areaRoot)) { continue }
+    $roots = if ($Works.Count -eq 0) { @($areaRoot) }
+             else { @($Works | ForEach-Object { Join-Path $areaRoot $_ } | Where-Object { Test-Path -LiteralPath $_ }) }
+    foreach ($root in $roots) {
+      foreach ($f in Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue) {
+        $meta[$f.FullName.ToLowerInvariant()] = @{ Size = [long]$f.Length; Ticks = [long]$f.LastWriteTimeUtc.Ticks }
+      }
+    }
+  }
+  return $meta
+}
+
 function Test-HasAudioStream([string]$Path) {
   if (-not $ffprobe) { return $true }   # fail open: cannot disprove audio without ffprobe
-  $codecs = & $ffprobe -v error -select_streams a -show_entries stream=codec_name -of csv=p=0 -- $Path 2>$null
-  return @($codecs | Where-Object { $_ }).Count -gt 0
+  # Through the (cache-aware) shadow above, so the -Queue pass does not re-probe a file the
+  # classification pass already answered.
+  $a = Test-CoverageHasAudioStream -Path $Path -ffprobe $ffprobe
+  if ($null -eq $a) { return $true }
+  return [bool]$a
 }
 function Get-DurationSeconds([string]$Path) {
   if (-not $ffprobe) { return $null }
@@ -176,20 +342,98 @@ $naSet = Get-SubtitleCoverageNotApplicableSet -Csv $NaCsv
 $discDriveIndex = Get-SubtitleCoverageDiscDriveIndex -Store $DiscIdentityStore
 Write-Output "manifest-linked outputs: $($manifestIndex.Count)   not-applicable register: $($naSet.Count)   disc-identity discFolders: $($discDriveIndex.Count)"
 
+$cacheMiss = Import-CoverageProbeCache -Csv $ReportCsv -Force:$Full
+if ($cacheMiss) { Write-Output "probe cache: NOT USED - $cacheMiss - every no-sidecar file will be ffprobed this pass" }
+else { Write-Output "probe cache: loaded $($script:ProbeStats.Loaded) probe entr(y/ies) from the previous report" }
+
 $inv = Get-SubtitleCoverageInventory -NasRoot $NasRoot
 if (-not $fullSweep) { $inv = @($inv | Where-Object { $Works -contains $_.Work }) }
 Write-Output "media files in scope: $($inv.Count)"
 
-$results = New-Object System.Collections.Generic.List[object]
-foreach ($r in $inv) {
-  $c = Get-SubtitleCoverageClassification -Row $r -ManifestIndex $manifestIndex -NaSet $naSet -ffprobe $ffprobe `
-        -DiscDriveIndex $discDriveIndex -AttachedDrive $AttachedDrive
-  $results.Add([pscustomobject]@{
-    Area = $r.Area; Work = $r.Work; Season = $r.Season; File = (Split-Path $r.MkvPath -Leaf)
-    MkvPath = $r.MkvPath; Category = $c.Category; Ours = $c.Ours
-    SubTrack = $c.SubTrack; SourceDrive = $c.SourceDrive; ManifestFile = $c.ManifestFile; Evidence = $c.Evidence
-  })
+$metaSw = [Diagnostics.Stopwatch]::StartNew()
+$script:FileMeta = Get-CoverageFileMeta -NasRoot $NasRoot -Works $Works
+Write-Output ("metadata walk: {0} file(s) in {1:N0}s (sizes + write times, no file opened)" -f $script:FileMeta.Count, $metaSw.Elapsed.TotalSeconds)
+
+# GOVERNED, on a full sweep (lib-nas-governor.ps1, 2026-09-04). Measured that day: one no-sidecar
+# file costs ~1.8 MB and ~0.3 s of ffprobe (2 MB even on a 13.7 GB film - headers, not the file),
+# so an uncached full sweep of ~5,300 such files pulls ~9.5 GB in ~30 min (~40 Mbps) with the link
+# to itself; the probe cache above makes the steady state far cheaper. What saturated the link was
+# not this sweep alone but this sweep running UNGOVERNED beside the OCR queue's whole-file pulls
+# (435-543 Mbps) with nothing arbitrating - it was three hours in at the forced reboot. So a full
+# sweep now: (1) stands down under the kill switch; (2) holds the library-wide SWEEP mutex for its
+# whole run - one sweep at a time across every process; (3) classifies in batches of 50 through
+# Invoke-NasRead, which takes a shared read slot and paces each batch to the ceiling; (4) prints a
+# progress line every 250 files - the heartbeat the coverage loop echoes live, so a running sweep
+# can never again look like a dead loop.
+# A SCOPED (-Works) run is deliberately NOT put through the sweep mutex or the read slots: the
+# publish loop fires one after every work (36 files, 70 MB, 45 s measured) and queueing it behind
+# a 30-minute sweep would recreate the publish stall the coverage track exists to prevent. It does
+# still honour the kill switch.
+$govSay = { param($m) Write-Output ("subtitle-coverage: {0}" -f $m) }
+$sweepSlot = $null
+if ($fullSweep) {
+  [void](Wait-NasHold -Say $govSay -Who 'full sweep')
+  $sweepSlot = Enter-NasSweep -Name 'subtitle-coverage full sweep' -Say $govSay -MaxWaitMinutes 30
+  if ($null -eq $sweepSlot) {
+    Write-Output 'REFUSING to run a second library-wide NAS sweep alongside the one already in flight - nothing written; the coverage track retries next pass'
+    exit 3
+  }
+} else {
+  [void](Wait-NasHold -Say $govSay -Who 'scoped run')
 }
+
+$results = [System.Collections.Generic.List[object]]::new()
+$classifyBatch = {
+  param($rows)
+  foreach ($r in $rows) {
+    $c = Get-SubtitleCoverageClassification -Row $r -ManifestIndex $manifestIndex -NaSet $naSet -ffprobe $ffprobe `
+          -DiscDriveIndex $discDriveIndex -AttachedDrive $AttachedDrive
+    $key  = $r.MkvPath.ToLowerInvariant()
+    $meta = $script:FileMeta[$key]
+    $log  = $script:ProbeLog[$key]
+    $probeSource = if ($log) { $log.Source } elseif ($r.SrtPath) { 'not-needed' } elseif (-not $ffprobe) { 'unavailable' } else { 'not-needed' }
+    $bitmapCol = if ($log -and $null -ne $log.Bitmap) { if ($log.Bitmap -eq '') { 'none' } else { "$($log.Bitmap)" } } else { '' }
+    $audioCol  = if ($log -and $null -ne $log.Audio)  { if ($log.Audio) { 'yes' } else { 'no' } } else { '' }
+    $results.Add([pscustomobject]@{
+      Area = $r.Area; Work = $r.Work; Season = $r.Season; File = (Split-Path $r.MkvPath -Leaf)
+      MkvPath = $r.MkvPath; Category = $c.Category; Ours = $c.Ours
+      SubTrack = $c.SubTrack; SourceDrive = $c.SourceDrive; ManifestFile = $c.ManifestFile; Evidence = $c.Evidence
+      # Probe-cache columns (header: INCREMENTAL BY DEFAULT). Appended AFTER the original columns so
+      # any reader keyed on the old layout still finds what it always did.
+      MkvSize = $(if ($meta) { $meta.Size } else { '' }); MkvWriteTicks = $(if ($meta) { $meta.Ticks } else { '' })
+      BitmapProbe = $bitmapCol; AudioProbe = $audioCol; ProbeSource = $probeSource
+      ProbedAt = $(if ($log) { $log.ProbedAt } else { '' }); CacheSchema = $script:ProbeCacheSchema
+    })
+  }
+}
+$sweepT0 = Get-Date
+$classified = 0
+$total = $inv.Count
+$batchSize = 50
+try {
+  for ($start = 0; $start -lt $total; $start += $batchSize) {
+    $end = [math]::Min($start + $batchSize, $total) - 1
+    $chunk = @($inv[$start..$end])
+    if ($fullSweep) {
+      [void](Wait-NasHold -Say $govSay -Who 'full sweep')
+      Invoke-NasRead -Path $chunk[0].MkvPath -Label 'full sweep' -Say $govSay -Do { & $classifyBatch $chunk } | Out-Null
+    } else {
+      & $classifyBatch $chunk | Out-Null
+    }
+    $classified += $chunk.Count
+    if ($fullSweep -and (($classified % 250) -eq 0 -or $classified -eq $total)) {
+      $elMin = ((Get-Date) - $sweepT0).TotalMinutes
+      $eta = if ($classified -gt 0) { $elMin / $classified * ($total - $classified) } else { 0 }
+      Write-Output ("progress: classified {0}/{1} ({2:N0}%) - {3:N0} min elapsed, ~{4:N0} min to go, {5} probe(s) measured, {6} reused" -f $classified, $total, (100.0 * $classified / [math]::Max($total, 1)), $elMin, $eta, $script:ProbeStats.Measured, $script:ProbeStats.Reused)
+    }
+  }
+} finally {
+  Exit-NasSweep $sweepSlot
+}
+$probeRows = @{ measured = 0; cached = 0; 'not-needed' = 0; unavailable = 0 }
+foreach ($r in $results) { $probeRows[$r.ProbeSource] = 1 + [int]$probeRows[$r.ProbeSource] }
+Write-Output ("probe cache: rows reused {0} (file unchanged, evidence carried forward), re-probed {1} (ffprobe ran), not needed {2} (sidecar present), unavailable {3}   |   ffprobe calls skipped {4}, run {5}" -f `
+  $probeRows['cached'], $probeRows['measured'], $probeRows['not-needed'], $probeRows['unavailable'], $script:ProbeStats.Reused, $script:ProbeStats.Measured)
 # Directory -> has any covered/stale-provenance sibling. Used only to ANNOTATE an awaiting-ocr row
 # (does this look like a miss from an otherwise-finished batch, or ordinary untouched backlog) -
 # never changes the category or the queueing action, since every bitmap file is queued for OCR
@@ -200,7 +444,12 @@ foreach ($r in $results) {
 }
 
 if ($writeReport) {
-  $results | Export-Csv -LiteralPath $ReportCsv -NoTypeInformation -Encoding UTF8
+  # Temp file then Move-Item, local D: only. The report is now also the NEXT run's probe cache, so
+  # a run killed mid-write must not leave a truncated CSV in its place: a partial cache is merely
+  # slower, but Export-Csv writing straight over the live file would first empty it.
+  $tmpReport = "$ReportCsv.tmp"
+  $results | Export-Csv -LiteralPath $tmpReport -NoTypeInformation -Encoding UTF8
+  Move-Item -LiteralPath $tmpReport -Destination $ReportCsv -Force
   Write-Output ''
   Write-Output "=== SUMMARY -> $ReportCsv ==="
   $results | Group-Object Category, Ours | Sort-Object Count -Descending |

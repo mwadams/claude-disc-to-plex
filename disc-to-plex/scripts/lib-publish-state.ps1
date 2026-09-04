@@ -112,3 +112,130 @@ function Get-WorkOutstanding {
   }
   return $outstanding
 }
+
+# ---------------------------------------------------------------------------------------------
+# THE CIRCUIT BREAKER - no work may be re-published indefinitely while nothing changes.
+#
+# WHY (2026-09-04). _publish-loop.ps1's log held 2,166 consecutive
+#     Boston Legal   wrong-size copy on NAS -> republishing with -Overwrite
+# lines from one morning (2026-09-02 07:21-10:47). The per-publish robocopy logs prove what each
+# of those passes did: 1,479 robocopy runs, 1,441 of them copying ZERO bytes, at a median gap of
+# 5 seconds - the loop never slept, because the old code took the child's word `verified` as
+# "something published" and skipped its idle sleep. The re-publish itself could never succeed:
+# the work carried a `.subtitles-only` marker, so the copy shipped only .srt files while the
+# pre-check kept comparing the scaffolding .mkv against the NAS's legacy encode. Both halves have
+# since been fixed (Get-WorkOutstanding above ignores the scaffolding; the loop now re-measures
+# instead of reading the adjective) - but each of those fixes closed ONE way of looping, and the
+# loop had already found five (Farscape 274, The Saint 162, Survivors 57, Danger Man, Hustle).
+#
+# This is the structural answer: a per-work counter of publish attempts that CHANGED NOTHING.
+# The measure of "changed nothing" is the outstanding set itself - Get-WorkOutstanding before the
+# attempt and after it, fingerprinted. A legitimate publish always changes that set (a file lands,
+# or a new one appears), so a growing TV show never trips however many episodes it ships; only an
+# attempt that leaves the NAS exactly as it found it counts. After MaxNoProgress such attempts in a
+# row the breaker TRIPS and the loop stops invoking the publish for that work. It re-arms by itself
+# when the outstanding set changes (a sidecar arrives, the operator replaces a file), because that
+# is a new situation; but it also keeps a LIFETIME count of no-progress attempts, and past
+# MaxNoProgressLifetime it trips HARD - no re-arm, only a deliberate bounce of the track clears it.
+# So a loop that finds a way to churn the fingerprint still cannot attempt more than
+# MaxNoProgressLifetime fruitless publishes per process, whatever the bug underneath.
+#
+# PURE FUNCTIONS OVER A HASHTABLE the caller owns, so the whole policy is testable without a NAS.
+# ---------------------------------------------------------------------------------------------
+
+function Get-OutstandingFingerprint {
+  # One string that is equal iff two outstanding sets are the same files, reasons and sizes.
+  # Sorted, so enumeration order cannot make two identical sets look different. Empty set = ''.
+  param([object[]]$Outstanding)
+  $items = @($Outstanding | Where-Object { $null -ne $_ })
+  if ($items.Count -eq 0) { return '' }
+  return ((@($items | ForEach-Object {
+    '{0}|{1}|{2}|{3}' -f $_.Name, $_.Reason, $_.LocalLength, $_.NasLength }) | Sort-Object) -join "`n")
+}
+
+function New-PublishBreaker {
+  param([int]$MaxNoProgress = 5, [int]$MaxNoProgressLifetime = 40)
+  if ($MaxNoProgress -lt 1) { throw "MaxNoProgress must be >= 1 (got $MaxNoProgress)" }
+  if ($MaxNoProgressLifetime -lt $MaxNoProgress) {
+    throw "MaxNoProgressLifetime ($MaxNoProgressLifetime) must be >= MaxNoProgress ($MaxNoProgress)"
+  }
+  return @{ MaxNoProgress = $MaxNoProgress; MaxNoProgressLifetime = $MaxNoProgressLifetime; Works = @{} }
+}
+
+function Get-PublishBreakerWork {
+  param($Breaker, [string]$Work)
+  if (-not $Breaker.Works.ContainsKey($Work)) {
+    $Breaker.Works[$Work] = @{
+      Attempts = 0; NoProgress = 0; NoProgressLifetime = 0; LastFingerprint = $null
+      Tripped = $false; HardTripped = $false; TrippedAt = $null; SkippedSinceTrip = 0
+    }
+  }
+  return $Breaker.Works[$Work]
+}
+
+function Get-PublishBreakerVerdict {
+  <#
+    BEFORE an attempt. Returns { Allow, State, Skipped }:
+      State 'armed'        - attempt away
+            'rearmed'      - was tripped, but the outstanding set has changed since; one more go
+            'tripped'      - refused: the set is exactly what it was after the last fruitless attempt
+            'hard-tripped' - refused for the life of the process
+      Skipped is how many passes have been refused since the trip (for throttled reminders).
+  #>
+  param([Parameter(Mandatory)]$Breaker, [Parameter(Mandatory)][string]$Work,
+        [AllowEmptyString()][string]$Fingerprint)
+  $w = Get-PublishBreakerWork $Breaker $Work
+  if ($w.HardTripped) {
+    $w.SkippedSinceTrip++
+    return [pscustomobject]@{ Allow = $false; State = 'hard-tripped'; Skipped = $w.SkippedSinceTrip }
+  }
+  if ($w.Tripped) {
+    if ($Fingerprint -ne $w.LastFingerprint) {
+      $w.Tripped = $false; $w.NoProgress = 0; $w.SkippedSinceTrip = 0; $w.TrippedAt = $null
+      return [pscustomobject]@{ Allow = $true; State = 'rearmed'; Skipped = 0 }
+    }
+    $w.SkippedSinceTrip++
+    return [pscustomobject]@{ Allow = $false; State = 'tripped'; Skipped = $w.SkippedSinceTrip }
+  }
+  return [pscustomobject]@{ Allow = $true; State = 'armed'; Skipped = 0 }
+}
+
+function Register-PublishBreakerAttempt {
+  <#
+    AFTER an attempt: $Before and $After are the fingerprints around it. Returns
+    'ok' | 'tripped' | 'hard-tripped' - the caller reports the latter two LOUDLY.
+  #>
+  param([Parameter(Mandatory)]$Breaker, [Parameter(Mandatory)][string]$Work,
+        [AllowEmptyString()][string]$Before, [AllowEmptyString()][string]$After)
+  $w = Get-PublishBreakerWork $Breaker $Work
+  $w.Attempts++
+  $w.LastFingerprint = $After
+  if ($After -eq $Before) { $w.NoProgress++; $w.NoProgressLifetime++ }
+  else { $w.NoProgress = 0 }
+  if ($w.NoProgressLifetime -ge $Breaker.MaxNoProgressLifetime) {
+    $w.HardTripped = $true; $w.Tripped = $true; $w.TrippedAt = Get-Date; $w.SkippedSinceTrip = 0
+    return 'hard-tripped'
+  }
+  if ($w.NoProgress -ge $Breaker.MaxNoProgress) {
+    $w.Tripped = $true; $w.TrippedAt = Get-Date; $w.SkippedSinceTrip = 0
+    return 'tripped'
+  }
+  return 'ok'
+}
+
+function Write-PublishBreakerRegister {
+  # The durable, operator-visible record: one line per tripped work (rewritten whole, so a re-arm
+  # drops its line). Always written, header included, so "no file" and "nothing tripped" differ.
+  param([Parameter(Mandatory)]$Breaker, [Parameter(Mandatory)][string]$Path)
+  $lines = @('# publish circuit breaker - works the publish loop is REFUSING to re-publish (rewritten on every change)')
+  $lines += ('# updated {0} | MaxNoProgress={1} MaxNoProgressLifetime={2} | columns: when|work|state|no-progress run|no-progress lifetime|attempts' -f `
+    (Get-Date -Format s), $Breaker.MaxNoProgress, $Breaker.MaxNoProgressLifetime)
+  foreach ($name in ($Breaker.Works.Keys | Sort-Object)) {
+    $w = $Breaker.Works[$name]
+    if (-not $w.Tripped) { continue }
+    $state = if ($w.HardTripped) { 'HARD-TRIPPED (bounce the publish track to clear)' } else { 'tripped (re-arms when the outstanding set changes)' }
+    $when = if ($w.TrippedAt) { $w.TrippedAt.ToString('s') } else { '' }
+    $lines += ('{0}|{1}|{2}|{3}|{4}|{5}' -f $when, $name, $state, $w.NoProgress, $w.NoProgressLifetime, $w.Attempts)
+  }
+  Set-Content -LiteralPath $Path -Value $lines
+}

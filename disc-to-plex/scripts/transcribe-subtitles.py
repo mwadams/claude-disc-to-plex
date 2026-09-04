@@ -34,6 +34,40 @@ from whisper_device import load_model                                    # noqa:
 
 TOOLS = r'D:/video/.transcode-tools/tool-paths.json'
 LEXICON_DIR = r'D:/video/_lexicons'
+# THE NAS GOVERNOR (lib-nas-governor.ps1, 2026-09-04). The audio extraction below demuxes the WHOLE
+# source over SMB; ungoverned, ffmpeg reads a NAS file at link speed (435-543 Mbps measured). For
+# a NAS source the read is held to the governor's ceiling with `-readrate`, computed from the
+# file's own bitrate (readrate is a multiple of native rate: 625 MB / 1783 s = 2.9 Mbps -> 17x for
+# 50 Mbps; measured 50.6 Mbps against a 50 target). Same config file, same defaults, same "only
+# NAS paths" rule as the PowerShell library; a missing or broken config means the defaults, never
+# "unthrottled".
+NAS_GOVERNOR_CONFIG = os.environ.get('NAS_GOVERNOR_CONFIG', r'D:/video/_nas-governor.json')
+NAS_GOVERNOR_DEFAULTS = {'readCeilingMbps': 50.0, 'nasPathPattern': r'^\\\\NASTEAMV\\'}
+
+
+def nas_readrate_args(src, duration_s):
+    """ffmpeg INPUT options (must precede -i) that hold a NAS read to the governor's ceiling."""
+    cfg = dict(NAS_GOVERNOR_DEFAULTS)
+    try:
+        with open(NAS_GOVERNOR_CONFIG, encoding='utf-8') as fh:
+            for k, v in json.load(fh).items():
+                if k in cfg:
+                    cfg[k] = v
+    except (OSError, ValueError):
+        pass
+    try:
+        if not re.match(cfg['nasPathPattern'], src, re.IGNORECASE):
+            return []
+        ceiling = float(cfg['readCeilingMbps'])
+        if ceiling <= 0 or not duration_s or duration_s <= 0:
+            return []
+        native_mbps = os.path.getsize(src) * 8.0 / duration_s / 1e6
+        if native_mbps <= 0:
+            return []
+        rate = round(ceiling / native_mbps, 3)
+    except (OSError, ValueError, TypeError):
+        return []
+    return ['-readrate', repr(rate), '-readrate_initial_burst', '2']
 
 # A cue longer than this is unreadable; shorter than this flashes past.
 MIN_DUR, MAX_DUR, GAP, WRAP = 1.0, 8.0, 0.04, 42
@@ -337,8 +371,8 @@ def main():
     wav = os.path.join(tmpdir, 'audio.tmp16k.wav')
 
     try:
-        subprocess.run([ff, '-v', 'error', '-i', src, '-vn', '-ac', '1', '-ar', '16000',
-                        '-c:a', 'pcm_s16le', '-y', wav], check=True)
+        subprocess.run([ff, '-v', 'error', *nas_readrate_args(src, duration), '-i', src,
+                        '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', '-y', wav], check=True)
         model, dev = load_model(a.model, prefer_cuda=True, verbose=False)
         segs, info = model.transcribe(
             wav, language='en', beam_size=5,

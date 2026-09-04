@@ -124,6 +124,104 @@ try {
   Write-Output '11. NEGATIVE: a local folder that does not exist yields EMPTY, and does not throw'
   Check 'count' @(Get-WorkOutstanding -WorkDir (Join-Path $tmp 'no-such-work') -NasDir $N).Count 0
 
+  # ---- the circuit breaker (pure; see the header block in lib-publish-state.ps1) ----
+  function O([string]$n, [string]$r, [long]$l, $nl) {
+    [pscustomobject]@{ Name = $n; Reason = $r; LocalLength = $l; NasLength = $nl } }
+
+  Write-Output '12. fingerprint: empty set is "", order does not matter, any field difference does'
+  Check 'empty'        (Get-OutstandingFingerprint @()) ''
+  Check 'null'         (Get-OutstandingFingerprint $null) ''
+  $fpA = Get-OutstandingFingerprint @((O 'A.mkv' 'size' 10 5), (O 'B.srt' 'missing' 3 $null))
+  $fpB = Get-OutstandingFingerprint @((O 'B.srt' 'missing' 3 $null), (O 'A.mkv' 'size' 10 5))
+  Check 'order-free'   ($fpA -eq $fpB) True
+  $fpC = Get-OutstandingFingerprint @((O 'A.mkv' 'size' 10 6), (O 'B.srt' 'missing' 3 $null))
+  Check 'nas size'     ($fpA -eq $fpC) False
+  $fpD = Get-OutstandingFingerprint @((O 'A.mkv' 'timestamp' 10 10))
+  $fpE = Get-OutstandingFingerprint @((O 'A.mkv' 'size' 10 10))
+  Check 'reason'       ($fpD -eq $fpE) False
+  Check 'single'       @(Get-OutstandingFingerprint @((O 'A.mkv' 'size' 10 5))).Count 1
+
+  Write-Output '13. TRIPS after MaxNoProgress fruitless attempts, and REFUSES from then on'
+  #    The Boston Legal shape: every attempt leaves the outstanding set exactly as it found it.
+  $b = New-PublishBreaker -MaxNoProgress 3 -MaxNoProgressLifetime 10
+  $fp = Get-OutstandingFingerprint @((O 'Ep.mkv' 'size' 100 50))
+  $allowed = 0; $results = @()
+  for ($i = 1; $i -le 8; $i++) {
+    $v = Get-PublishBreakerVerdict -Breaker $b -Work 'Boston Legal' -Fingerprint $fp
+    if ($v.Allow) { $allowed++; $results += (Register-PublishBreakerAttempt -Breaker $b -Work 'Boston Legal' -Before $fp -After $fp) }
+  }
+  Check 'attempts allowed' $allowed 3
+  Check 'results'          ($results -join ',') 'ok,ok,tripped'
+  $v = Get-PublishBreakerVerdict -Breaker $b -Work 'Boston Legal' -Fingerprint $fp
+  Check 'state'            $v.State 'tripped'
+  Check 'skipped count'    $v.Skipped 6
+
+  Write-Output '14. NEGATIVE: a work that makes progress every pass NEVER trips (a growing TV show)'
+  $b2 = New-PublishBreaker -MaxNoProgress 3 -MaxNoProgressLifetime 10
+  $allowed = 0
+  for ($i = 1; $i -le 50; $i++) {
+    $before = Get-OutstandingFingerprint @((O "Ep$i.mkv" 'missing' 100 $null))
+    $after  = ''
+    $v = Get-PublishBreakerVerdict -Breaker $b2 -Work 'The Saint (1962)' -Fingerprint $before
+    if ($v.Allow) { $allowed++; [void](Register-PublishBreakerAttempt -Breaker $b2 -Work 'The Saint (1962)' -Before $before -After $after) }
+  }
+  Check 'all 50 allowed' $allowed 50
+  Check 'not tripped'    (Get-PublishBreakerWork $b2 'The Saint (1962)').Tripped False
+  #    ... and an occasional fruitless attempt in between does not accumulate into a trip
+  $b3 = New-PublishBreaker -MaxNoProgress 3 -MaxNoProgressLifetime 100
+  $fpX = Get-OutstandingFingerprint @((O 'X.mkv' 'size' 1 2))
+  foreach ($i in 1..12) {
+    [void](Get-PublishBreakerVerdict -Breaker $b3 -Work 'W' -Fingerprint $fpX)
+    if ($i % 3 -eq 0) { [void](Register-PublishBreakerAttempt -Breaker $b3 -Work 'W' -Before $fpX -After '') }   # progress
+    else              { [void](Register-PublishBreakerAttempt -Breaker $b3 -Work 'W' -Before $fpX -After $fpX) } # none
+  }
+  Check 'interleaved never trips' (Get-PublishBreakerWork $b3 'W').Tripped False
+
+  Write-Output '15. RE-ARMS when the outstanding set changes (the Hustle case: OCR sidecars arriving)'
+  $fp2 = Get-OutstandingFingerprint @((O 'Ep.mkv' 'size' 100 50), (O 'Ep.eng.srt' 'missing' 7 $null))
+  $v = Get-PublishBreakerVerdict -Breaker $b -Work 'Boston Legal' -Fingerprint $fp2
+  Check 'rearmed'        $v.State 'rearmed'
+  Check 'allowed again'  $v.Allow True
+  Check 'no-progress run reset' (Get-PublishBreakerWork $b 'Boston Legal').NoProgress 0
+  #    a fruitless attempt after re-arming counts from zero again ...
+  Check 'after rearm' (Register-PublishBreakerAttempt -Breaker $b -Work 'Boston Legal' -Before $fp2 -After $fp2) 'ok'
+  #    ... but the LIFETIME count carried over (3 + 1 = 4 of 10)
+  Check 'lifetime carried' (Get-PublishBreakerWork $b 'Boston Legal').NoProgressLifetime 4
+
+  Write-Output '16. HARD TRIP at MaxNoProgressLifetime: no re-arm, however much the set changes'
+  $b4 = New-PublishBreaker -MaxNoProgress 2 -MaxNoProgressLifetime 5
+  $n = 0; $last = ''
+  for ($i = 1; $i -le 40; $i++) {
+    # the set changes every pass (a churning fingerprint) so the soft breaker keeps re-arming,
+    # yet every attempt itself changes nothing
+    $fpI = Get-OutstandingFingerprint @((O 'Ep.mkv' 'size' 100 (50 + $i)))
+    $v = Get-PublishBreakerVerdict -Breaker $b4 -Work 'Churn' -Fingerprint $fpI
+    if ($v.Allow) { $n++; $last = Register-PublishBreakerAttempt -Breaker $b4 -Work 'Churn' -Before $fpI -After $fpI }
+  }
+  Check 'attempts capped for life' $n 5
+  Check 'last verdict'             $last 'hard-tripped'
+  $v = Get-PublishBreakerVerdict -Breaker $b4 -Work 'Churn' -Fingerprint 'something entirely new'
+  Check 'still refused'            $v.State 'hard-tripped'
+  Check 'not allowed'              $v.Allow False
+
+  Write-Output '17. works are independent: one tripped work does not touch another'
+  $v = Get-PublishBreakerVerdict -Breaker $b4 -Work 'Other' -Fingerprint 'x'
+  Check 'other armed' $v.State 'armed'
+
+  Write-Output '18. the register lists tripped works only, and is rewritten whole'
+  $regPath = Join-Path $tmp 'breaker.txt'
+  Write-PublishBreakerRegister -Breaker $b4 -Path $regPath
+  $reg = @(Get-Content -LiteralPath $regPath | Where-Object { $_ -notmatch '^#' })
+  Check 'one row'      $reg.Count 1
+  Check 'names Churn'  ($reg[0] -match '\|Churn\|HARD-TRIPPED') True
+  Write-PublishBreakerRegister -Breaker $b3 -Path $regPath
+  Check 'rewritten empty' @(Get-Content -LiteralPath $regPath | Where-Object { $_ -notmatch '^#' }).Count 0
+
+  Write-Output '19. NEGATIVE: a lifetime cap below the run cap is refused at construction'
+  $threw = $false
+  try { [void](New-PublishBreaker -MaxNoProgress 5 -MaxNoProgressLifetime 3) } catch { $threw = $true }
+  Check 'throws' $threw True
+
   $script:reachedEnd = $true
 }
 catch {
