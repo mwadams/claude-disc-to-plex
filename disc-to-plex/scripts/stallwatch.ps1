@@ -98,6 +98,16 @@ $held   = @()
 $moving = @()
 # Collected for the state file (see -StateFile): what the alarm can name without re-parsing prose.
 $needsValidation = @(); $briefsReady = @(); $reclaimFailed = @(); $reclaimFailedStale = @(); $dischargePendingNames = @()
+# ONE BRIEF READY LINE PER BATCH, NOT PER UNIT (2026-09-04). _dispositions-loop.ps1 briefs the discs
+# of one work to ONE agent and saves the SAME brief under each member's name, so this board saw a
+# brief per unit and printed a "spawn an agent with: Follow the brief at ..." line per unit - two
+# identical instructions for one batch, inviting a human to spawn two agents for work the batching
+# exists to give to one. Members are folded by the brief's content hash (identical bytes = one
+# batch; a brief names its units, so two batches can never collide) and the batch is printed once,
+# naming every unit. A batch of one prints the line it always did. Keyed by hash -> @{ Units;
+# Brief; Phase }; a placeholder holds the batch's place in $stalls until the sweep has seen every
+# member, then it is expanded below. $briefsReady stays per unit - _stall-alarm.ps1 keys on it.
+$briefBatches = [ordered]@{}
 $spaceBlocked = $false
 $dispTrackAlive = Test-TrackAlive 'video-dispositions-loop'
 
@@ -190,7 +200,9 @@ foreach ($u in $units) {
           $moving += "{0,-28} dispositions being written (subagent working, {1:N0} min)" -f $name, $mAge.TotalMinutes
         }
       } elseif (Test-Path -LiteralPath $brief) {
-        $stalls += "{0,-28} BRIEF READY, no authenticated runner -> spawn an agent with: Follow the brief at {1} exactly" -f $name, $brief
+        $bh = (Get-FileHash -LiteralPath $brief -Algorithm SHA256).Hash
+        if (-not $briefBatches.Contains($bh)) { $briefBatches[$bh] = @{ Units = @(); Brief = $brief; Phase = 'dispositions' }; $stalls += ('{{BRIEF-BATCH:' + $bh + '}}') }
+        $briefBatches[$bh].Units += $name
         $briefsReady += $name
       } elseif ($dispTrackAlive) {
         $moving += "{0,-28} queued for _dispositions-loop" -f $name
@@ -388,7 +400,9 @@ foreach ($u in $units) {
           $moving += "{0,-28} manifest being authored (subagent working, {1:N0} min)" -f $name, $mAge2.TotalMinutes
         }
       } elseif (Test-Path -LiteralPath $brief2) {
-        $stalls += "{0,-28} BRIEF READY, no authenticated runner -> spawn an agent with: Follow the brief at {1} exactly" -f $name, $brief2
+        $bh2 = (Get-FileHash -LiteralPath $brief2 -Algorithm SHA256).Hash
+        if (-not $briefBatches.Contains($bh2)) { $briefBatches[$bh2] = @{ Units = @(); Brief = $brief2; Phase = 'manifest' }; $stalls += ('{{BRIEF-BATCH:' + $bh2 + '}}') }
+        $briefBatches[$bh2].Units += $name
         $briefsReady += $name
       } elseif ($dispTrackAlive) {
         $moving += "{0,-28} queued for _dispositions-loop (manifest step)" -f $name
@@ -437,18 +451,38 @@ foreach ($u in $units) {
   }
 }
 
+# EXPAND THE BATCH PLACEHOLDERS (see $briefBatches above). A batch of one prints exactly the line
+# it always did; a batch of several prints ONE line naming every member, with the same
+# "spawn ... Follow the brief at <path> exactly" instruction pointing at the first member's copy.
+$folded = @()
+foreach ($s in $stalls) {
+  if ("$s" -match '^\{\{BRIEF-BATCH:([0-9A-Fa-f]+)\}\}$') {
+    $bb = $briefBatches[$Matches[1]]
+    $bbUnits = @($bb.Units)
+    if ($bbUnits.Count -le 1) {
+      $folded += "{0,-28} BRIEF READY, no authenticated runner -> spawn an agent with: Follow the brief at {1} exactly" -f $bbUnits[0], $bb.Brief
+    } else {
+      $folded += "{0,-28} BRIEF READY (ONE brief for {1} units), no authenticated runner -> spawn ONE agent with: Follow the brief at {2} exactly" -f ($bbUnits -join ' + '), $bbUnits.Count, $bb.Brief
+    }
+  } else { $folded += "$s" }
+}
+$stalls = @($folded)
+# Lines are not units any more: a batch line stands for several. The header counts units.
+$stallUnitCount = $stalls.Count + [int](@($briefBatches.Values | ForEach-Object { @($_.Units).Count - 1 } | Measure-Object -Sum).Sum)
+$briefBatchDocs = @($briefBatches.Values | ForEach-Object { [ordered]@{ units = @($_.Units); brief = "$($_.Brief)"; phase = "$($_.Phase)" } })
+
 if ($stalls.Count -eq 0 -and $Quiet) {
   # The -Quiet early exit skips the audits below, so the state file is written here with what is
   # known - a quiet, un-stalled board - rather than left stale from an earlier, louder run.
   if ($StateFile) {
-    try { ([ordered]@{ at = (Get-Date).ToString('s'); stalls = @(); moving = @($moving); held = @($held); busy = [bool]$busy; queued = [int]$queued; running = [int]$running; unitsStaged = [int]$units.Count; fullyStopped = $false; nothingStaged = [bool]($units.Count -eq 0 -and -not $busy); spaceBlocked = $false; reclaimFailed = @(); reclaimFailedStale = @(); needsValidation = @(); briefsReady = @(); dischargePending = @(); quietRun = $true } | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $StateFile -Encoding UTF8 } catch { }
+    try { ([ordered]@{ at = (Get-Date).ToString('s'); stalls = @(); moving = @($moving); held = @($held); busy = [bool]$busy; queued = [int]$queued; running = [int]$running; unitsStaged = [int]$units.Count; fullyStopped = $false; nothingStaged = [bool]($units.Count -eq 0 -and -not $busy); spaceBlocked = $false; reclaimFailed = @(); reclaimFailedStale = @(); needsValidation = @(); briefsReady = @(); briefBatches = @(); dischargePending = @(); quietRun = $true } | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $StateFile -Encoding UTF8 } catch { }
   }
   return
 }
 
 $stamp = Get-Date -Format 'HH:mm:ss'
 if ($stalls.Count -gt 0) {
-  Write-Output "[$stamp] PIPELINE WAITING ON THE OPERATOR - $($stalls.Count) unit(s):"
+  Write-Output "[$stamp] PIPELINE WAITING ON THE OPERATOR - $stallUnitCount unit(s):"
   $stalls | ForEach-Object { Write-Output "   $_" }
   # The distinction that matters: is the machine busy anyway, or is EVERYTHING stopped?
   if (-not $busy -and $queued -eq 0 -and $running -eq 0) {
@@ -682,6 +716,7 @@ if ($StateFile) {
     reclaimFailedStale = @($reclaimFailedStale)
     needsValidation = @($needsValidation)
     briefsReady    = @($briefsReady)
+    briefBatches   = @($briefBatchDocs)
     dischargePending = @($dischargePendingNames)
   }
   try { ($stateDoc | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $StateFile -Encoding UTF8 } catch { }
