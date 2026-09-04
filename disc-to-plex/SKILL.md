@@ -58,6 +58,17 @@ Before calling any unit done, confirm all six:
    memory: it is the check most often signed off wrongly, because the rips you took verify fine
    while titles you never enumerated stay invisible. The script also refuses a catalogue taken
    above a 10 s floor, since completeness is unknowable from a pre-filtered list.
+   It also reconciles the catalogue against **`TT_SRPT`, the disc's own declaration**, on every DVD
+   run, and exits 2 for any declared title the catalogue does not list. Those titles have no `tNN`
+   row, so they are dispositioned by their dvdvideo number instead — `dv2|exclude|<what it IS>|<class>:<detail>`.
+   A sub-10-second sting is real content: exclude it for **what it is**, never for its length.
+   **Second doors are exempt and reported, not demanded** — where a declared row's PGC covers the
+   *identical cell sectors* as a row that IS catalogued, there is no separate content behind it
+   (Rumpole S1 D1: 10 declared, 5 enumerated, **4 doors**, 1 real). Compared on sectors, never
+   durations. Two uncatalogued rows sharing cells are still two unexamined titles and both stay.
+   🔴 The reconciliation needs the **staged disc still on disk**, which is exactly when this gate is
+   the thing standing between that staging and deletion. Once staging is gone it can only say
+   "NOT PERFORMED" — so run it *before* you release, not after.
 2. **Identity verified from content** — not from the folder name, the disc label, or duration alone.
    **And written to the identity register**, so it is never re-derived:
    `pwsh -File scripts/disc-identity.ps1 -Action Record -Disc "<disc>" -OutFile "<published .mkv>"
@@ -502,6 +513,7 @@ Core pipeline, in the order you use them:
 | `check-cfr-frame-count.ps1` | **CFR-decode count vs packet count** — the discriminator for a SEAM OVERSHOOT, which `expectFrames` is structurally blind to: a gap in the timeline adds no packet and removes none, so the packet count is exactly the quantity the defect leaves untouched. `-fps_mode cfr` must duplicate a frame into every empty slot, so CFR > packets **is** the gap, in frames. Run automatically by `transcode.ps1` on every retimed-carve item (fails it) and every concat item (reports); use standalone to sweep published files |
 | `ocr-subtitles.ps1` | bitmap subtitles → SRT sidecar |
 | `publish-work.ps1` | copy a finished work to the NAS and verify every file |
+| `lib-publish-state.ps1` | `Get-WorkOutstanding` — **the definition of "published" for a multi-file work**: every local file eligible to travel present on the NAS at the same byte length and mtime. The publish loop calls it before AND after each publish, so a work-level claim can never outrun its files. `publish-work.ps1`'s `verified N/N` is a ratio over a list it has already narrowed (partials skipped, litter excluded) and must never be read as a work-level verdict — that shipped `Fight Club IS PUBLISHED` with the feature still local (2026-09-04). Tested by `lib-publish-state.tests.ps1` |
 | `prune-empty-folders.ps1` | tidy folders left behind by reclaims |
 
 Plex fix-ups, after the scan:

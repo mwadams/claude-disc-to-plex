@@ -42,19 +42,39 @@ if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path 
 try { Start-Transcript -Path (Join-Path $logDir '_publish-loop.log') -Append | Out-Null } catch { }
 Write-Output ("=== publish loop up {0} ===" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
 
-# Artefact-type test, shared with publish-work.ps1 (see lib-artefact-types.ps1 for the rule and the
-# Champions .wrong-length incident). Used here only to keep NON-artefact files out of the pre-check
-# below: a quarantine file (`X.mkv.wrong-length`) is never published, so it is never on the NAS, so
-# comparing it would read as "missing -> work to do" on EVERY pass - the loop would re-invoke the
-# publish forever and, because the publish then verifies clean, never sleep. Same shape as the
-# Boston Legal scaffolding loop of 2026-09-02: measure the deliverable, not the litter.
-# Fail-OPEN if the lib is missing (worst case: extra publish attempts); publish-work.ps1 loads the
-# same lib fail-CLOSED, so the copy itself stays guarded either way.
-$artefactLib = 'D:/video/.claude/skills/disc-to-plex/scripts/lib-artefact-types.ps1'
-if (Test-Path -LiteralPath $artefactLib) { . $artefactLib }
+# THE DEFINITION OF "PUBLISHED", loaded FAIL-CLOSED.
+#
+# Get-WorkOutstanding (lib-publish-state.ps1) answers one question - which files of this work are
+# not yet correctly on the NAS - and this loop uses it TWICE per work: once to decide whether to
+# invoke a publish at all, and once AFTERWARDS to decide whether the work may be called published.
+# It carries the artefact-type test with it (lib-artefact-types.ps1), which is what keeps quarantine
+# litter such as `X.mkv.wrong-length` out of the comparison: such a file is never published, so it
+# is never on the NAS, so counting it would read as "work to do" on EVERY pass and the loop would
+# re-invoke the publish forever without ever sleeping.
+#
+# This used to be a fail-OPEN load of lib-artefact-types.ps1 alone, on the reasoning that the worst
+# case was a few extra publish attempts. That is no longer the worst case: without this function
+# the loop cannot tell a published work from a half-published one, which is precisely the claim the
+# Fight Club incident (2026-09-04) proved must never be guessed. If it will not load, refuse to run.
+$stateLib = 'D:/video/.claude/skills/disc-to-plex/scripts/lib-publish-state.ps1'
+if (-not (Test-Path -LiteralPath $stateLib)) {
+  Write-Output "publish-state library missing: $stateLib - refusing to run without the definition of 'published'"
+  exit 1
+}
+. $stateLib
+if (-not (Get-Command Get-WorkOutstanding -ErrorAction SilentlyContinue)) {
+  # A dot-source failure is NON-TERMINATING: without this check the function would simply be
+  # undefined and every call would error and carry on.
+  Write-Output 'lib-publish-state.ps1 failed to load - refusing to run without the definition of "published"'
+  exit 1
+}
 
 while ($true) {
   $published = 0
+  # Files that STILL have to reach the NAS when this pass ends, across every work. It gates the
+  # expensive full subtitle-coverage sweep at the bottom of the pass - see there for why.
+  $stillOutstanding = 0
+  $worksOutstanding = @()
   foreach ($kind in @('Movies', 'Television Shows')) {
     $root = Join-Path 'D:\video' $kind
     if (-not (Test-Path -LiteralPath $root)) { continue }
@@ -70,46 +90,21 @@ while ($true) {
       #
       # So: absent -> normal no-clobber copy. Present but wrong size -> pass -Overwrite for THIS
       # work only, which is exactly the documented "replace a bad copy" case.
+      # SUBTITLES-ONLY, quarantine litter, size AND timestamp: all of it now lives in ONE shared
+      # definition, Get-WorkOutstanding (lib-publish-state.ps1), because this loop needs the same
+      # answer again after the publish and a second inline copy of the rule would drift from this
+      # one. Its header carries the reasoning that used to sit here: the Boston Legal scaffolding
+      # hot-loop (the local .mkv of a `.subtitles-only` work differs from the NAS copy permanently
+      # and by design), and the Michael J. Fox Interview re-encode that came out byte-for-byte the
+      # SAME SIZE at a different aspect ratio, which is why an mtime difference counts too.
       $nas = Join-Path (Join-Path '\\NASTEAMV\Multimedia' $kind) $w.Name
-      $need = $false
-      $stale = $false
-      # SUBTITLES-ONLY: COMPARE ONLY WHAT CAN TRAVEL. For a marked work the .srt sidecars are the
-      # ONLY files a publish may ship, so they are the only files whose absence or staleness can
-      # mean "work to do". The local .mkv is scaffolding - a fresh re-encode that exists solely to
-      # give OCR a source, under the SAME NAME as the published legacy file but with DIFFERENT
-      # BYTES, permanently and by design (~750 MB local vs ~400 MB on the NAS). Comparing it can
-      # only ever answer "stale", and before this test the loop re-published Boston Legal every
-      # pass forever (78 lines in the last 200 of this log, 2026-09-02) - harmless on the NAS,
-      # since only sidecars travel, but the track never moved past the work and the fetch-floor
-      # nag re-fired each pass. Measure the deliverable, not the scaffolding.
       $subsOnly = Test-Path -LiteralPath (Join-Path $w.FullName '.subtitles-only')
-      foreach ($f in Get-ChildItem -LiteralPath $w.FullName -Recurse -File -ErrorAction SilentlyContinue) {
-        if ($subsOnly -and $f.Extension -ne '.srt') { continue }
-        # Quarantine litter and other non-artefacts never publish, so their absence from the NAS is
-        # not work to do - see the lib load above for the hot-loop this prevents.
-        if ((Get-Command Test-LibraryArtefact -ErrorAction SilentlyContinue) -and
-            -not (Test-LibraryArtefact -Name $f.Name)) { continue }
-        $t = $f.FullName.Replace($w.FullName, $nas)
-        if (-not (Test-Path -LiteralPath $t)) { $need = $true; continue }
-        $ti = Get-Item -LiteralPath $t
-        # SIZE ALONE MISSES A RE-ENCODE OF THE SAME LENGTH.
-        #
-        # Michael J. Fox Interview was re-encoded from DAR 4:3 to 16:9 on 2026-08-24 and came out
-        # byte-for-byte the SAME SIZE (186 MB) - only the aspect metadata differed. The size check
-        # saw no difference, so the loop would have left the stretched copy on the NAS forever
-        # while local held the fix, and every verification would have reported success.
-        #
-        # robocopy preserves the SOURCE mtime, so a published file carries the timestamp of the
-        # local file it came from. Re-encoding gives local a NEW mtime; the NAS copy keeps the old
-        # one. That difference is exactly what "the local file changed since it was published"
-        # means. (Allow 2 s for filesystem timestamp granularity across SMB.)
-        if ($ti.Length -ne $f.Length) { $need = $true; $stale = $true }
-        elseif ([Math]::Abs(($ti.LastWriteTimeUtc - $f.LastWriteTimeUtc).TotalSeconds) -gt 2) {
-          $need = $true; $stale = $true
-          "{0,-46} '{1}' differs by TIMESTAMP not size - re-publishing" -f $w.Name, $f.Name
-        }
+      $outstanding = @(Get-WorkOutstanding -WorkDir $w.FullName -NasDir $nas)
+      if ($outstanding.Count -eq 0) { continue }
+      $stale = @($outstanding | Where-Object { $_.Reason -ne 'missing' }).Count -gt 0
+      foreach ($o in @($outstanding | Where-Object { $_.Reason -eq 'timestamp' })) {
+        "{0,-46} '{1}' differs by TIMESTAMP not size - re-publishing" -f $w.Name, $o.Name
       }
-      if (-not $need) { continue }
 
       # -NoProfile: avoids the Terminal-Icons half-written-theme Import-Clixml noise on concurrent
       # pwsh starts; _publish.ps1 has no profile dependence (checked 2026-09-02).
@@ -161,8 +156,79 @@ while ($true) {
         "{0,-46} PUBLISH CRASHED (exit {1}) - last output:" -f $w.Name, $LASTEXITCODE
         @($out | Where-Object { "$_" -match '\S' })[-3..-1] | ForEach-Object { "    $_" }
       }
-      if ($line -match 'verified') {
-        $published++
+      # ASK THE NAS, DO NOT READ THE CHILD'S ADJECTIVE.
+      #
+      # `verified N/N` is publish-work.ps1's honest summary OF THE LIST IT CHOSE TO COPY - and that
+      # list has already had the partial (still-encoding) files, the quarantine litter and, for a
+      # marked work, every non-.srt removed from it. So the ratio cannot fall below 1.0 however much
+      # was skipped, and `verified 1/1` is exactly what a work publishes when ONE 5 MB extra landed
+      # and its 2.86 GB feature did not (Fight Club, 2026-09-04). Matching that word was this loop
+      # deciding a WORK-level fact from a FILE-level report.
+      #
+      # Re-measure instead. The same function that decided there was work to do decides whether the
+      # work was done, so the claim cannot outrun the files by construction. Two different questions
+      # come out of it and they must not be conflated:
+      #
+      #   $landed  - files that went from outstanding to correct on the NAS THIS PASS. This is "the
+      #              NAS changed", and it is what the downstream refreshes below key on: a retire
+      #              list is only worth rebuilding when a replacement actually arrived.
+      #   $after   - what is STILL outstanding. Empty, and only empty, means the work is published.
+      #
+      # A pass can easily have $landed -gt 0 and $after -gt 0 (a growing TV show, or this exact
+      # incident) - which is a real, useful publish AND a work that is not published. Publishing
+      # early stays exactly as it was; only the CLAIM now waits for the files.
+      $after  = @(Get-WorkOutstanding -WorkDir $w.FullName -NasDir $nas)
+      $landed = $outstanding.Count - $after.Count
+      $stillOutstanding += $after.Count
+      if ($after.Count -gt 0) { $worksOutstanding += $w.Name }
+      if ($landed -gt 0) { $published++ }
+
+      if ($after.Count -gt 0) {
+        # SAY WHAT IS MISSING, EVERY PASS. The old code said nothing here at all - a partly
+        # published work looked identical to a finished one in this log, which is how the feature
+        # sat unpublished for 50 minutes with 'IS PUBLISHED' above it.
+        "{0,-46} PARTIAL: {1} file(s) still not on the NAS ({2} landed this pass) - NOT recording it as published" -f `
+          $w.Name, $after.Count, $landed
+        foreach ($o in ($after | Select-Object -First 5)) {
+          "{0,-46}    {1} ({2})" -f '', $o.Name, $o.Reason
+        }
+      }
+
+      # SCOPED SUBTITLE-COVERAGE runs on $landed, not on the word 'verified': the event that creates
+      # a coverage gap is a file ARRIVING on the NAS, and that is true of a partial publish too.
+      if ($landed -gt 0) {
+        # SUBTITLE-COVERAGE TRIGGER, right at the event that creates the gap. "I am surprised it
+        # published without SRT" (user, 2026-09-03): the publish gate only refuses a file with a
+        # BITMAP subtitle awaiting OCR - a file with no subtitle stream at all sails through,
+        # because there is genuinely nothing to wait for. Four Survivors S02 episodes did exactly
+        # that the same day, and nothing noticed.
+        #
+        # SCOPED to the work that just published, not a full-library sweep - a routine pass here
+        # must stay cheap. The full picture is refreshed separately and less often, below.
+        #
+        # QUEUEING IS NOT RUNNING. Two SEPARATE queues, two separate scope rules (user, 2026-09-03):
+        #   - OCR (_ocr-queue.csv): LIBRARY-WIDE - a bitmap subtitle stream found by probing the
+        #     published file directly is its own evidence; it does not matter which drive produced
+        #     it or whether this pipeline produced it.
+        #   - Transcription (_transcribe-queue.csv): NARROWED - only 'awaiting-transcription' (this
+        #     pipeline's own manifest declares no subtitle source AND the file is sourced from the
+        #     CURRENTLY ATTACHED drive). A disc on a drive not attached may have subtitles never
+        #     seen yet, so transcribing now risks GPU + verification effort a future re-rip would
+        #     waste; those go to _transcribe-deferred.csv instead, NOT as a failure.
+        # Never 'not-applicable' (routed to its own register) and never 'genuinely-missed' (a real
+        # subtitle source that failed to ship - reported, not papered over). Neither track is ever
+        # STARTED by this - both drain opportunistically and OCR/transcribe stand down for encodes.
+        try {
+          $covOut = & pwsh -NoProfile -File 'D:\video\.claude\skills\disc-to-plex\scripts\subtitle-coverage.ps1' -Works $w.Name -Queue 2>&1
+          $covLine = $covOut | Select-String 'QUEUED: [1-9]|DIVERTED TO NOT-APPLICABLE|EXCLUDED|awaiting-ocr|genuinely-missed|transcription-deferred'
+          if ($covLine) { $covLine | ForEach-Object { "    [subtitle-coverage] $_" } }
+        } catch {
+          Write-Output "    subtitle-coverage.ps1 threw: $($_.Exception.Message)"
+        }
+      }
+
+      # THE WORK IS PUBLISHED ONLY WHEN NOTHING IS OUTSTANDING.
+      if ($after.Count -eq 0) {
 
         # A COMPLETED PUBLISH IS THE MOMENT TO ASK FOR A VERIFICATION - and while the disk is
         # below the fetch floor, it is the ONLY thing that can unblock the line.
@@ -188,37 +254,6 @@ while ($true) {
         if ($freeGB -lt 120) {
           Write-Output ("    *** {0} IS PUBLISHED AND THE DISK IS BELOW THE FETCH FLOOR ({1} GB)." -f $w.Name, $freeGB)
           Write-Output  '        Confirm it in Plex so its local copy can be reclaimed - the line is waiting on this.'
-        }
-
-        # SUBTITLE-COVERAGE TRIGGER, right at the event that creates the gap. "I am surprised it
-        # published without SRT" (user, 2026-09-03): the publish gate above only refuses a file
-        # with a BITMAP subtitle awaiting OCR - a file with no subtitle stream at all sails
-        # through, because there is genuinely nothing to wait for. Four Survivors S02 episodes did
-        # exactly that the same day, and nothing noticed.
-        #
-        # SCOPED to the work that JUST published, not a full-library sweep - a routine pass here
-        # must stay cheap (see the retire-list note above: NAS traffic every 90s adds up). The full
-        # picture is refreshed separately and less often, below.
-        #
-        # QUEUEING IS NOT RUNNING. Two SEPARATE queues, two separate scope rules (user, 2026-09-03):
-        #   - OCR (_ocr-queue.csv): LIBRARY-WIDE - a bitmap subtitle stream found by probing the
-        #     published file directly is its own evidence; it does not matter which drive produced
-        #     it or whether this pipeline produced it. "If there is a PGS or VOBSUB stream in the
-        #     published file then yes, it can be queued immediately for OCR."
-        #   - Transcription (_transcribe-queue.csv): NARROWED - only 'awaiting-transcription' (this
-        #     pipeline's own manifest declares no subtitle source AND the file is sourced from the
-        #     CURRENTLY ATTACHED drive). A disc on a drive not attached may have subtitles never
-        #     seen yet, so transcribing now risks GPU + verification effort a future re-rip would
-        #     waste; those go to _transcribe-deferred.csv instead, NOT as a failure.
-        # Never 'not-applicable' (routed to its own register) and never 'genuinely-missed' (a real
-        # subtitle source that failed to ship - reported, not papered over). Neither track is ever
-        # STARTED by this - both drain opportunistically and OCR/transcribe stand down for encodes.
-        try {
-          $covOut = & pwsh -NoProfile -File 'D:\video\.claude\skills\disc-to-plex\scripts\subtitle-coverage.ps1' -Works $w.Name -Queue 2>&1
-          $covLine = $covOut | Select-String 'QUEUED: [1-9]|DIVERTED TO NOT-APPLICABLE|EXCLUDED|awaiting-ocr|genuinely-missed|transcription-deferred'
-          if ($covLine) { $covLine | ForEach-Object { "    [subtitle-coverage] $_" } }
-        } catch {
-          Write-Output "    subtitle-coverage.ps1 threw: $($_.Exception.Message)"
         }
       }
     }
@@ -279,6 +314,9 @@ while ($true) {
     $coverageFullSweepEveryMin = 240
     $coverageCheckpoint = 'D:/video/_subtitle-coverage-last-full.txt'
     $dueForFullSweep = $true
+    # How long since the last CLEAN sweep. Also used by the deliverable-first gate below, so it is
+    # computed here rather than inside the throttle's own if.
+    $sinceLastSweepMin = [double]::MaxValue
     if (Test-Path -LiteralPath $coverageCheckpoint) {
       $last = Get-Content -LiteralPath $coverageCheckpoint -Raw -ErrorAction SilentlyContinue
       # MUST BE TYPED. `$lastTime = $null` is untyped, and TryParse's [ref] parameter needs a
@@ -297,7 +335,8 @@ while ($true) {
       [DateTime]$lastTime = [DateTime]::MinValue
       try {
         if ([DateTime]::TryParse($last, [ref]$lastTime)) {
-          $dueForFullSweep = ((Get-Date) - $lastTime).TotalMinutes -ge $coverageFullSweepEveryMin
+          $sinceLastSweepMin = ((Get-Date) - $lastTime).TotalMinutes
+          $dueForFullSweep = $sinceLastSweepMin -ge $coverageFullSweepEveryMin
         } else {
           # Same failure class as the TV-reindex incident (follow-up.md, 2026-09-03): a throttle
           # that degrades silently into "always run" reads as ordinary slowness for days, not as
@@ -309,6 +348,34 @@ while ($true) {
         }
       } catch {
         Write-Output ("    REFUSING to trust subtitle-coverage checkpoint '{0}' - {1} - forcing a full sweep this pass" -f $coverageCheckpoint, $_.Exception.Message)
+      }
+    }
+    # THE DELIVERABLE COMES BEFORE THE REPORT.
+    #
+    # This sweep is a synchronous child of a SERIAL loop, so for its whole 30-55 minutes nothing is
+    # published. On 2026-09-04 it started at 00:27:25 - four minutes before the Fight Club feature
+    # finished encoding at 00:31:38 - and the film was still not on the NAS at 01:22, on a disk
+    # 10 GB under its fetch floor with 19 discs waiting. Nothing was wedged; the publish was simply
+    # queued behind a report. That is the wrong priority in a pipeline whose stated rule is
+    # "publish immediately, gate only the reclaim": the user cannot confirm a unit in Plex until it
+    # is on the NAS, and the coverage CSV helps nobody while the line is stopped.
+    #
+    # So: if any work still has files to publish, defer. The sweep is report-only, it is
+    # interrupt-safe by design (it accumulates in memory and writes the CSV exactly once at the
+    # end), and being 90 seconds later costs nothing.
+    #
+    # BUT NEVER SILENTLY FOREVER. A work with a permanently partial file (a show encoding across
+    # hours, or an abandoned output) would otherwise starve the sweep indefinitely and the coverage
+    # report would quietly rot - the same "degrades silently into never" failure the throttle bug
+    # above was. At twice the throttle the sweep runs anyway, and says that it is doing so.
+    if ($dueForFullSweep -and $stillOutstanding -gt 0) {
+      if ($sinceLastSweepMin -ge (2 * $coverageFullSweepEveryMin)) {
+        Write-Output ("--- full subtitle-coverage sweep deferred behind unpublished files for {0:N0} min (2x the {1} min throttle) - running it now anyway; {2} file(s) still outstanding in: {3} ---" -f `
+                      $sinceLastSweepMin, $coverageFullSweepEveryMin, $stillOutstanding, (($worksOutstanding | Select-Object -Unique) -join ', '))
+      } else {
+        Write-Output ("--- DEFERRING the full subtitle-coverage sweep: {0} file(s) still have to reach the NAS in {1} - publishing comes first, and this sweep blocks this loop for 30-55 min ---" -f `
+                      $stillOutstanding, (($worksOutstanding | Select-Object -Unique) -join ', '))
+        $dueForFullSweep = $false
       }
     }
     if ($dueForFullSweep) {

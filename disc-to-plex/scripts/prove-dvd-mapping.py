@@ -781,18 +781,66 @@ def verify_claims(disc_dir, catalogue_path):
     #
     # TT_SRPT is the disc's own declaration and owes nothing to either reader, so compare against
     # that. This needs no MakeMKV run - the catalogue already records each row's dvdvideoTitle.
+    #
+    # ...BUT A SECOND DOOR IS NOT MISSING CONTENT, AND MUST NOT BE COUNTED AS SUCH.
+    #
+    # `declared minus catalogued` is the right SET but the wrong QUESTION on its own. A DVD routinely
+    # declares two TT_SRPT entries onto the SAME cells - one PGC per menu button - and MakeMKV
+    # enumerates that content once. The second entry has no catalogue row for a reason that is not
+    # "nobody looked": there is nothing separate to look at.
+    #
+    # Rumpole of the Bailey S1 D1 declares 10 titles and MakeMKV enumerated 5. Four of the five
+    # "missing" ones (dvdvideo 4, 6, 8, 10) are the VTS_TTN=2 entries of VTS_03/04/05/06, and in each
+    # VTS the two PGCs hold the IDENTICAL six cells with identical first/last sectors. Only dvdvideo
+    # 2 - an 8.84 s FremantleMedia sting under the enumeration floor - is genuinely unexamined. S2 D1
+    # is the same shape: 3 of its 4 are doors, and only dvdvideo 8 is real.
+    #
+    # Demanding a written exclusion for a row that is BY CONSTRUCTION a duplicate of a row already
+    # accounted for teaches the reader to write meaningless lines to quiet the gate - and that habit
+    # is exactly what lets a real declared-but-uncatalogued title through next time. So classify
+    # them, and let the caller report them as what they are.
+    #
+    # COMPARE CELL-SECTOR SETS, NEVER DURATIONS. Two doors onto the same cells have the same runtime
+    # by definition, so duration cannot distinguish a door from a coincidence - and on this very disc
+    # a second door once carried one episode's frames and speech onto ANOTHER episode's row. The
+    # sector set is the only reader that settles it. Cells are VTS-relative, so the comparison is
+    # only meaningful WITHIN a VTS.
+    #
+    # A door is exempt ONLY when its twin is itself CATALOGUED. Two uncatalogued entries sharing
+    # cells are still two titles nobody has looked at, and both stay on the list.
     claimed_dv = {t.get('dvdvideoTitle') for t in cat.get('titles', [])
                   if t.get('dvdvideoTitle') is not None}
+
+    def cell_set(entry):
+        r = title_ranges.get((entry['vtsn'], entry['vts_ttn']))
+        return tuple(sorted(r)) if r else None
+
+    catalogued_in_vts = {}
+    for e in srpt.values():
+        if e['title'] in claimed_dv:
+            catalogued_in_vts.setdefault(e['vtsn'], []).append(e)
+
     uncatalogued = []
     for e in sorted(srpt.values(), key=lambda x: x['title']):
         if e['title'] in claimed_dv:
             continue
         on_disk = e['vtsn'] in vob
+        mine = cell_set(e)
+        door_of = None
+        for c in catalogued_in_vts.get(e['vtsn'], []):
+            if mine is not None and cell_set(c) == mine:
+                door_of = c['title']
+                break
+        if door_of is not None:
+            why = ('SECOND DOOR of dvdvideo %d - VTS_%02d PGCs cover IDENTICAL cell sectors '
+                   '(%d cell(s), %d-%d); not distinct content'
+                   % (door_of, e['vtsn'], len(mine), mine[0][0], mine[-1][1]))
+        else:
+            why = ('VTS present - a title the catalogue never lists (MakeMKV may have skipped it)'
+                   if on_disk else 'VTS has no title VOBs on disk')
         uncatalogued.append({
             'title': e['title'], 'vts': e['vtsn'], 'vtsOnDisk': on_disk,
-            'chapters': e.get('nr_of_ptts'),
-            'why': ('VTS present - a title the catalogue never lists (MakeMKV may have skipped it)'
-                    if on_disk else 'VTS has no title VOBs on disk')})
+            'chapters': e.get('nr_of_ptts'), 'secondDoorOf': door_of, 'why': why})
     return verified, unverifiable, failures, uncatalogued
 
 
@@ -831,13 +879,26 @@ def main():
         # cannot: no row means no missing disposition. The Zoo Gang D2's 12:41 extra was invisible
         # exactly this way.
         if uncat:
-            present = [u for u in uncat if u['vtsOnDisk']]
+            doors = [u for u in uncat if u.get('secondDoorOf') is not None]
+            real = [u for u in uncat if u.get('secondDoorOf') is None]
+            present = [u for u in real if u['vtsOnDisk']]
             print(f'\n*** {len(uncat)} title(s) DECLARED BY THE DISC BUT NOT IN THE CATALOGUE ***')
             for u in uncat:
                 ch = f", {u['chapters']} chapter(s)" if u.get('chapters') else ''
                 print(f'    dvdvideo {u["title"]:>3}  VTS_{u["vts"]:02d}{ch}  {u["why"]}')
+            # Say the decomposition out loud. A reader who sees "5 declared but not catalogued" and
+            # is told four of them are doors can check that claim; a reader given only the total
+            # cannot, and a reader given only the remainder cannot see what was set aside.
+            if doors:
+                print(f'\n    {len(doors)} of these are SECOND DOORS of titles that ARE catalogued '
+                      f'({", ".join("dvdvideo %d->%d" % (u["title"], u["secondDoorOf"]) for u in doors)}).')
+                print('    Identical cell sectors within the VTS, so there is no separate content')
+                print('    behind them. Compared on SECTORS, never durations - two doors share a')
+                print('    runtime by definition, and a door has already put one title\'s evidence')
+                print("    onto another title's row on this very disc.")
             if present:
-                print(f'\n    {len(present)} of these sit in a VTS that IS on disk. The accounting')
+                print(f'\n    {len(present)} of the remaining {len(real)} sit in a VTS that IS on '
+                      f'disk. The accounting')
                 print('    gate cannot flag them - a title with no catalogue row has no missing')
                 print('    disposition. Decode each and account for it, or record why it is empty.')
         return 3 if bad else 0

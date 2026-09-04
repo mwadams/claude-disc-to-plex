@@ -69,6 +69,15 @@
   MakeMKV, so it is reconciled against the catalogue on EVERY DVD run, and every declared title the
   catalogue does not list must carry a `dvNN` disposition or this gate FAILS.
 
+  ONE EXEMPTION, AND ONLY ONE: a SECOND DOOR. A disc routinely declares two TT_SRPT entries onto
+  the same cells - one PGC per menu button - and MakeMKV enumerates that content once. Where the
+  door's twin is itself CATALOGUED, the row is set aside and REPORTED as a door rather than demanded
+  (Rumpole S1 D1: 10 declared, 5 enumerated, 4 doors, 1 real). Two uncatalogued entries sharing
+  cells are still two titles nobody looked at, and both stay on the list. The decision is made by
+  prove-dvd-mapping.py from CELL SECTORS and never durations - two doors share a runtime by
+  definition, and on that same disc a door once put one episode's frames and speech onto another
+  episode's row.
+
   Twice a clean exit here was read as completeness while real content sat undeclared:
   - **Edge of Darkness Disk 1** (2026-09-03): TT_SRPT declared 16, MakeMKV enumerated 3. The 13
     missing titles held 202 still text pages - the complete Episode 1 shooting script among them.
@@ -557,6 +566,7 @@ $reconRan = $false
 $declUnexplained = @()
 $reconFail = @()      # the reconciliation could not be performed at all -> fatal, in its OWN block
 $uncat = @()          # declared-but-uncatalogued titles, populated only when the reconciliation runs
+$secondDoors = @()    # declared rows that are additional PGC doors onto a CATALOGUED title's cells
 $unmappedRows = @()   # catalogue rows with no dvdvideoTitle - they discharge no declared title
 
 if (-not (Test-Path -LiteralPath $prover)) {
@@ -614,10 +624,27 @@ if (-not (Test-Path -LiteralPath $prover)) {
                    (($vOut | Select-Object -Last 3 | ForEach-Object { "$_".Trim() }) -join ' / '))
   } else {
     # TT_SRPT is the disc's own declaration and owes nothing to MakeMKV. Every title it declares
-    # that the catalogue does not list is a title nobody has looked at.
+    # that the catalogue does not list is a title nobody has looked at - EXCEPT a SECOND DOOR.
+    #
+    # A DVD routinely declares two TT_SRPT entries onto the same cells, one PGC per menu button, and
+    # MakeMKV enumerates that content once. The second entry has no catalogue row because there is
+    # nothing separate to look at, and demanding an exclusion line for it would teach the reader to
+    # write meaningless lines to quiet the gate - the exact habit that lets a REAL uncatalogued title
+    # through next time. Rumpole S1 D1 declares 10 and enumerated 5; four of the five are doors and
+    # only dvdvideo 2, an 8.84 s sting, is unexamined content. S2 D1: three of four are doors.
+    #
+    # prove-dvd-mapping.py makes the call, from CELL SECTORS and never durations (two doors share a
+    # runtime by definition), and only where the door's twin is itself CATALOGUED. Read its verdict
+    # rather than re-deriving it: this script has no IFO parser and must not grow one.
     foreach ($line in @($vOut | Where-Object { "$_" -match '^\s*dvdvideo\s+\d+\s+VTS_' })) {
       if ("$line".Trim() -match '^dvdvideo\s+(\d+)\s+(.+)$') {
-        $uncat += [pscustomobject]@{ dv = [int]$Matches[1]; detail = $Matches[2].Trim() }
+        $row = [pscustomobject]@{ dv = [int]$Matches[1]; detail = $Matches[2].Trim(); doorOf = $null }
+        if ($row.detail -match 'SECOND DOOR of dvdvideo\s+(\d+)') {
+          $row.doorOf = [int]$Matches[1]
+          $secondDoors += $row
+        } else {
+          $uncat += $row
+        }
       }
     }
     # UNMAPPED ROWS ARE NOT AN ACCOUNTING. A catalogue row with a null dvdvideoTitle claims no
@@ -644,8 +671,16 @@ if (-not (Test-Path -LiteralPath $prover)) {
     }
     # A `dvNN` line naming a title that is NOT declared-but-uncatalogued cannot hide anything, so it
     # is a notice, not a failure - but it is usually a stale line left after a re-catalogue, and a
-    # reader should see it rather than assume it is still discharging something.
+    # reader should see it rather than assume it is still discharging something. A line written
+    # against a SECOND DOOR is neither stale nor required: it is an identification of a real
+    # TT_SRPT row, so acknowledge it instead of calling it stale.
     foreach ($k in ($dvDisp.Keys | Sort-Object)) {
+      $door = @($secondDoors | Where-Object { [int]$_.dv -eq [int]$k })[0]
+      if ($door) {
+        $evNote += ("declared-vs-catalogued: dv{0} names a SECOND DOOR of dvdvideo {1} - not required (no distinct content), kept as an identification: {2} | {3}" -f `
+                    $k, $door.doorOf, $dvDisp[$k].kind, $dvDisp[$k].note)
+        continue
+      }
       if (-not ($uncat | Where-Object { [int]$_.dv -eq [int]$k })) {
         $evNote += ("declared-vs-catalogued: a dv{0} disposition exists but dvdvideo {0} is NOT a declared-but-uncatalogued title on this disc (stale line, or the catalogue has since been re-swept)" -f $k)
       }
@@ -694,6 +729,19 @@ if($evAmbig){
 if($evNote){
   Write-Output ("{0} mapping/catalogue notice(s) - informational, NOT ambiguities:" -f $evNote.Count)
   $evNote | ForEach-Object { Write-Output "   $_" }
+}
+# SECOND DOORS GET THEIR OWN LINE - SET ASIDE, NEVER SILENTLY DROPPED.
+#
+# These rows ARE declared and ARE absent from the catalogue; they are simply not missing CONTENT.
+# Exempting them without saying so would turn one silence into another, and the reader is the only
+# thing that can sanity-check the decomposition ("10 declared, 5 catalogued, 4 doors, 1 to examine"
+# adds up in a way a bare remainder does not). They also deserve naming on their own account: a
+# second door once put one Rumpole episode's frames and speech onto another episode's row.
+if($secondDoors){
+  Write-Output ("{0} declared title(s) are second doors of catalogued titles - not distinct content, so not on the unaccounted list:" -f $secondDoors.Count)
+  foreach($d1 in $secondDoors){ Write-Output ("   dvdvideo {0,-4} {1}" -f $d1.dv, $d1.detail) }
+  Write-Output "   Compared on CELL SECTORS within the VTS, never on durations - two doors share a"
+  Write-Output "   runtime by definition, so duration can never tell a door from a coincidence."
 }
 if($evBlind){
   Write-Warning ("{0} named title(s) have NO captured evidence in the catalogue - external citations only:" -f $evBlind.Count)
@@ -762,10 +810,11 @@ if($declUnexplained.Count){
   exit 2
 }
 Write-Output "ACCOUNTED FOR - every catalogued title has a written disposition."
+$doorTail = if($secondDoors.Count){ " ({0} further declared row(s) are second doors of catalogued titles.)" -f $secondDoors.Count } else { '' }
 if($reconRan -and $uncat.Count -eq 0){
-  Write-Output "Declared-vs-catalogued: reconciled against TT_SRPT - the catalogue lists every title the disc declares."
+  Write-Output ("Declared-vs-catalogued: reconciled against TT_SRPT - the catalogue lists every title the disc declares.{0}" -f $doorTail)
 } elseif($reconRan){
-  Write-Output ("Declared-vs-catalogued: reconciled against TT_SRPT - {0} declared title(s) absent from the catalogue, each carrying a written dvNN decision." -f $uncat.Count)
+  Write-Output ("Declared-vs-catalogued: reconciled against TT_SRPT - {0} declared title(s) absent from the catalogue, each carrying a written dvNN decision.{1}" -f $uncat.Count, $doorTail)
 } else {
   Write-Output "Declared-vs-catalogued: NOT reconciled on this run (see the notices above) - a clean"
   Write-Output "exit here does NOT assert that the catalogue lists every title the disc declares."
