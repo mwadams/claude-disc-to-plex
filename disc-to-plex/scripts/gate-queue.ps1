@@ -92,7 +92,19 @@ if ($Disc) {
   $done = @(Get-Content -LiteralPath $FetchDone -ErrorAction SilentlyContinue |
             Where-Object { $_ -and $_.Trim() } | ForEach-Object { $_.Trim() })
   $StageDir = Join-Path $Stage $Disc
-  if (-not $SourceDir) { $SourceDir = Join-Path $SrcRoot $Disc }
+  # $SourceDir IS DELIBERATELY *NOT* COMPUTED HERE. It used to be, and that broke Staggered on
+  # 2026-09-05 with "Cannot find drive. A drive with the name 'E' does not exist."
+  #
+  # Two reasons it must be lazy:
+  #   1. PowerShell's Join-Path resolves the PROVIDER, so it THROWS on an absent drive rather than
+  #      returning a string. $SrcRoot defaults to 'E:/Movies'.
+  #   2. A disc already listed in _fetch-done.txt exits below WITHOUT EVER USING $SourceDir - its
+  #      copy was verified on count and bytes when it was fetched, which is the gate's condition,
+  #      already met and recorded. Computing the path to a source it does not need, and dying on
+  #      it, is pure self-harm.
+  # This is now the NORMAL case, not an edge case: source drives are swapped out as soon as their
+  # discs are staged (media2 out, media3 in, the same morning), and discs backed up by the OPTICAL
+  # lane - Staggered, the Jeeves set - never had a source on $SrcRoot at all.
 
   if (-not (Test-Path -LiteralPath $StageDir -PathType Container)) {
     throw "-Disc '$Disc' is not staged at $StageDir. Fetch it before gating a manifest against it."
@@ -102,6 +114,20 @@ if ($Disc) {
     exit 0
   }
   Write-Output ("$Disc is not in _fetch-done.txt yet - waiting on the copy to match on count and bytes")
+}
+
+# Only now, when the source is genuinely going to be compared against, is its path needed.
+# [IO.Path]::Combine, not Join-Path: it is pure string work and does not resolve the drive, so an
+# absent source produces the explicit message below instead of a provider exception 12 lines earlier.
+if (-not $SourceDir) {
+  if (-not $Disc) { throw 'neither -SourceDir nor -Disc was given - nothing to compare the staged copy against.' }
+  $SourceDir = [IO.Path]::Combine($SrcRoot, $Disc)
+}
+if (-not (Test-Path -LiteralPath $SourceDir -PathType Container)) {
+  throw ("source '$SourceDir' is not reachable, and '$Disc' is not in $FetchDone either. " +
+         "If its drive has been swapped out, put it back; if the disc was backed up by the OPTICAL " +
+         "lane it has no source there at all, and the right fix is to record it in $FetchDone once " +
+         "its _disc-backup.json verifies (byte total equal to the volume, IFO/BUP identical, 0 read errors).")
 }
 
 while ($true) {
