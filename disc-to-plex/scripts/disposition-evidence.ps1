@@ -135,33 +135,33 @@ function Invoke-Section([string]$Name, [scriptblock]$Body) {
   Log ("section {0} done in {1} s" -f $Name, $timings[$Name])
 }
 
-function Invoke-Native([string]$Exe, [string[]]$Args, [string]$Label, [int]$TimeoutSec = 300) {
+function Invoke-Native([string]$Exe, [string[]]$ArgList, [string]$Label) {
   # stdout as lines, stderr as lines, exit code - read DIRECTLY, never through a pipe.
   #
-  # 🔴 WHY THIS IS NOT `& $Exe @Args`. The call operator has NO TIMEOUT and blocks for ever.
-  # On 2026-09-04 this function was called for the byte proof, `prove-dvd-mapping.py` left the
-  # process table, and the whole evidence run sat in `section byteProof` producing nothing -
-  # twice, on 'Don't Look Now', with nothing else contending. There was no way to tell a slow
-  # proof from a dead one, and the brief had every disposition agent running this first.
-  # A PRE-FLIGHT THAT CAN HANG IS WORSE THAN NO PRE-FLIGHT: it takes its caller down with it.
+  # 🔴 THE PARAMETER MUST NEVER BE CALLED $Args. It was, until 2026-09-05, and that ONE WORD
+  # broke every measurement this script takes.
   #
-  # So: every child gets a deadline, and a breach is a MEASUREMENT THAT DID NOT HAPPEN
-  # (Code = -1, TimedOut = true) which callers already turn into an UNAVAILABLE line - never a
-  # silent omission, and never a wait.
+  # `$Args` is a RESERVED PowerShell automatic variable. A parameter cannot bind to it: it is
+  # ALWAYS EMPTY, silently, with no error. Proven with two otherwise-identical functions:
+  #     With-Args    'exe' @('-v','error','-i',$p) 'label'  ->  Args.Count=0     joined=[]
+  #     With-ArgList 'exe' @('-v','error','-i',$p) 'label'  ->  ArgList.Count=4  joined=[-v|error|-i|...]
+  # ...at top level AND inside a scriptblock. So `& $Exe @Args` ran every child WITH NO ARGUMENTS.
   #
-  # ArgumentList (not a single string) so nothing re-quotes a path; this project has discs whose
-  # names carry apostrophes and spaces - "Don't Look Now" is the one that found this.
-  # 🔴 IT MUST BE THE CALL OPERATOR. Do not "improve" this into [Diagnostics.Process] with
-  # UseShellExecute=$false. That was tried on 2026-09-05 and REGRESSED: `python` on this machine
-  # resolves to the Windows Store App Execution Alias
-  # (C:\Users\matth\AppData\Local\Microsoft\WindowsApps\python.exe), which the call operator execs
-  # correctly but ProcessStartInfo does NOT - the stub starts, never runs the script and never
-  # exits, leaving argument-less WindowsApps\python.exe processes behind. Bisected: the prover
-  # returns in 0.4-0.5 s under `&`, and timed out at 45 s under ProcessStartInfo with identical
-  # arguments. If a timeout is ever genuinely needed here, add it with Start-Job/a runspace around
-  # this call - never by changing how the child is launched.
+  # What that looked like from outside, and why it took a night to find:
+  #   * `ffprobe` with no arguments prints its banner and "You have to specify one input file",
+  #     which reads as a bad path. The paths were always correct.
+  #   * `python` with no arguments starts the INTERACTIVE REPL and blocks for ever on stdin. That
+  #     was the "hang" at `section byteProof` - no `prove-dvd-mapping` was ever in the process
+  #     table because the prover never ran, only bare argument-less python stubs waiting for input.
+  #   * A [Diagnostics.Process] rewrite appeared to "fix" the hang only because it added a timeout
+  #     that killed the stuck REPL; every measurement still came back UNAVAILABLE. Do not conclude
+  #     from that that the launch mechanism is at fault - it is not. The call operator is correct.
+  #
+  # Callers pass the array positionally, so renaming the parameter needs no call-site change.
+  # Keep it an array, never a joined string: paths here carry spaces and apostrophes
+  # ("Don't Look Now"), and splatting quotes each element correctly.
   $errFile = Join-Path $scratch ('err-' + [guid]::NewGuid().ToString('N').Substring(0, 6) + '.txt')
-  $out = @(& $Exe @Args 2>$errFile)
+  $out = @(& $Exe @ArgList 2>$errFile)
   $code = $LASTEXITCODE
   $err = @()
   if (Test-Path -LiteralPath $errFile) { $err = @(Get-Content -LiteralPath $errFile -ErrorAction SilentlyContinue); Remove-Item -LiteralPath $errFile -Force -ErrorAction SilentlyContinue }
@@ -465,9 +465,11 @@ Invoke-Section 'ifo' {
     }
   }
   $ifoJson = Join-Path $scratch 'ifo.json'
-  $args = @($ifoFacts, $stagePath, '--classify', '--out-dir', $evDir, '--json-out', $ifoJson)
-  if ($extraPgcs.Count) { $args += @('--title-pgcs', ($extraPgcs -join ',')) }
-  $r = Invoke-Native 'python' $args 'ifo facts'
+  # NOT $args - see Invoke-Native's header. Assigning to the automatic $args works by accident in
+  # a script scope and fails silently anywhere else; do not reintroduce it.
+  $ifoArgs = @($ifoFacts, $stagePath, '--classify', '--out-dir', $evDir, '--json-out', $ifoJson)
+  if ($extraPgcs.Count) { $ifoArgs += @('--title-pgcs', ($extraPgcs -join ',')) }
+  $r = Invoke-Native 'python' $ifoArgs 'ifo facts'
   if ($r.Code -ne 0 -or -not (Test-Path -LiteralPath $ifoJson)) { Add-Unavailable 'ifo' ("dvd-ifo-facts.py exit {0}: {1}" -f $r.Code, (($r.Err | Select-Object -Last 3) -join ' / ')); return }
   $script:ifo = Read-JsonFile $ifoJson
   $ifo = $script:ifo
