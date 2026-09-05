@@ -102,7 +102,15 @@ if ("$Because".Trim().Length -lt 30) {
 # as they are NOW - a verdict cannot outlive the evidence it was judged from.
 $dispRaw = Get-Content -LiteralPath $dispPath -Raw
 $dispSha = (Get-FileHash -LiteralPath $dispPath -Algorithm SHA256).Hash
-$verdictRx = '(?im)^.*NOTHING\s+(IS\s+)?WORTH\s+SHIPPING.*$'
+# 🔴 ANCHORED. This was '^.*NOTHING\s+(IS\s+)?WORTH\s+SHIPPING.*$' - a substring match anywhere in
+# a line - until 2026-09-05, and as the LAST GATE it would have waved through the same negations
+# that got past _dispositions-loop.ps1 and closed four discs carrying 18 real titles:
+#     "# 2. I did NOT append a NOTHING IS WORTH SHIPPING block - wrong here, this disc carries..."
+#     "#    ...so no NOTHING IS WORTH SHIPPING block is written.)"
+# A verdict is an ASSERTION: after the comment hash the line BEGINS with the marker, then ':' or
+# '.' or nothing. Prose ABOUT the verdict - above all a DENIAL of it - embeds it mid-sentence.
+# Keep this identical to $rxNothing in _dispositions-loop.ps1. Never loosen either back.
+$verdictRx = '(?im)^[ \t]*#?[ \t]*NOTHING\s+(IS\s+)?WORTH\s+SHIPPING\s*([:.].*)?$'
 $verdictLines = @([regex]::Matches($dispRaw, $verdictRx) | ForEach-Object { $_.Value.Trim() })
 $verdictSource = 'dispositions'
 $sidecarPath = Join-Path $CatalogueDir "$discName.closure-verdict.txt"

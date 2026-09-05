@@ -153,7 +153,13 @@ if ("$Because".Trim().Length -lt 30) {
 # a sidecar whose hash no longer matches the file is STALE and refused.
 $dispRaw = Get-Content -LiteralPath $dispPath -Raw
 $dispSha = (Get-FileHash -LiteralPath $dispPath -Algorithm SHA256).Hash
-$verdictRx = '(?im)^.*SHIPPED\s+VIA\s+NON-MANIFEST\s+ROUTE.*$'
+# 🔴 ANCHORED - see the same note in close-ships-nothing.ps1 and _dispositions-loop.ps1. As a
+# free-floating substring match this fired on the DISPOSITION BRIEF TEMPLATE'S OWN prose -
+#     "#    ...Once shipped by whatever non-manifest route the orchestrator uses, this becomes
+#      SHIPPED VIA NON-MANIFEST ROUTE."
+# - which every disc built from that template carries, so every such disc escalated for validation
+# and stopped the line. Two were stalled that way on 2026-09-04/05. Keep all three identical.
+$verdictRx = '(?im)^[ \t]*#?[ \t]*SHIPPED\s+VIA\s+NON-MANIFEST\s+ROUTE\s*([:.].*)?$'
 $verdictLines = @([regex]::Matches($dispRaw, $verdictRx) | ForEach-Object { $_.Value.Trim() })
 $verdictSource = 'dispositions'
 $sidecarPath = Join-Path $CatalogueDir "$discName.closure-verdict.txt"
