@@ -785,6 +785,18 @@ Invoke-Section 'library' {
     foreach ($m in $toProbe) {
       $path = $m.path
       $pr = [ordered]@{ path = $path; rel = $m.rel }
+      # GUARD: on 2026-09-05 three probes failed with ffprobe's "You have to specify one input
+      # file", which is what it says when -i receives an EMPTY string - so $path was blank for
+      # those entries while $m.rel was fine. Root cause not yet found (scope shadowing, spaces and
+      # local-vs-NAS were each tested and cleared). Until it is, do not spend an ffprobe on a blank
+      # path and do not report a confusing ffprobe error: say plainly that the path was missing,
+      # and record enough of the entry to find out why next time.
+      if ([string]::IsNullOrWhiteSpace($path)) {
+        $pr.unavailable = ("listing entry has no usable path (rel='{0}', kind='{1}', bytes={2}) - nothing to probe" -f $m.rel, $m.kind, $m.bytes)
+        Add-Unavailable ('nas.probe ' + $m.rel) $pr.unavailable
+        $probes += $pr
+        continue
+      }
       $r = Invoke-NasRead -Path $path -Label ('probe ' + $m.rel) -Say $say -MaxWaitMinutes 2 -Do {
         Invoke-Native $ffprobe @('-v', 'error', '-i', $path, '-show_entries', 'format=duration,bit_rate,size,format_name:stream=index,codec_type,codec_name,profile,width,height,sample_aspect_ratio,display_aspect_ratio,avg_frame_rate,field_order,channels,channel_layout,sample_rate,bit_rate:stream_tags=language,title:stream_disposition=default', '-of', 'json') ('probe ' + $m.rel)
       }

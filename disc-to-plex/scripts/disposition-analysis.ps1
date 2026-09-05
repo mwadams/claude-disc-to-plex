@@ -91,8 +91,12 @@ if ($Correlate) { $evArgs += '-Correlate' }
 if ($NoNas) { $evArgs += '-NoNas' }
 if ($NoPlex) { $evArgs += '-NoPlex' }
 Write-Host ("[analysis] ensuring evidence pack: pwsh {0}" -f ($evArgs -join ' '))
-& pwsh @evArgs | ForEach-Object { Write-Host ('[evidence] ' + $_) }
+# EXIT CODE IS READ DIRECTLY, NEVER THROUGH A PIPE. `& pwsh @evArgs | ForEach-Object {...}` sets
+# $LASTEXITCODE from the PIPELINE, not from pwsh - CLAUDE.md names this as a rule because reading a
+# status through a pipe has hidden a real failure on this project before. Capture first, relay after.
+$evOut  = & pwsh @evArgs 2>&1
 $evExit = $LASTEXITCODE
+$evOut | ForEach-Object { Write-Host ('[evidence] ' + $_) }
 if (-not (Test-Path -LiteralPath $evJson)) {
   Write-Output ("FATAL: disposition-evidence.ps1 exit {0} and no {1} was produced" -f $evExit, $evJson)
   exit 1
