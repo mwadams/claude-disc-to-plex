@@ -365,6 +365,22 @@ while ($MaxPasses -le 0 -or $pass -lt $MaxPasses) {
               Write-Output ("    [rerip-discharge] {0}" -f $dl)
             }
           } catch { Write-Output "    discharge-rerip.ps1 threw: $($_.Exception.Message)" }
+
+          # APPLY PLEX TITLES DECLARED BY THE MANIFEST (2026-09-05). Same reasoning as the
+          # discharge above: a completed publish is the earliest moment the file exists in Plex,
+          # and it is the moment nobody was doing anything. fix-plex-extras.ps1 takes titles from
+          # the FILENAME and so cannot help a bare-named in-place supersede - and those are forced,
+          # because a `supersedes` must keep the old NAS name or it ships a duplicate. Five Sweeney
+          # specials shipped as "Episode 18".."Episode 33" that way and the user had to ask.
+          # audit-season00-titles.ps1 already detects it and _idlewatch.ps1 reports it; this is the
+          # half that was missing - actually setting what the manifest already knew.
+          try {
+            foreach ($mf in @(Get-ChildItem 'D:/video/_queue/done' -File -Filter '*.json' -ErrorAction SilentlyContinue |
+                              Where-Object { $_.LastWriteTime -gt (Get-Date).AddHours(-6) })) {
+              & pwsh -NoProfile -File 'D:/video/.claude/skills/disc-to-plex/scripts/apply-plex-titles.ps1' -Manifest $mf.FullName 2>&1 |
+                ForEach-Object { Write-Output "$_" }
+            }
+          } catch { Write-Output "    apply-plex-titles.ps1 threw: $($_.Exception.Message)" }
         }
       }
     }

@@ -1,8 +1,8 @@
 # Script index - GENERATED, do not edit
 
-Generated 2026-09-05 17:53 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
+Generated 2026-09-05 18:50 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
 
-**101 scripts under `scripts/`, 44 loop scripts under `D:/video/`. 0 with NO usable header, 43 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
+**102 scripts under `scripts/`, 44 loop scripts under `D:/video/`. 0 with NO usable header, 43 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
 
 Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library` = dot-source, defines functions only; `tests` = a test suite, exit 0 = all passed.
 
@@ -11,6 +11,7 @@ Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library
 | Script | Kind | Purpose | Reach for this when... | Invoke |
 |---|---|---|---|---|
 | `analyze-tracks.py` | python | Decide a rip's AUDIO manifest fields from CONTENT, and write the evidence down. | when: Audio selection was being authored from EXPECTATION and corrected later, which is the same defect class as confirming a rip from a grep of anticipated strings: the check can only find what it alrea... | `python analyze-tracks.py "D:/video/_stage/x/Film_t00.mkv" [--offsets 1800 3600] [--model base]` |
+| `apply-plex-titles.ps1` | command | Set (and LOCK) the Plex episode title for every published item whose manifest declared a `plexTitle`. Runs after a publish; takes its names from the MANIFEST, never from a guess. | when: fix-plex-extras.ps1 sets Plex titles from THE FILENAME, and says so: "our filenames are the source of truth". | - |
 | `apply-proof.py` | python | Rewrite a catalogue.json onto the mapping proved by prove-dvd-mapping.py. | NO TRIGGER IN HEADER | - |
 | `apply-srt-corrections.py` | python | Apply a reviewed list of WORD-LEVEL corrections to a machine-transcribed .srt. | when: Whisper produces fluent text with homophone errors that a dictionary cannot catch, because both spellings are real words. Measured in this library's own output: | `python apply-srt-corrections.py <file.eng.srt> --corrections fixes.json [--max-change-pct 8]` |
 | `assert-accounted.ps1` | command | Refuse to release a disc's raw staging until EVERY catalogued title has a recorded disposition. | when: The per-unit gate's check #1 - "every title accounted for" - was prose, so it was signed off by recalling that the rips looked fine. Twice that was wrong in a way that cost a re-fetch: | `pwsh -File assert-accounted.ps1 -Disc "MAN_GOLDEN_GUN_F1" -RequireEvidence` |

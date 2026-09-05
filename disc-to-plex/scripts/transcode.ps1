@@ -7,7 +7,33 @@
 
   Manifest = JSON array. Each item:
     out    (string, required)  full output .mkv path (already Plex-named)
-    kind   ("BD"|"DVD"|"MKV")  BD = H.264 m2ts (1080p); DVD = MPEG-2 via dvdvideo demuxer (SD PAL);
+    kind   ("BD"|"DVD"|"MKV"|"STILLS")
+                               STILLS = a DVD STILL SET (gallery / biography / infopod): carved out
+                               of the VOBs by sector arithmetic and assembled into a slideshow, NOT
+                               encoded. Use it whenever the dispositions identify a still set - they
+                               are unreachable any other way (ffmpeg's dvdvideo demuxer returns only
+                               the FIRST cell; MakeMKV skips them as sub-floor), and before this kind
+                               existed they had to be built by hand, which is how The Sweeney's
+                               "Sweeney!" gallery was identified and then not shipped, and how
+                               H.M.S. Defiant's two still sets were lost with their staging.
+                               Required with it: vts, pgcs, domain, expectPages. Optional: dwell, dar.
+                                 vts         (int)    VTS number, e.g. 6
+                                 pgcs        (string) PGC selection, same syntax as
+                                             build-still-slideshow.py: "2", "12,14", "23-57"
+                                 domain      ("title"|"menu") MANDATORY, never guessed - the two
+                                             domains have SEPARATE SECTOR SPACES and mixing them
+                                             yields plausible garbage. "menu" maps to --menu on the
+                                             carve and --pgcs on the build (ONE page per PGC);
+                                             "title" maps to --title-set (the PGC's CELLS are pages).
+                                 expectPages (int)    the page count the dispositions MEASURED off
+                                             the disc. A mismatch is a hard FAIL, not a warning.
+                                 dwell       (number) seconds per page. Choose it for the content -
+                                             a captioned card with small print needs longer than a
+                                             plain photo. Measured examples: Quatermass 62 pages at
+                                             3.45 s, Fairport 9 pages at 6.75 s, The Sweeney's
+                                             13 cast-credit lobby cards at 6.0 s.
+                                 dar         (string) only when the IFO and the cells disagree.
+                               BD = H.264 m2ts (1080p); DVD = MPEG-2 via dvdvideo demuxer (SD PAL);
                                MKV = a MakeMKV-ripped SD .mkv (same SD treatment as DVD — deinterlace
                                + preserve DAR — but read as a plain file). Use MKV when the dvdvideo
                                demuxer mis-reads a disc (e.g. multi-cell titles it truncates — see
@@ -568,6 +594,74 @@ foreach($it in $items){
     if($odv -gt 0){ Write-Output "   skip (exists)"; continue }
     Write-Output "   existing output is UNFINALISED (no duration) - re-encoding it"
     Remove-Item -LiteralPath $it.out -Force -ErrorAction SilentlyContinue
+  }
+
+  # --- STILL SET (kind "STILLS") - carved and assembled, never encoded -------------------------
+  # WHY THIS KIND EXISTS. A DVD gallery, biography or infopod is authored as a PGC of ~0.4 s cells
+  # advanced by the remote. NEITHER reader can deliver one: ffmpeg's dvdvideo demuxer refuses the
+  # title, or with -trim false returns only its FIRST CELL; MakeMKV skips them as sub-floor. So a
+  # still set can never be an ordinary encode row - and before 2026-09-05 it could not be a
+  # manifest row at all, which is how content got LOST rather than merely delayed:
+  #   * The Quatermass Experiment's 62-page gallery and Fairport's biography were built BY HAND.
+  #   * H.M.S. Defiant's "Vintage Advertising" (5 stills) and "Filmographies" (6 pages) were
+  #     identified from content, never built, and their staging was released - they now need the
+  #     disc fetched again from a drive that has been swapped out.
+  #   * The Sweeney S2 D4's "Sweeney!" gallery was named in the dispositions as genuine missing
+  #     content, and the manifest that ran simply had no row that could express it. It was found
+  #     only because a human asked what had shipped.
+  # The disposition step already identifies these precisely (VTS, PGC, domain, cell count). This
+  # kind lets the manifest SAY SO, so the gate, the queue, the publish and the reclaim all carry it
+  # like any other item instead of it depending on somebody remembering.
+  #
+  #   { "kind":"STILLS", "out":"...S00E43.mkv", "src":"<staged disc dir or its VIDEO_TS>",
+  #     "vts":6, "pgcs":"2", "domain":"title"|"menu", "dwell":6.0,
+  #     "expectPages":13, "dar":"16:9" (optional) }
+  #
+  # domain is MANDATORY and never guessed: the two domains have SEPARATE SECTOR SPACES and mixing
+  # them yields plausible garbage (dvd-still-cells.py's own warning). expectPages is the count the
+  # dispositions measured; the builder is frame-exact, so a mismatch is a hard fail, not a warning.
+  if("$($it.kind)" -eq 'STILLS'){
+    $missing = @('vts','pgcs','domain','expectPages' | Where-Object { -not (Has $it $_) })
+    if($missing.Count){
+      Write-Output ("   !! FAILED - kind STILLS requires: {0} (missing: {1})" -f 'vts, pgcs, domain, expectPages', ($missing -join ', '))
+      $failCount++; continue
+    }
+    $dom = "$($it.domain)".ToLowerInvariant()
+    if($dom -notin @('title','menu')){
+      Write-Output "   !! FAILED - domain must be 'title' or 'menu', got '$dom' - the two have separate sector spaces and mixing them yields plausible garbage"
+      $failCount++; continue
+    }
+    $vts_dir = "$($it.src)"
+    if(Test-Path -LiteralPath (Join-Path $vts_dir 'VIDEO_TS')){ $vts_dir = Join-Path $vts_dir 'VIDEO_TS' }
+    if(-not (Test-Path -LiteralPath (Join-Path $vts_dir 'VIDEO_TS.IFO'))){
+      Write-Output "   !! FAILED - no VIDEO_TS.IFO under '$vts_dir' - the staging may already have been released"
+      $failCount++; continue
+    }
+    $cellDir = Join-Path $work ("stills$i")
+    $stillCells = Join-Path $PSScriptRoot 'dvd-still-cells.py'
+    $stillBuild = Join-Path $PSScriptRoot 'build-still-slideshow.py'
+    $carve = @($stillCells, $vts_dir, [string][int]$it.vts, $cellDir, "$($it.pgcs)")
+    if($dom -eq 'menu'){ $carve = @($stillCells, '--menu', $vts_dir, [string][int]$it.vts, $cellDir, "$($it.pgcs)") }
+    $co = @(& python @carve 2>&1); $cx = $LASTEXITCODE
+    $co | Select-Object -Last 3 | ForEach-Object { Write-Output ("   [cells] " + $_) }
+    if($cx -ne 0){ Write-Output "   !! FAILED - dvd-still-cells.py exit $cx"; $failCount++; continue }
+    $shape = if($dom -eq 'menu'){ '--pgcs' } else { '--title-set' }
+    $build = @($stillBuild, $cellDir, "$($it.out)", $shape, "$($it.pgcs)")
+    if(Has $it 'dwell'){ $build += @('--dwell', ([double]$it.dwell).ToString([Globalization.CultureInfo]::InvariantCulture)) }
+    if(Has $it 'dar'){ $build += @('--dar', "$($it.dar)") }
+    $bo = @(& python @build 2>&1); $bx = $LASTEXITCODE
+    $bo | Select-Object -Last 4 | ForEach-Object { Write-Output ("   [stills] " + $_) }
+    if($bx -ne 0){ Write-Output "   !! FAILED - build-still-slideshow.py exit $bx"; $failCount++; continue }
+    # The builder self-checks frame-exactness; this checks the manifest's OWN page expectation,
+    # which is the number the dispositions measured off the disc.
+    $pages = @($bo | Select-String -Pattern '^\s*(\d+)\s+still' | ForEach-Object { [int]$_.Matches[0].Groups[1].Value })
+    if($pages.Count -and $pages[0] -ne [int]$it.expectPages){
+      Write-Output ("   !! FAILED - built {0} page(s), manifest expects {1}" -f $pages[0], [int]$it.expectPages)
+      Remove-Item -LiteralPath $it.out -Force -ErrorAction SilentlyContinue
+      $failCount++; continue
+    }
+    Write-Output ("   stills OK - {0} page(s) -> {1}" -f [int]$it.expectPages, (Split-Path $it.out -Leaf))
+    continue
   }
 
   # --- DVD raw cell-range cut (vts + vobSectors) ----------------------------------------------
