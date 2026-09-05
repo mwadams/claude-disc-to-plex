@@ -33,7 +33,9 @@
   - Never fatal to the caller. A Plex outage must not fail a publish that genuinely succeeded.
 #>
 param(
-  [Parameter(Mandatory)][string]$Manifest,          # a manifest .json (typically from _queue/done)
+  [string]$Manifest,                                # a manifest .json (typically from _queue/done)
+  [string]$Tsv,                                     # OR a PROPOSALS.tsv from identify-season00-extras.ps1
+  [string]$RatingKey,                               # show ratingKey - only used to report against -Tsv
   [int]$Section = 5,                                # Plex library section (5 = TV programmes here)
   [switch]$Quiet,
   [switch]$WhatIf
@@ -42,10 +44,30 @@ $ErrorActionPreference = 'Stop'
 
 function Say([string]$m) { if (-not $Quiet) { Write-Output $m } }
 
-if (-not (Test-Path -LiteralPath $Manifest -PathType Leaf)) { Say "apply-plex-titles: no manifest at $Manifest"; exit 0 }
-try { $items = @(Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json) } catch { Say "apply-plex-titles: unreadable manifest ($($_.Exception.Message))"; exit 0 }
+if (-not $Manifest -and -not $Tsv) { throw 'give -Manifest (a pipeline manifest) or -Tsv (a filled-in PROPOSALS.tsv).' }
 
-$want = @($items | Where-Object { $_.PSObject.Properties.Name -contains 'plexTitle' -and "$($_.plexTitle)".Trim() })
+# TWO INPUTS, ONE APPLIER, DELIBERATELY.
+#   -Manifest covers items THIS PIPELINE publishes: the disposition step already knows what each
+#            one is, so the manifest carries `plexTitle` and this runs automatically after publish.
+#   -Tsv     covers everything ALREADY in the library with no manifest behind it - the ~31 untitled
+#            Sweeney specials, and per audit-season00-titles.ps1 some 70 shows in the same state.
+#            identify-season00-extras.ps1 builds the evidence and emits the TSV; an agent fills in
+#            the Title column; this applies it. Same set+lock, same verification, one code path.
+$want = @()
+if ($Manifest) {
+  if (-not (Test-Path -LiteralPath $Manifest -PathType Leaf)) { Say "apply-plex-titles: no manifest at $Manifest"; exit 0 }
+  try { $items = @(Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json) } catch { Say "apply-plex-titles: unreadable manifest ($($_.Exception.Message))"; exit 0 }
+  $want = @($items | Where-Object { $_.PSObject.Properties.Name -contains 'plexTitle' -and "$($_.plexTitle)".Trim() })
+}
+if ($Tsv) {
+  if (-not (Test-Path -LiteralPath $Tsv -PathType Leaf)) { Say "apply-plex-titles: no TSV at $Tsv"; exit 0 }
+  $rows = @(Import-Csv -LiteralPath $Tsv -Delimiter "`t")
+  $blank = @($rows | Where-Object { -not "$($_.Title)".Trim() }).Count
+  if ($blank) { Say ("apply-plex-titles: {0} of {1} row(s) have an EMPTY Title and are skipped - fill them in first" -f $blank, $rows.Count) }
+  foreach ($r in @($rows | Where-Object { "$($_.Title)".Trim() })) {
+    $want += [pscustomobject]@{ out = "$($r.File)"; plexTitle = "$($r.Title)".Trim() }
+  }
+}
 if ($want.Count -eq 0) { exit 0 }        # the common case - say nothing at all
 
 $token = [Environment]::GetEnvironmentVariable('PLEX_TOKEN', 'User')
