@@ -17,6 +17,34 @@ param(
   [switch]$WarnOnly     # report but do not block (use when retro-fitting an old manifest)
 )
 $ErrorActionPreference = 'Stop'
+
+# whisper reports ISO 639-1 ('es'); disc tags are ISO 639-2 ('spa'). This returns every 639-2 code
+# a spoken language may legitimately be tagged as, so the caller can test membership instead of
+# comparing truncated prefixes. MIRRORS ISO2TO3 + the bibliographic alternates in
+# analyze-tracks.py (same_language) - if you add a language to one, add it to the other.
+# Some discs use the bibliographic code (fre/ger/dut) rather than the terminological one (fra/deu/nld).
+function Get-LanguageMatchSet([string]$Spoken) {
+  $two = "$Spoken".ToLowerInvariant()
+  if ($two.Length -gt 2) { $two = $two.Substring(0, 2) }
+  $iso2to3 = @{
+    'en' = 'eng'; 'es' = 'spa'; 'fr' = 'fra'; 'de' = 'deu'; 'pt' = 'por'; 'it' = 'ita'; 'nl' = 'nld'
+    'ja' = 'jpn'; 'zh' = 'zho'; 'ru' = 'rus'; 'sv' = 'swe'; 'da' = 'dan'; 'no' = 'nor'; 'fi' = 'fin'
+    'pl' = 'pol'; 'cs' = 'ces'; 'hu' = 'hun'; 'tr' = 'tur'; 'ko' = 'kor'; 'ar' = 'ara'; 'he' = 'heb'
+    'el' = 'ell'; 'th' = 'tha'; 'hi' = 'hin'; 'uk' = 'ukr'; 'ro' = 'ron'; 'ca' = 'cat'
+  }
+  $alt = @{
+    'fra' = 'fre'; 'deu' = 'ger'; 'nld' = 'dut'; 'ces' = 'cze'; 'ell' = 'gre'; 'zho' = 'chi'
+    'ron' = 'rum'; 'fas' = 'per'; 'isl' = 'ice'; 'mkd' = 'mac'; 'msa' = 'may'; 'mya' = 'bur'
+  }
+  if (-not $iso2to3.ContainsKey($two)) { return @() }   # unmapped: not evidence of a wrong tag
+  $three = $iso2to3[$two]
+  # The 639-1 form belongs in the set too: a manifest may legitimately declare 'es' rather than
+  # 'spa', and the prefix compare this replaces used to accept that. Leaving it out would swap one
+  # false refusal for another.
+  $set = @($three, $two)
+  if ($alt.ContainsKey($three)) { $set += $alt[$three] }
+  return $set
+}
 $paths = Get-Content 'D:/video/.transcode-tools/tool-paths.json' -Raw | ConvertFrom-Json
 $ffprobe = Join-Path (Split-Path $paths.ffmpeg) 'ffprobe.exe'
 # Shared with _analyse-loop.ps1: the evidence path rule, the stream count, and - the point of the
@@ -290,8 +318,17 @@ foreach ($it in $items) {
     for ($i = 0; $i -lt [Math]::Min($tracks.Count, $langs.Count); $i++) {
       $s = $byIdx[[int]$tracks[$i]]
       if (-not $s -or -not $s.spokenLang) { continue }
-      $spoken = "$($s.spokenLang)".Substring(0, 2)
-      $declared = "$($langs[$i])".Substring(0, [Math]::Min(2, "$($langs[$i])".Length))
+      # 🔴 NEVER COMPARE THE FIRST TWO CHARACTERS. whisper returns ISO 639-1 ('es'); disc tags are
+      # ISO 639-2 ('spa'). Truncating both to two characters gives 'es' vs 'sp' and calls a
+      # CORRECTLY tagged Spanish track a mismatch. That is what refused Groundhog Day on
+      # 2026-09-05 ("a:4 declared 'spa' but whisper heard 'es'") and stopped it before encoding.
+      # It breaks for every pair whose codes do not share a prefix - spa/es, ger/de, chi/zh,
+      # cze/cs, gre/el, dut/nl, per/fa, ice/is, rum/ro - and a guard that cries wolf is a guard
+      # that gets overridden. analyze-tracks.py already carried this exact fix and this script
+      # never got it: two implementations of one rule, drifted. Keep them identical.
+      $spoken = Get-LanguageMatchSet "$($s.spokenLang)"
+      $declared = "$($langs[$i])".ToLowerInvariant()
+      if ($declared.Length -gt 3) { $declared = $declared.Substring(0, 3) }
       # commentary and audio description are ABOUT the film in the same language - not a mismatch
       if ($s.role -in @('commentary', 'audioDescription')) { continue }
       # NEVER COMPARE AGAINST A LANGUAGE THE ANALYSIS ITSELF DOES NOT TRUST.
@@ -308,7 +345,11 @@ foreach ($it in $items) {
       # the wrong language is still refused, which is what caught Thunderball's Italian dub.
       if ($s.role -eq 'music') { continue }
       if ($s.PSObject.Properties.Name -contains 'langReliable' -and -not $s.langReliable) { continue }
-      if ($spoken -ne $declared) {
+      # 'und'/'mul'/'zxx' declare nothing to contradict; an empty set means whisper returned a
+      # language this map does not cover, and an unmapped code is not evidence of a wrong tag.
+      if ($declared -in @('und', 'mul', 'zxx')) { continue }
+      if ($spoken.Count -eq 0) { continue }
+      if ($declared -notin $spoken) {
         $problems += "$(Split-Path $out -Leaf): a:$($tracks[$i]) declared '$($langs[$i])' but " +
                      "whisper heard '$($s.spokenLang)'"
       }

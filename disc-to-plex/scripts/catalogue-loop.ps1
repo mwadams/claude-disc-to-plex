@@ -43,6 +43,18 @@ if (-not $loopOwned) {
   exit 0
 }
 
+# THIS LOOP WAS INVISIBLE UNTIL 2026-09-05. It only ever wrote to stdout, and _bounce-track.ps1
+# starts every track with `Start-Process pwsh -WindowStyle Hidden` and NO redirection - so a
+# catalogue loop started the sanctioned way threw its entire output away and _logs/_catalogue-loop.log
+# had never once existed. `_tail.ps1 catalogue` therefore answered with a list of OTHER tracks'
+# stale logs, which reads exactly like a report about this one. Same lesson _fetch-loop.ps1 already
+# carries: a loop that cannot be observed gets misdiagnosed, and the misdiagnosis is what leads to
+# restarting or "fixing" loops that were working. Transcript, not a launcher redirect, so it holds
+# however the loop is started. AFTER the mutex guard, so a losing second instance writes nothing.
+$logDir = 'D:/video/_logs'
+if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path $logDir | Out-Null }
+try { Start-Transcript -Path (Join-Path $logDir '_catalogue-loop.log') -Append | Out-Null } catch { }
+
 function Say($msg) { Write-Output ("[{0}] {1}" -f (Get-Date -Format 'HH:mm:ss'), $msg) }
 
 Say "catalogue loop: watching $Stage (gate: $FetchDone)"

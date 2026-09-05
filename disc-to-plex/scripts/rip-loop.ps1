@@ -48,6 +48,14 @@ $mutex = New-Object System.Threading.Mutex($false, $mutexName)
 if ($null -eq $mutex) { Write-Output 'could not create the single-instance mutex - refusing to run unguarded'; exit 1 }
 if (-not $mutex.WaitOne(0)) { Write-Output 'another _rip-loop.ps1 holds the lock - exiting (the guard working)'; exit 0 }
 
+# Observable, for the reason _fetch-loop.ps1 spells out: this loop wrote to stdout only, and
+# _bounce-track.ps1 starts tracks with `Start-Process pwsh -WindowStyle Hidden` and no redirection,
+# so everything it said was discarded and _logs/_rip-loop.log never existed. Added 2026-09-05.
+# Transcript rather than a launcher redirect, so it holds however the loop is started.
+$logDir = 'D:/video/_logs'
+if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path $logDir | Out-Null }
+try { Start-Transcript -Path (Join-Path $logDir '_rip-loop.log') -Append | Out-Null } catch { }
+
 $ripper = 'D:/video/.claude/skills/disc-to-plex/scripts/rip-titles.ps1'
 $tp = Get-Content 'D:/video/.transcode-tools/tool-paths.json' -Raw | ConvertFrom-Json
 $ffprobe = Join-Path (Split-Path $tp.ffmpeg) 'ffprobe.exe'

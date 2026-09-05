@@ -39,6 +39,19 @@ if (-not $loopOwned) {
   exit 0
 }
 
+# Observable, for the reason _fetch-loop.ps1 spells out: this loop wrote to stdout only, and
+# _bounce-track.ps1 starts tracks with `Start-Process pwsh -WindowStyle Hidden` and no redirection,
+# so everything it said was discarded and _logs/analyse-loop.log went stale on 2026-09-04 04:04 -
+# which reads like a stopped loop rather than an unobservable one. Added 2026-09-05. Transcript
+# rather than a launcher redirect, so it holds however the loop is started, and AFTER the mutex
+# guard above so a losing second instance writes nothing.
+$logDir = 'D:/video/_logs'
+if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path $logDir | Out-Null }
+# NOTE THE NAME: 'analyse-loop.log', with NO leading underscore. _tail.ps1 documents that spelling
+# for this one track ("analyse-loop.log  live (NO underscore)"). Writing _analyse-loop.log instead
+# would leave the real log stale beside a new one and create exactly the decoy this fixes.
+try { Start-Transcript -Path (Join-Path $logDir 'analyse-loop.log') -Append | Out-Null } catch { }
+
 $toolCfg = Get-Content $ToolPaths -Raw | ConvertFrom-Json
 $ffprobe = Join-Path (Split-Path $toolCfg.ffmpeg) 'ffprobe.exe'
 if (-not (Test-Path -LiteralPath $ffprobe)) { throw "ffprobe not found at $ffprobe - refusing to run without the still-being-written check" }
