@@ -15,6 +15,27 @@
 # Sampling several offsets matters. One offset can collide (both silent, both a music sting), and a
 # commentary that starts late would look identical near the top of the file.
 #
+# 🔴 "TRACKS DIFFER" IS NOT "COMMENTARY". READ THIS BEFORE TRUSTING A COMMENTARY VERDICT.
+# This script compares decoded PCM. That answers "are these the same bits?" - it CANNOT answer "are
+# these the same programme audio?", because a LOSSY RE-ENCODE OF THE SAME MIX decodes to different
+# PCM at every offset and lands here as COMMENTARY. That layout is the Blu-ray norm: a lossless
+# TrueHD/DTS-HD MA 5.1 track plus a Dolby Digital 5.1 COMPATIBILITY track carrying the identical mix.
+# Casino Royale (2026-09-05) had exactly this - a:1 was reported "COMMENTARY (tracks differ)
+# [DIFF DIFF DIFF]" at all three offsets and is in fact the AC3 5.1 twin of the TrueHD primary.
+# analyze-tracks.py had already hinted at it ("differs from the primary but shows FEW COMMENTARY
+# CUES"), and this script flatly contradicted that hint.
+#
+# So when a track is 5.1 and the primary is a lossless codec, DO NOT ship a `commentary:` tag on this
+# script's word alone. Settle it with a PHASE-INSENSITIVE ENVELOPE CORRELATION, which is codec-blind:
+#   ffmpeg -ss <t> -t 60 -i <src> -map 0:a:<n> -ac 1 -ar 16000 -c:a pcm_s16le out.wav   (per track)
+#   python audio-envelope-correlate.py a0.wav aN.wav --max-lag 10
+# Measured on Casino Royale at 1800 s and 4200 s:
+#   a:1  r = 0.973 / 0.983 at near-zero lag  -> SAME MIX, a duplicate. Not a commentary.
+#   a:2  r = 0.736 / 0.673                   -> programme bed plus speech on top. A real commentary.
+# A commentary still correlates well above zero precisely BECAUSE it carries the programme audio
+# underneath, which is the same property that defeats a transcript sampled during a pause. Roughly:
+# r > 0.95 = same mix; r in the 0.5-0.85 band with a lossless primary = something layered over it.
+#
 #   pwsh -File audio-dup-check.ps1 -Path "D:\video\_stage\gang-d4-mkv"
 #   pwsh -File audio-dup-check.ps1 -Path "<one file>" -TrackA 0 -TrackB 2
 param(

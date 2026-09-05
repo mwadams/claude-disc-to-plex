@@ -409,11 +409,25 @@ foreach ($it in $items) {
   # that might be a commentary", the manifest must SAY WHICH IT IS. Two ways to satisfy it -
   #   tag it:   commentary: [[<n>, "Audio Commentary with ..."]]
   #   reject it: notCommentary: [<n>]        (a dub, a duplicate mix, a second language)
-  # Either is a decision. Silence is not, and silence is what loses commentaries.
+  #   name it:   audioDescription: <n>       (narrated visuals - a POSITIVE identification)
+  # Any of the three is a decision. Silence is not, and silence is what loses commentaries.
+  #
+  # audioDescription was added to this list on 2026-09-05. Casino Royale's a:2 is a genuine
+  # audio-description track - four samples across the film read as third-person narration of
+  # on-screen action ("Bond stays at the table after everyone has left, staring down at the cards
+  # in front of him") - and the manifest named it with the field that exists precisely for that.
+  # This gate still refused, because only `commentary` and `notCommentary` counted. Forcing the
+  # author to ALSO write notCommentary: [2] invites the shorter and worse manifest that says only
+  # notCommentary and drops the description - and transcode.ps1's own header records that
+  # unlabelled description tracks "were being dropped", which is what this field was created to
+  # stop. Naming a track is strictly more informative than rejecting it, so it satisfies the gate.
   if ($a.proposal -and $a.proposal.PSObject.Properties.Name -contains 'commentaryUncertain') {
     $tagged = @()
     if ($it.PSObject.Properties.Name -contains 'commentary') {
       foreach ($e in @($it.commentary)) { $tagged += if ($e -is [array]) { [int]$e[0] } else { [int]$e } }
+    }
+    if ($it.PSObject.Properties.Name -contains 'audioDescription') {
+      foreach ($e in @($it.audioDescription)) { $tagged += if ($e -is [array]) { [int]$e[0] } else { [int]$e } }
     }
     $rejected = @()
     if ($it.PSObject.Properties.Name -contains 'notCommentary') {
