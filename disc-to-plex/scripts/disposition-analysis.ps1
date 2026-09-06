@@ -122,14 +122,33 @@ function Add-Finding {
     [Parameter(Mandatory)][string]$Topic,
     [Parameter(Mandatory)][string]$Verdict,        # short caps verdict, e.g. REAL / NOT A SOURCE / TRUNCATED / GAIN AVAILABLE / NO GAIN / NEEDS JUDGEMENT / UNAVAILABLE
     [Parameter(Mandatory)][ValidateSet('HIGH', 'MEDIUM', 'LOW', 'NEEDS JUDGEMENT', 'UNAVAILABLE')][string]$Confidence,
-    [Parameter(Mandatory)][string[]]$Evidence,      # the measurement(s) that produced the verdict, cite numbers
+    # NOT Mandatory, and that is the fix rather than a relaxation of standards.
+    #
+    # A Mandatory [string[]] REFUSES an empty array. So a finding whose evidence list came out empty
+    # - which happens exactly when a measurement was UNAVAILABLE, i.e. when the finding matters most
+    # - failed to bind, threw a non-terminating error, and WAS NEVER RECORDED. The script carried on
+    # and its header then reported "0 UNAVAILABLE findings" while the evidence pack listed six.
+    #
+    # Reported independently by four agents on 2026-09-06 (Clayhanger D1 and D2, Blake's 7 Series 3
+    # Disk 3, Pink Floyd: The Wall) as "Add-Finding errors at lines 315/347/350/508/535". A guard
+    # that drops the finding it cannot describe is worse than one that never ran: the output looks
+    # complete, so nobody goes looking.
+    #
+    # A finding with no evidence is itself a finding. It is recorded, and its emptiness is made
+    # LOUD in the evidence list so it can be counted and seen rather than inferred from a gap.
+    [AllowNull()][AllowEmptyCollection()][string[]]$Evidence = @(),
     [string]$Subject = '',                          # e.g. a dv/title id this finding is about
     [string]$Detail = '',                            # optional extra prose (competing readings for NEEDS JUDGEMENT)
     [string]$Reason = ''                              # required content when Confidence -eq UNAVAILABLE
   )
+  $ev = @(@($Evidence) | Where-Object { "$_".Trim() })
+  if ($ev.Count -eq 0) {
+    $ev = @('(NO EVIDENCE SUPPLIED - this finding was recorded anyway rather than dropped. An empty evidence list is normally an UNAVAILABLE measurement; treat the verdict as unsupported until someone looks.)')
+  }
   $findings.Add([ordered]@{
       topic = $Topic; subject = $Subject; verdict = $Verdict; confidence = $Confidence
-      evidence = @($Evidence); detail = $Detail; reason = $Reason
+      evidence = $ev; detail = $Detail; reason = $Reason
+      evidenceMissing = ($ev.Count -eq 1 -and $ev[0].StartsWith('(NO EVIDENCE SUPPLIED'))
     }) | Out-Null
 }
 

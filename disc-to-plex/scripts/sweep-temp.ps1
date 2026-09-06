@@ -99,10 +99,22 @@ $script:freed = 0
 # not a disk-space problem (1.18 GB) so much as a signal that capture-evidence.py does not remove
 # its own scratch. The durable answer is per-script cleanup at START, as disposition-evidence.ps1
 # now does; this catches what escapes, including from runs that were killed.
-$evPrefixes = @('disposition-evidence-', 'capture-evidence-', 'cards-', 'card-', 'seconv_ocr')
+# ANCHORED PATTERNS, AND THE SEPARATOR IS PART OF THE PATTERN, NOT PART OF THE PREFIX.
+# The first version matched literal prefixes - 'cards-', 'card-' - and therefore missed seven
+# `cards_NNNNN` directories sitting in plain sight, because the scripts that create these are not
+# consistent about `-` versus `_` (verify-title-cards.ps1 writes `cards_<pid>`, read-card.ps1 writes
+# `card-<hash>`). Hardcoding one separator is a silent miss: the sweep reports success having walked
+# straight past the thing it was asked to remove. `[-_]` in an anchored regex covers both and cannot
+# widen to a directory that merely starts with the same letters.
+$evPatterns = @(
+  '^disposition-evidence[-_]',
+  '^capture-evidence[-_]',
+  '^cards?[-_]',            # card-<hash> and cards_<pid>
+  '^seconv_ocr'
+)
 $evCutoff = (Get-Date).AddHours(-$EvidenceHours)
 foreach ($d in @(Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue |
-                 Where-Object { $n = $_.Name; ($evPrefixes | Where-Object { $n.StartsWith($_, 'OrdinalIgnoreCase') }) } |
+                 Where-Object { $n = $_.Name; @($evPatterns | Where-Object { $n -match $_ }).Count -gt 0 } |
                  Where-Object { $_.LastWriteTime -lt $evCutoff })) {
   Sweep-Path $d.FullName ('orphaned evidence scratch, last written ' + $d.LastWriteTime.ToString('MM-dd HH:mm'))
 }

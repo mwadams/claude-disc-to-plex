@@ -30,9 +30,10 @@ function Run([object]$manifest) {
   $o = & pwsh -NoProfile -File $script -Manifest $p 2>&1 | ForEach-Object { "$_" }
   [pscustomobject]@{ Code = $LASTEXITCODE; Out = ($o -join "`n") }
 }
-function Item([string]$out, [string]$plexTitle = '') {
+function Item([string]$out, [string]$plexTitle = '', [string[]]$supersedes = @()) {
   $h = [ordered]@{ title = 1; src = 'x'; kind = 'DVD'; out = $out }
   if ($plexTitle) { $h.plexTitle = $plexTitle }
+  if ($supersedes.Count) { $h.supersedes = $supersedes }
   [pscustomobject]$h
 }
 
@@ -46,8 +47,20 @@ try {
   Check 'and the offending file is named'          ($r.Out -like '*The League Of Gentlemen S00E22.mkv*') 'True'
   Check 'and it says where the title should go'    ($r.Out -like '*plexTitle*') 'True'
 
-  $r = Run @( (Item "$nas/The League Of Gentlemen S00E22.mkv" 'Series 1 Deleted Scene - The Job Centre') )
-  Check 'bare Season 00 WITH plexTitle -> passes'  $r.Code 0
+  # A bare name is justified ONLY by an in-place `supersedes` that must keep the legacy NAS filename.
+  # With that, plexTitle is what makes it titleable, and it passes.
+  $r = Run @( (Item "$nas/The League Of Gentlemen S00E22.mkv" 'Series 1 Deleted Scene - The Job Centre' @("$nas/The League Of Gentlemen S00E22.mkv")) )
+  Check 'bare + supersedes + plexTitle -> passes'  $r.Code 0
+
+  # ...but a NEW extra has no such constraint, so a bare name there is just the convention being
+  # dropped, and a plexTitle does not excuse it: Plex would look right while the NAS, the coverage
+  # reports and every directory listing stayed wrong. references/naming.md requires
+  # `<Show (Year)> - S00Exx - <Extra title>.mkv`.
+  $r = Run @( (Item "$nas/The League Of Gentlemen S00E27.mkv" 'Some New Featurette') )
+  Check 'bare NEW extra (no supersedes) -> REFUSED even with plexTitle' $r.Code 2
+  Check 'and it says the name is the problem' ($r.Out -like '*BARE filename*') 'True'
+  $r = Run @( (Item "$nas/The League of Gentlemen (1999) - S00E27 - Some New Featurette.mkv") )
+  Check 'the properly-named new extra passes'    $r.Code 0
 
   # A named output needs nothing: fix-plex-extras.ps1 parses the title straight out of the filename.
   $r = Run @( (Item "$nas/The League of Gentlemen (1999) - S00E63 - In Conversation - The League in Conversation with Paul Jackson.mkv") )

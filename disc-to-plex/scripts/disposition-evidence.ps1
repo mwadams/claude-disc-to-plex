@@ -649,6 +649,35 @@ Invoke-Section 'library' {
   $searchTerms = @()
   foreach ($s in @($mymTitle, $nfoTitle, $pack.inputs.showKeyHeuristic)) { if ($s) { $searchTerms += ($s -split '\s[:\-–]\s')[0].Trim() } }
   $searchTerms = @($searchTerms | Where-Object { $_ } | Sort-Object -Unique)
+
+  # IS ANY OF THIS DERIVED FROM CONTENT, OR ONLY FROM THE FOLDER NAME?
+  #
+  # $mymTitle and $nfoTitle come from the disc (mymovies.xml / .nfo). $showKeyHeuristic is derived
+  # from the STAGING FOLDER NAME, and a folder name is not evidence of anything ANYWHERE - this is
+  # not an optical-lane quirk. Box sets stamp every disc with the same volume label, the optical lane
+  # names folders `<LABEL>-<fingerprint8>` precisely because the label is mechanical, some discs
+  # arrive named as a bare GUID, and the names on the external drives are hand-made approximations of
+  # a title rather than the title. The user, 2026-09-06: "DVD Folder Names are irrelevant - some are
+  # even just a GUID - and don't reflect show titles at all" ... "That's also true of some of the
+  # discs found on the external drives. Certainly they are only ever approximations of the actual
+  # show title."
+  #
+  # So this was never sound; it merely went unnoticed while enough folder names happened to be close
+  # enough to search on. Treating a near-miss as a hit is the same defect as treating a GUID as a
+  # title, one just fails more quietly.
+  #
+  # This flag exists because of what the REPORT said when only the folder name was available. On
+  # Clayhanger discs 3 and 4 (staged as `DVDVolume (3)` and `DVDVolume-bd2e7329`) the pack printed
+  # "work resolution: NOT RESOLVED" with no Plex matches - while `Clayhanger (1976)` was already
+  # published with S01E01-08 live on real episode guids. "No matches" is exactly the evidence an
+  # agent uses to conclude a disc is a NEW SHOW: no supersedes considered, no quality or subtitle
+  # comparison against the published copy, and a duplicate published beside the original. Two agents
+  # caught it only because they cross-checked by hand.
+  #
+  # A search for a string nobody claims is the title is not a failed search - it is not a search.
+  # The distinction is reported rather than hidden, so "we could not tell" can never be read as
+  # "it is not in the library".
+  $lib.searchTermsFromContent = [bool]($mymTitle -or $nfoTitle)
   $lib.workCandidatesFromRecords = $cands
   $lib.plexSearchTerms = $searchTerms
 
@@ -1117,7 +1146,22 @@ if ($pack.worklist) {
 H1 'LIBRARY - what the NAS / Plex already hold for the mapped work'
 if ($pack.library) {
   $lb = $pack.library
-  Add ("  work resolution: {0}   how: {1}" -f $(if ($lb.workResolution.chosen) { $lb.workResolution.chosen.kind + ' / ' + $lb.workResolution.chosen.work + ' (Plex key ' + (Fmt $lb.workResolution.chosen.plexRatingKey) + ')' } else { 'NOT RESOLVED' }), (Fmt $lb.workResolution.how))
+  # "NOT RESOLVED" means two completely different things and must never render as one string.
+  # With a content-derived title (mymovies.xml / .nfo) it is a real finding: we know what this disc
+  # claims to be and the library does not have it. With only a folder-derived guess it is not a
+  # finding at all - we never had a title to search. See searchTermsFromContent above for the
+  # Clayhanger case where the second was read as the first.
+  $wrText = if ($lb.workResolution.chosen) {
+    $lb.workResolution.chosen.kind + ' / ' + $lb.workResolution.chosen.work + ' (Plex key ' + (Fmt $lb.workResolution.chosen.plexRatingKey) + ')'
+  } elseif ($lb.searchTermsFromContent) {
+    'NOT RESOLVED - searched on a title taken from the disc, and the library has no match'
+  } else {
+    'UNKNOWN - NOT a finding. No title could be taken from the disc (no mymovies.xml, no .nfo), so the only search term was a guess from the STAGING FOLDER NAME, which is never evidence of a title. This says NOTHING about whether the work is in the library - establish the identity from content first, then look again. Do NOT read this as "new show".'
+  }
+  Add ("  work resolution: {0}   how: {1}" -f $wrText, (Fmt $lb.workResolution.how))
+  if (-not $lb.workResolution.chosen -and -not $lb.searchTermsFromContent) {
+    Add ("  search terms used: {0}   (all folder-derived - approximations at best)" -f (($lb.plexSearchTerms) -join ', '))
+  }
   Add ("  search terms: {0}" -f ($lb.plexSearchTerms -join ' | '))
   Add ("  record candidates: {0}" -f $(if (@($lb.workCandidatesFromRecords).Count) { (($lb.workCandidatesFromRecords | ForEach-Object { $_.source + ': ' + $_.kind + '/' + $_.work }) -join '; ') } else { 'none' }))
   if ($lb.plex -and $lb.plex.matches) { Add ("  Plex matches: {0}" -f (($lb.plex.matches | ForEach-Object { $_.kind + ': ' + $_.title + ' (' + (Fmt $_.year) + ') key=' + $_.ratingKey + $(if ($_.leafCount) { ' leaves=' + $_.leafCount } else { '' }) }) -join '; ')) }
@@ -1164,7 +1208,13 @@ if ($pack.library) {
   Add ("  window +/-{0} s; 'exact' = within {1} s" -f $lb.durationCandidates.windowSec, $lb.durationCandidates.exactSec)
   foreach ($r in $lb.durationCandidates.rows) {
     Add ("  dvdvideo {0,2} ({1}) {2,10} s [{3}]: {4}" -f $r.dvdvideoTitle, (Fmt $r.makemkvTitle), $r.discSec, $r.basis, $(if (@($r.candidates).Count) { '' } else { 'no library file within the window' }))
-    foreach ($cd in @($r.candidates)) { Add ("        {0,+9:N3} s {1} {2,10} s  {3}{4}" -f $cd.deltaSec, $(if ($cd.withinExact) { 'EXACT ' } else { '      ' }), $cd.durationSec, $cd.path, $(if ($cd.plexTitle) { "  (Plex: '" + $cd.plexTitle + "')" } else { '' })) }
+    # `{0,+9:N3}` is NOT a valid format spec - .NET alignment takes 9 or -9, never +9 - so this line
+    # threw "Input string was not in a correct format" on EVERY disc that reached it, and the whole
+    # DURATION CANDIDATES block was lost from the evidence pack. Reported by the Pink Floyd: The Wall
+    # agent 2026-09-06 and by two others as unexplained formatting errors the same day. The sign was
+    # the point (a candidate is +/- its delta), so it is produced by a signed numeric format rather
+    # than by an alignment token that cannot carry one.
+    foreach ($cd in @($r.candidates)) { Add ("        {0,9} s {1} {2,10} s  {3}{4}" -f $cd.deltaSec.ToString('+0.000;-0.000;0.000'), $(if ($cd.withinExact) { 'EXACT ' } else { '      ' }), $cd.durationSec, $cd.path, $(if ($cd.plexTitle) { "  (Plex: '" + $cd.plexTitle + "')" } else { '' })) }
   }
   H2 '_subtitle-coverage.csv rows for the work'
   if ($lb.subtitleCoverage -and @($lb.subtitleCoverage.rows).Count) { foreach ($r in $lb.subtitleCoverage.rows) { Add ("  {0,-24} {1,-60} bitmap={2,-14} audio={3,-4} {4}" -f $r.category, $r.file, (Fmt $r.bitmapProbe), (Fmt $r.audioProbe), $r.evidence) } } else { Add '  none' }
