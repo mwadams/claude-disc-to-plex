@@ -235,7 +235,15 @@ function Get-AudioStreamCount {
   )
   $a = @('-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=index', '-of', 'json')
   if ($null -ne $Title -and "$Title" -ne '' -and (Test-Path -LiteralPath $Src -PathType Container)) {
-    $a += @('-f', 'dvdvideo', '-title', "$Title")
+    # -trim false: a title whose TT_SRPT entry PGC is itself a near-empty padding/start-card cell
+    # (chained by post-command into the real content, e.g. Shadowlands VTS_01 title 1: PGC 1 is a
+    # 0.48 s start card, PGC 2 is the 88-minute feature) makes the dvdvideo demuxer refuse the
+    # WHOLE title outright ("PGC N looks empty") rather than report its declared audio streams -
+    # $rc comes back non-zero, Probed stays $false, and the single-stream exemption below can never
+    # fire for a title shaped that way, however honestly the manifest claims audioTracks:[0]. This
+    # only changes whether the demuxer refuses to open; it does not change which audio streams a
+    # title's PGC declares, so it is a no-op for every title that already opened fine.
+    $a += @('-f', 'dvdvideo', '-trim', 'false', '-title', "$Title")
   }
   $a += @('-i', $Src)
   $raw = (& $Ffprobe @a 2>$null) -join "`n"

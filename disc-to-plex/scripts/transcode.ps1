@@ -707,7 +707,16 @@ foreach($it in $items){
     }
     $cut = $retimed
     if((Has $it 'audioTracks') -and @($it.audioTracks).Count -gt 0){
-      $titleIds = @(& $fp -v error -f dvdvideo -title ([string]$it.title) -select_streams a -show_entries stream=id -of csv=p=0 "$($it.src)" 2>$null | ForEach-Object { "$_".Trim().TrimEnd(',') } | Where-Object { $_ -match '^0x' })
+      # -trim false: a title whose TT_SRPT entry PGC is itself a near-empty padding/navigation
+      # cell (Shadowlands VTS_01 title 1: PGC 1 is a 0.48 s start card, PGC 2 chained after it is
+      # the actual 88-minute feature - see dvd-still-cells.py's docstring for the same shape) makes
+      # ffmpeg's dvdvideo demuxer refuse the WHOLE title outright ("PGC N looks empty (may consist
+      # of padding cells)") when opened for this ID probe, so $titleIds comes back empty and every
+      # ordinal fails to map - a manifest whose vobSectors range correctly SKIPS that padding PGC
+      # would otherwise never pass. -trim false only changes whether the demuxer refuses to open;
+      # it does not change which audio streams a title's PGC declares, so this is a no-op for every
+      # title that already opened fine.
+      $titleIds = @(& $fp -v error -f dvdvideo -trim false -title ([string]$it.title) -select_streams a -show_entries stream=id -of csv=p=0 "$($it.src)" 2>$null | ForEach-Object { "$_".Trim().TrimEnd(',') } | Where-Object { $_ -match '^0x' })
       $cutIds   = @(& $fp -v error -select_streams a -show_entries stream=id -of csv=p=0 $cut 2>$null | ForEach-Object { "$_".Trim().TrimEnd(',') } | Where-Object { $_ -match '^0x' })
       $mapTC = @{}; $mapBad = $null
       foreach($t in @($it.audioTracks | ForEach-Object { [int]$_ })){
