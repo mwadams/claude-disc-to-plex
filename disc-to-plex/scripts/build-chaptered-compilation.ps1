@@ -72,8 +72,18 @@ function ConvertTo-Timestamp {
   param([Parameter(Mandatory)][double]$Seconds)
   if ($Seconds -lt 0) { throw "negative timestamp: $Seconds" }
   $ts = [TimeSpan]::FromSeconds($Seconds)
-  '{0:00}:{1:00}:{2:00}.{3:000000000}' -f [int]$ts.TotalHours, $ts.Minutes, $ts.Seconds,
-    ([int][math]::Round(($Seconds - [math]::Floor($Seconds)) * 1e9))
+  # FLOOR, NOT [int]. PowerShell's [int] cast ROUNDS - so 1863 s (0.5175 hours) became hour 1 and a
+  # 32-minute compilation got a chapter stamped 01:31:03, past the end of the file. Every timestamp
+  # more than half an hour into its hour was wrong. Measured on the Led Zeppelin build, 2026-09-06;
+  # the two hour cases in the self-test (1.03 h, 25.0 h) both happened to round the right way, which
+  # is why it shipped. TotalHours (not Hours) so a compilation past 24 h still reads 25:00:00.
+  $h = [int][math]::Floor($ts.TotalHours)
+  # Nanoseconds are computed from the ORIGINAL double, so guard the carry: a value like 12.9999999996
+  # rounds to 1e9 ns, which would render as ":12.1000000000" - eleven digits, and unparseable.
+  $ns = [long][math]::Round(($Seconds - [math]::Floor($Seconds)) * 1e9)
+  $s  = $ts.Seconds
+  if ($ns -ge 1000000000) { $ns = 0; return (ConvertTo-Timestamp ([math]::Floor($Seconds) + 1)) }
+  '{0:00}:{1:00}:{2:00}.{3:000000000}' -f $h, $ts.Minutes, $s, $ns
 }
 
 function Get-ChapterEdges {
@@ -148,6 +158,12 @@ if ($SelfTest) {
   T 'timestamp seconds'         ((ConvertTo-Timestamp 65.5) -eq '00:01:05.500000000')
   T 'timestamp hours'           ((ConvertTo-Timestamp 3725.25) -eq '01:02:05.250000000')
   T 'timestamp past 24h'        ((ConvertTo-Timestamp 90000) -eq '25:00:00.000000000')
+  # REGRESSION, 2026-09-06: [int] rounds, so anything past the half-hour gained an hour. 1863.3 s is
+  # the exact value that stamped a chapter at 01:31:03 inside a 32-minute file.
+  T 'timestamp half-hour+ stays in hour 0' ((ConvertTo-Timestamp 1863.3).StartsWith('00:31:03'))
+  T 'timestamp 59m59s stays in hour 0'     ((ConvertTo-Timestamp 3599) -eq '00:59:59.000000000')
+  T 'timestamp 1h30m is hour 1'            ((ConvertTo-Timestamp 5400) -eq '01:30:00.000000000')
+  T 'timestamp ns carry'                   ((ConvertTo-Timestamp 12.9999999996) -eq '00:00:13.000000000')
   T 'timestamp negative throws' $(try { [void](ConvertTo-Timestamp -1); $false } catch { $true })
 
   $e = Get-ChapterEdges -Durations @(10.0, 20.0, 5.5)
@@ -286,9 +302,22 @@ foreach ($it in $items) {
   $args += @('-vf',$vf,'-c:v','libx264','-preset','slow','-crf',[string]$Crf,'-pix_fmt','yuv420p',
              '-c:a','aac','-ac','2','-ar','48000','-b:a','192k','-sn','-dn','-map_chapters','-1',$part)
 
-  Write-Output ("  [{0}/{1}] dvdTitle {2} -> {3}{4}" -f $n, $items.Count, $it.dvdTitle, (Split-Path -Leaf $part), $(if ($silent) { '  (no audio on disc; silence synthesised)' } else { '' }))
-  & $ff @args *> $log
-  if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $part)) {
+  # RESUMABLE. An intermediate that already exists and probes to the right length is reused, so a
+  # killed build - or a re-run to fix the JOIN or the CHAPTERS, which cost seconds while the encodes
+  # cost half an hour - does not re-encode what is already correct. The reuse is gated on the same
+  # duration guard the fresh encode faces, so a truncated leftover is re-encoded rather than trusted.
+  $reuse = $false
+  if (Test-Path -LiteralPath $part) {
+    $have = 0.0
+    if ([double]::TryParse("$(& $fp -v error -show_entries format=duration -of csv=p=0 $part 2>$null)".Trim(), [ref]$have)) {
+      if ([math]::Abs($have - [double]$it.seconds) -le $ToleranceSeconds) { $reuse = $true }
+    }
+    if (-not $reuse) { Remove-Item -LiteralPath $part -Force -ErrorAction SilentlyContinue }
+  }
+
+  Write-Output ("  [{0}/{1}] dvdTitle {2} -> {3}{4}{5}" -f $n, $items.Count, $it.dvdTitle, (Split-Path -Leaf $part), $(if ($silent) { '  (no audio on disc; silence synthesised)' } else { '' }), $(if ($reuse) { '  (reusing existing intermediate)' } else { '' }))
+  if (-not $reuse) { & $ff @args *> $log }
+  if ((-not $reuse -and $LASTEXITCODE -ne 0) -or -not (Test-Path -LiteralPath $part)) {
     Write-Output "  FAILED - ffmpeg exit $LASTEXITCODE on dvdTitle $($it.dvdTitle). Log tail:"
     Get-Content -LiteralPath $log -Tail 20 | ForEach-Object { Write-Output "      $_" }
     exit 1
@@ -352,6 +381,16 @@ Write-Output ("  size     {0:N0} MB" -f ((Get-Item -LiteralPath $Out).Length / 1
 $bad = @()
 if ([math]::Abs($total - $expected) -gt ($ToleranceSeconds * $items.Count)) { $bad += "joined duration is $([math]::Round($total-$expected,2))s off the sum of its segments" }
 if ($chapCount -ne $items.Count) { $bad += "wrote $chapCount chapter(s) for $($items.Count) item(s)" }
+# COUNT IS NOT PLACEMENT. The first build wrote all 11 chapters - the count check passed - and
+# stamped the last one at 01:31:03 inside a 32-minute file, because [int] rounded 0.5175 hours up to
+# 1. A chapter past the end of the file is unreachable and the count says nothing about it. So
+# assert the timeline itself: strictly increasing, starting at zero, every mark inside the file.
+if ($starts.Count -gt 0 -and $starts[0] -ne 0.0) { $bad += "first chapter starts at $($starts[0])s, not 0" }
+for ($i = 1; $i -lt $starts.Count; $i++) {
+  if ($starts[$i] -le $starts[$i-1]) { $bad += "chapter $($i+1) starts at $([math]::Round($starts[$i],2))s, not after chapter $i at $([math]::Round($starts[$i-1],2))s" }
+}
+$outside = @(0..($starts.Count-1) | Where-Object { $starts[$_] -ge $total })
+foreach ($i in $outside) { $bad += "chapter $($i+1) ('$($names[$i])') starts at $([math]::Round($starts[$i],2))s, past the file's $([math]::Round($total,2))s" }
 if ($bad.Count) {
   Write-Output "  FAILED verification:"
   $bad | ForEach-Object { Write-Output "      $_" }
