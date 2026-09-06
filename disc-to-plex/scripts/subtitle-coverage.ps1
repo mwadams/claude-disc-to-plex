@@ -340,6 +340,7 @@ Write-Output "=== subtitle-coverage $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  s
 $manifestIndex = Get-SubtitleCoverageManifestIndex
 $naSet = Get-SubtitleCoverageNotApplicableSet -Csv $NaCsv
 $discDriveIndex = Get-SubtitleCoverageDiscDriveIndex -Store $DiscIdentityStore
+$opticalUnits  = Get-OpticalStagedUnits
 Write-Output "manifest-linked outputs: $($manifestIndex.Count)   not-applicable register: $($naSet.Count)   disc-identity discFolders: $($discDriveIndex.Count)"
 
 $cacheMiss = Import-CoverageProbeCache -Csv $ReportCsv -Force:$Full
@@ -387,7 +388,7 @@ $classifyBatch = {
   param($rows)
   foreach ($r in $rows) {
     $c = Get-SubtitleCoverageClassification -Row $r -ManifestIndex $manifestIndex -NaSet $naSet -ffprobe $ffprobe `
-          -DiscDriveIndex $discDriveIndex -AttachedDrive $AttachedDrive
+          -DiscDriveIndex $discDriveIndex -AttachedDrive $AttachedDrive -OpticalUnits $opticalUnits
     $key  = $r.MkvPath.ToLowerInvariant()
     $meta = $script:FileMeta[$key]
     $log  = $script:ProbeLog[$key]

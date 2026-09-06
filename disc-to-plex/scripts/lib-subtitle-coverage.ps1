@@ -140,6 +140,25 @@ function Get-SubtitleCoverageDiscDriveIndex {
   return $map
 }
 
+function Get-OpticalStagedUnits {
+  <# Unit names staged by the OPTICAL lane, lowercased, from its own register.
+
+     `_optical-staged.tsv` is written by _optical-loop.ps1 when it stages a disc it read in the
+     drive: Name, Fingerprint, When, Bytes. Presence in it is POSITIVE evidence that the source was
+     a physical disc and that there is therefore no source drive to attach - which is what earns
+     such a unit its exemption from the drive-attachment deferral. A name pattern would not do:
+     optical units are named both `DVDVolume-<hash>` (no usable disc label) and by title
+     (`Clayhanger D1`), so the register is the only reliable signal. #>
+  param([string]$Path = 'D:/video/_optical-staged.tsv')
+  $map = @{}
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $map }
+  foreach ($row in (Import-Csv -LiteralPath $Path -Delimiter "`t" -ErrorAction SilentlyContinue)) {
+    $n = "$($row.Name)".Trim()
+    if ($n) { $map[$n.ToLowerInvariant()] = "$($row.Fingerprint)" }
+  }
+  return $map
+}
+
 # Guess which disc folder produced a manifest item, from its own "src" + "kind" - the same two
 # fields recorded in the manifest index above. EXACT match only against the disc-identity
 # register's discFolder keys; no fuzzy matching, because a wrong attribution here would wrongly
@@ -273,6 +292,11 @@ function Get-SubtitleCoverageClassification {
     # 'media2' (all 203 of them, checked 2026-09-03), so the register alone cannot distinguish
     # "attached" from "not" - it would need a record from a DIFFERENT drive to do that itself.
     [string]$AttachedDrive = 'media2',
+    # Unit names (lowercased) staged by the OPTICAL lane - from _optical-staged.tsv, which is a
+    # positive record that the source was a physical disc in the drive. See the long note at the
+    # deferral branch: such a unit has NO source drive to attach, ever, so the drive test can never
+    # pass for it and it would defer for good. Omit to skip that exemption entirely.
+    [hashtable]$OpticalUnits = @{},
     [int]$StaleToleranceSec = 60,
     # A stale-by-MTIME sidecar is not necessarily a WRONG one: a cosmetic re-publish (aspect-ratio
     # fix, audio-track fix) touches the .mkv's timestamp without changing its cut, and the old
@@ -394,6 +418,31 @@ function Get-SubtitleCoverageClassification {
         Category = 'awaiting-transcription'; Ours = $true
         Evidence = "manifest $($manifest.ManifestFile) declares subTrack:$($manifest.SubTrack)$omitNote - disc had no subtitle source, file confirmed to carry no bitmap stream, and its disc is on the currently attached drive ($AttachedDrive)"
         ManifestFile = $manifest.ManifestFile; SubTrack = $manifest.SubTrack; SourceDrive = $sourceDrive
+      }
+    }
+    # THE OPTICAL EXEMPTION. Deferral asks "can we re-examine this disc later for subtitles we may
+    # have missed?", and answers it by asking whether the disc's SOURCE DRIVE is attached. For a
+    # drive-image unit that is right, and an UNKNOWN drive is correctly deferred until that drive is
+    # seen and resolved.
+    #
+    # An OPTICAL-lane unit has no source drive at all. It was read from a physical disc in the
+    # drive, so it can never appear in the disc-identity index, the test can never pass, and it
+    # defers for ever. Measured 2026-09-06: 24 files in that state - all 17 published Tales of the
+    # Unexpected episodes and 7 Clayhanger episodes - reported as "deferred, not queued, until that
+    # drive can be re-checked", naming a drive that does not exist. The user expected them queued
+    # and they never would have been.
+    #
+    # The exemption is evidence-based, not a name pattern: `_optical-staged.tsv` is the optical
+    # lane's own register, written when it stages a disc, and it carries the unit name, the disc
+    # fingerprint and the byte count. A unit in that register was catalogued FROM THE DISC ITSELF,
+    # which is the very examination the deferral is waiting for - it has already happened.
+    $unitKey = ''
+    if ($manifest.Src) { $unitKey = (Split-Path ($manifest.Src -replace '\\', '/') -Leaf).ToLowerInvariant() }
+    if ($unitKey -and $OpticalUnits.ContainsKey($unitKey)) {
+      return [pscustomobject]@{
+        Category = 'awaiting-transcription'; Ours = $true
+        Evidence = "manifest $($manifest.ManifestFile) declares subTrack:$($manifest.SubTrack)$omitNote - disc had no subtitle source and the file carries no bitmap stream. Its unit '$unitKey' is in _optical-staged.tsv, so it was read from a PHYSICAL DISC in the optical drive and has no source drive to attach: the re-examination the deferral waits for already happened, on the disc itself"
+        ManifestFile = $manifest.ManifestFile; SubTrack = $manifest.SubTrack; SourceDrive = 'optical'
       }
     }
     return [pscustomobject]@{

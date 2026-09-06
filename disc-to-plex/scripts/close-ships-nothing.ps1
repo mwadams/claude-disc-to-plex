@@ -110,13 +110,18 @@ $dispSha = (Get-FileHash -LiteralPath $dispPath -Algorithm SHA256).Hash
 # A verdict is an ASSERTION: after the comment hash the line BEGINS with the marker, then ':' or
 # '.' or nothing. Prose ABOUT the verdict - above all a DENIAL of it - embeds it mid-sentence.
 # Keep this identical to $rxNothing in _dispositions-loop.ps1. Never loosen either back.
-$verdictRx = '(?im)^[ \t]*#?[ \t]*NOTHING\s+(IS\s+)?WORTH\s+SHIPPING\s*([:.].*)?$'
-$verdictLines = @([regex]::Matches($dispRaw, $verdictRx) | ForEach-Object { $_.Value.Trim() })
+# THE RULE NOW LIVES IN ONE PLACE. It used to be duplicated here and in _dispositions-loop.ps1,
+# "kept identical" by a comment - and on 2026-09-06 that convention failed exactly as it was always
+# going to: the wrapped-sentence hole was fixed in Get-ClosureVerdict, and THIS copy re-closed
+# `A Warning to the Curious` three minutes later on the same fragment. See lib-closure-verdict.ps1.
+. "$PSScriptRoot/lib-closure-verdict.ps1"
+$dispLines    = @(Get-Content -LiteralPath $dispPath -ErrorAction SilentlyContinue)
+$verdictLines = @(Get-ClosureVerdictLines -Lines $dispLines -Kind 'ships-nothing')
 $verdictSource = 'dispositions'
 $sidecarPath = Join-Path $CatalogueDir "$discName.closure-verdict.txt"
 if ($verdictLines.Count -eq 0 -and (Test-Path -LiteralPath $sidecarPath)) {
   $scRaw = Get-Content -LiteralPath $sidecarPath -Raw
-  $scLines = @([regex]::Matches($scRaw, $verdictRx) | ForEach-Object { $_.Value.Trim() })
+  $scLines = @(Get-ClosureVerdictLines -Lines @(Get-Content -LiteralPath $sidecarPath -ErrorAction SilentlyContinue) -Kind 'ships-nothing')
   $scShaM = [regex]::Match($scRaw, '(?im)^\s*dispositionsSha256:\s*([0-9A-Fa-f]{64})\s*$')
   $scSha = if ($scShaM.Success) { $scShaM.Groups[1].Value.ToUpperInvariant() } else { '' }
   if ($scLines.Count -eq 0) {
