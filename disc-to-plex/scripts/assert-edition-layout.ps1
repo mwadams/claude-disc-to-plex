@@ -47,6 +47,7 @@ $rootNorm = ($MoviesRoot -replace '\\', '/').TrimEnd('/').ToLowerInvariant()
 $hasEdition = @{}
 $hasExtras  = @{}
 $label      = @{}
+$rootFilms  = @{}   # work -> the movie files this manifest puts in the folder ROOT
 
 foreach ($it in $items) {
   if (-not $it.out) { continue }
@@ -63,6 +64,23 @@ foreach ($it in $items) {
   if ($parts.Count -eq 2) {
     # directly in the work folder
     if ($parts[1] -match '\{edition-') { $hasEdition[$key] = $true }
+    # COUNT THEM ALL, not just {edition-} ones. Plex does not care WHY a movie folder holds more
+    # than one movie file - it stops indexing that folder's local extras either way.
+    #
+    # `Movies/Led Zeppelin/` on 2026-09-06: EIGHT concert films flat in the folder root
+    # (Royal Albert Hall, Earls Court, Knebworth, two Madison Square Garden parts, Supershow,
+    # Danish TV, French TV) beside a `Featurettes/` subfolder holding fifteen extras. None carried
+    # an `{edition-}` tag, so this guard - which looked only for that tag - passed the manifest, and
+    # every one of those featurettes is invisible in Plex while sitting healthy on disk. The user:
+    # "a recurrence of the Plex issue that none of the featurettes appear because of the multiple
+    # files in the root for the Movie."
+    #
+    # The tag was never the cause; it was just the shape the first instance happened to take. The
+    # rule is about COUNT.
+    if ([IO.Path]::GetExtension($parts[1]).ToLowerInvariant() -in '.mkv', '.mp4', '.avi') {
+      if (-not $rootFilms.ContainsKey($key)) { $rootFilms[$key] = @() }
+      $rootFilms[$key] += $parts[1]
+    }
   } else {
     # nested - an extra if the subfolder is one Plex recognises
     if ($extraDirs -contains $parts[1].ToLowerInvariant()) { $hasExtras[$key] = $true }
@@ -70,6 +88,27 @@ foreach ($it in $items) {
 }
 
 $bad = @($hasEdition.Keys | Where-Object { $hasExtras[$_] })
+# The general case: extras plus MORE THAN ONE film in the root, tagged or not.
+$crowded = @($rootFilms.Keys | Where-Object { $hasExtras[$_] -and @($rootFilms[$_]).Count -gt 1 })
+
+if ($crowded.Count -gt 0) {
+  foreach ($k in $crowded) {
+    $w = $label[$k]
+    $files = @($rootFilms[$k])
+    Write-Output ("REFUSE  '{0}' ships local extras AND {1} movie files in the folder ROOT." -f $w, $files.Count)
+    foreach ($f in ($files | Select-Object -First 8)) { Write-Output "          $f" }
+    Write-Output "        Plex treats each root file as a separate movie and then indexes ZERO local"
+    Write-Output "        extras for that folder - the extras sit on disk looking healthy and are simply"
+    Write-Output "        not in the UI. Measured on Movies/Led Zeppelin, 2026-09-06: 8 concert films in"
+    Write-Output "        the root, 15 Featurettes, none visible."
+    Write-Output "        Fix: ONE film per folder. Each concert/feature gets its own top-level folder,"
+    Write-Output "        and the extras subfolders live under the one they belong to, e.g."
+    Write-Output "          $MoviesRoot/$w - Knebworth (1979)/$w - Knebworth (1979).mkv"
+    Write-Output "          $MoviesRoot/$w - Knebworth (1979)/Featurettes/..."
+  }
+  Write-Output "See references/naming.md - a movie folder holds ONE movie."
+  exit 1
+}
 
 if ($bad.Count -eq 0) {
   Write-Output "edition layout OK - $(Split-Path $Manifest -Leaf)"

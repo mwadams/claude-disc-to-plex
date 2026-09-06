@@ -59,6 +59,28 @@ def load_lexicon(srt_path):
         return ep, []
 
 
+def load_register(srt_path):
+    """A hand-written note about the DIALECT AND REGISTER this show is spoken in.
+
+    Cast lists ground proper nouns; they say nothing about how the people talk, and Whisper maps an
+    unfamiliar accent onto the nearest familiar word. Clayhanger (Potteries/North Staffordshire,
+    1976) renders a dialect 'sir' as "Sioux" - a real proper noun, so no dictionary and no cast list
+    can flag it. What gives it away is that all four occurrences are VOCATIVE ("It won't be that,
+    Sioux.", "Where would it go, Sioux?"), and a reviewer told the register sees that at once.
+
+    Hand-written on purpose, at `_lexicons/<show>/_register.txt`: this cannot be derived from TVDB,
+    and build-lexicon.ps1 rightly refuses to predict. It is per SHOW, not per episode.
+    """
+    show = os.path.basename(os.path.dirname(os.path.dirname(srt_path)))
+    p = os.path.join('D:/video/_lexicons', show, '_register.txt')
+    if not os.path.exists(p):
+        return ''
+    try:
+        return io.open(p, encoding='utf-8').read().strip()
+    except Exception:
+        return ''
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('srt')
@@ -75,6 +97,13 @@ def main():
     lines.append('CORRECTION REVIEW: %s' % os.path.basename(a.srt))
     lines.append('%d cues%s' % (len(cues), ('   episode %s' % ep) if ep else ''))
     lines.append('')
+    reg = load_register(a.srt)
+    if reg:
+        lines.append('DIALECT AND REGISTER of this programme - read this before judging a word odd:')
+        for rl in reg.splitlines():
+            lines.append('  ' + rl)
+        lines.append('')
+
     if names:
         lines.append('CAST AND TERMS for this episode (spell these correctly):')
         lines.append('  ' + ', '.join(names))
