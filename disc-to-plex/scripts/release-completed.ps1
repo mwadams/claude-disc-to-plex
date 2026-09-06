@@ -35,8 +35,11 @@
 # three. It fails CLOSED - a corrupted -Completed reads as an empty confirmation list - but it fails
 # SILENTLY, and 'not staged' reads exactly like 'already released'. The guard below catches it now.
 #
-# Also removes the unit's <name>.tracks.json and its <normalised>-rip intermediate, which are
-# derived artefacts of the same disc and are worthless once it is gone.
+# Also removes the unit's <name>.tracks.json, its <normalised>-rip intermediate, and its disposition
+# EVIDENCE PACK (<unit>-frames/, <unit>-evidence/, <unit>-sheetN.png) - all derived artefacts of the
+# same disc, worthless once it is gone. The durable record stays: .catalogue.json, .dispositions.txt,
+# .analysis.json/.txt and any closure verdict. See the pack block below for why this is the right
+# moment and why the PNGs are safe to lose (they are 2.85 GB of the catalogue's 2.89 GB).
 
 param(
   [Parameter(Mandatory)][string[]]$Units,
@@ -238,13 +241,38 @@ foreach ($u in $Units) {
     foreach ($f in @('authorisedBy', 'authorisedAt', 'because')) {
       if (-not "$($auth.$f)".Trim()) { $missing += $f }
     }
-    if (-not $auth.sourceDisc -or -not "$($auth.sourceDisc.path)".Trim()) { $missing += 'sourceDisc.path' }
-    if (-not $auth.sourceDisc -or [long]("0" + "$($auth.sourceDisc.bytes)") -le 0) { $missing += 'sourceDisc.bytes' }
+    # TWO KINDS OF SOURCE, and they are checked differently on purpose.
+    #   'reachable-folder'    - the default. A folder that is re-measured below, so the
+    #                           authorisation revokes itself when the drive goes away.
+    #   'physical-disc-held'  - the operator holds the disc. Nothing here can measure that, so
+    #                           there is no path and no byte total to demand, and no self-revoking
+    #                           re-check. It is a weaker guarantee, deliberately spelled out in the
+    #                           record's own recheckAtRelease text, and it still requires the same
+    #                           named authoriser and stated reason.
+    # An UNKNOWN kind is refused rather than guessed at: a record written by some future tool that
+    # this script does not understand must not fall through to the permissive branch.
+    $srcKind = "$($auth.sourceDisc.kind)".Trim()
+    if (-not $srcKind) { $srcKind = 'reachable-folder' }   # records written before kind existed
+    if ($srcKind -notin @('reachable-folder', 'physical-disc-held')) {
+      Write-Output ("REFUSE  {0} - stagingReleaseAuthorised.sourceDisc.kind is '{1}', which this script does not understand. Refusing rather than guessing." -f $unit, $srcKind)
+      continue
+    }
+    if ($srcKind -eq 'reachable-folder') {
+      if (-not $auth.sourceDisc -or -not "$($auth.sourceDisc.path)".Trim()) { $missing += 'sourceDisc.path' }
+      if (-not $auth.sourceDisc -or [long]("0" + "$($auth.sourceDisc.bytes)") -le 0) { $missing += 'sourceDisc.bytes' }
+    }
     if ($missing.Count -gt 0) {
       Write-Output ("REFUSE  {0} - stagingReleaseAuthorised is present but incomplete (missing/empty: {1}). An authorisation must name who, when, why and the source it rests on." -f $unit, ($missing -join ', '))
       continue
     }
 
+    if ($srcKind -eq 'physical-disc-held') {
+      # Nothing to re-measure - see the kind note above. Say so plainly and say who is carrying the
+      # risk, so this line never reads like the verified case below.
+      Write-Output ("note    {0} - shipped-outside-manifest record present but AUTHORISED for release by {1} ({2}) on the PHYSICAL DISC being held. There is no folder to re-verify, so this authorisation does not revoke itself; reproducing the item would mean re-ripping that disc. Record retained. Reason given: {3}" -f `
+                    $unit, "$($auth.authorisedBy)", "$($auth.authorisedAt)", "$($auth.because)")
+    }
+    else {
     # RE-MEASURE. The whole authorisation says "the source disc is still reachable"; that is a claim
     # about a drive that may have been unplugged since, so it is verified now rather than believed.
     $srcPath = "$($auth.sourceDisc.path)"
@@ -262,6 +290,7 @@ foreach ($u in $Units) {
     }
     Write-Output ("note    {0} - shipped-outside-manifest record present but AUTHORISED for release by {1} ({2}); source verified reachable at {3} ({4} files, {5:N2} GB, unchanged). Record retained." -f `
                   $unit, "$($auth.authorisedBy)", "$($auth.authorisedAt)", $srcPath, [int]$srcAgg.Count, ($srcBytes/1GB))
+    }
   }
 
   if ($done -notcontains $unit) {
@@ -304,13 +333,58 @@ foreach ($u in $Units) {
                Measure-Object Length -Sum).Sum
   }
 
+  # Measured BEFORE the DryRun branch so a dry run reports the same total a real run frees. The
+  # first cut computed this after, so -DryRun silently under-reported by the pack size - which is
+  # the wrong direction for a preview whose whole job is to say how much space this will return.
+  $packPaths = @()
+  foreach ($suffix in @('-frames', '-evidence')) {
+    $p = Join-Path $Catalogue ($unit + $suffix)
+    if (Test-Path -LiteralPath $p -PathType Container) { $packPaths += $p }
+  }
+  $packPaths += @(Get-ChildItem -LiteralPath $Catalogue -File -Filter ($unit + '-sheet*.png') -ErrorAction SilentlyContinue |
+                  ForEach-Object { $_.FullName })
+  $packBytes = 0
+  foreach ($p in $packPaths) {
+    $packBytes += (Get-ChildItem -LiteralPath $p -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+  }
+
   if ($DryRun) {
-    Write-Output ("WOULD   {0} - {1} path(s), {2:N2} GB" -f $unit, $targets.Count, ($bytes/1GB))
-    $freed += $bytes; $okCount++
+    Write-Output ("WOULD   {0} - {1} path(s), {2:N2} GB (incl. {3} evidence-pack path(s), {4:N2} GB)" -f `
+                  $unit, $targets.Count, (($bytes + $packBytes)/1GB), $packPaths.Count, ($packBytes/1GB))
+    $freed += $bytes + $packBytes; $okCount++
     continue
   }
 
   foreach ($t in $targets) { Remove-Item -LiteralPath $t -Recurse -Force -ErrorAction SilentlyContinue }
+
+  # THE DISPOSITION EVIDENCE PACK GOES WITH THE STAGING, for the same reason the tracks.json and the
+  # -rip intermediate do: it is a derived artefact of this disc and nothing reads it once the disc
+  # is gone. `<unit>-frames/`, `<unit>-evidence/` and the loose `<unit>-sheetN.png` contact sheets.
+  #
+  # WHY THIS IS THE RIGHT MOMENT, rather than a periodic sweep (user, 2026-09-06: "They should be
+  # cleaned up *as staging is released* ... under automated circumstances"). Releasing the staging is
+  # the exact instant the pack stops being in use: before it, an agent may be dispositioning this
+  # disc and rebuilding a pack costs real time (disposition-analysis.ps1 took 2,628 s on one Blake's
+  # 7 disc); after it, nothing will open the pack again. A sweep has to GUESS that boundary from
+  # folder dates; here it is known exactly, so there is no window in which a live pack can be taken.
+  #
+  # WHY DELETING IT IS SAFE AT ALL. The first reading was that these PNGs are the only surviving
+  # visual evidence for a disc whose staging has gone, and therefore precious. The user settled it:
+  # "They could be regenerated, by returning the correct drive (as we own the drives) but would not
+  # be needing to refer to them *unless* we had already reserved the drive." The drives are owned and
+  # the optical discs are on a shelf, so nothing is unrecoverable - and the only thing that would
+  # make anyone open a pack is a dispute that cannot be settled without the disc anyway. Any
+  # situation creating the need also restores the ability to rebuild it.
+  #
+  # The DURABLE record is untouched: .catalogue.json, .dispositions.txt, .analysis.json/.txt and the
+  # closure verdicts all stay. Only .png evidence is removed, and only for THIS unit. Backlog and
+  # ad-hoc runs: scripts/prune-catalogue-evidence.ps1 (same rule, applied to everything not staged).
+  if ($packPaths.Count -gt 0) {
+    foreach ($p in $packPaths) { Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue }
+    Write-Output ("        {0} - evidence pack released with the staging: {1} path(s), {2:N2} GB (durable .json/.txt records kept)" -f `
+                  $unit, $packPaths.Count, ($packBytes/1GB))
+    $bytes += $packBytes
+  }
 
   $left = @($targets | Where-Object { Test-Path -LiteralPath $_ })
   if ($left.Count -gt 0) {

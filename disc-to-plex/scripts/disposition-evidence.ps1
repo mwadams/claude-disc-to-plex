@@ -111,6 +111,30 @@ $pack = [ordered]@{}
 $unavailable = [System.Collections.Generic.List[object]]::new()
 $timings = [ordered]@{}
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('disposition-evidence-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+
+# SWEEP THIS SCRIPT'S OWN ORPHANS FIRST. The scratch directory is removed at the very end of a
+# normal run (see the Remove-Item at the foot of this file) - but a run that is KILLED never gets
+# there, and this script extracts whole VOB/MKV segments, so each orphan is hundreds of MB to
+# several GB. On 2026-09-06 D:\temp held 11.2 GB across NINE such directories, every one dated
+# 09-04/09-05: the night a batch of runaway agents was killed. Cleanup that lives only on the
+# success path is not cleanup, it is an intention.
+#
+# Done HERE, at start, rather than in a finally block, because a hard kill (or a machine reset -
+# and this project has had one, a USB hub reset that took E: with it) runs no finally either. The
+# next run of the same script is the one thing guaranteed to happen eventually, so it does the
+# tidying. A sibling still being written by a LIVE run is protected by age, not by a lock: two
+# hours is far longer than the slowest observed pack (2,628 s on a Blake's 7 disc) and short enough
+# that orphans cannot pile up across a session.
+$cutoff = (Get-Date).AddHours(-2)
+foreach ($stale in @(Get-ChildItem -LiteralPath ([IO.Path]::GetTempPath()) -Directory -Filter 'disposition-evidence-*' -ErrorAction SilentlyContinue |
+                     Where-Object { $_.LastWriteTime -lt $cutoff })) {
+  $gb = (Get-ChildItem -LiteralPath $stale.FullName -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum / 1GB
+  Remove-Item -LiteralPath $stale.FullName -Recurse -Force -ErrorAction SilentlyContinue
+  if (-not (Test-Path -LiteralPath $stale.FullName)) {
+    Write-Output ('swept orphaned scratch {0} ({1:N2} GB, last written {2}) - left by a killed run' -f $stale.Name, $gb, $stale.LastWriteTime.ToString('MM-dd HH:mm'))
+  }
+}
+
 New-Item -ItemType Directory -Force -Path $scratch | Out-Null
 
 function Log([string]$m) {

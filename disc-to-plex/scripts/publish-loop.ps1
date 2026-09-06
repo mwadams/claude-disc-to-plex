@@ -381,6 +381,33 @@ while ($MaxPasses -le 0 -or $pass -lt $MaxPasses) {
                 ForEach-Object { Write-Output "$_" }
             }
           } catch { Write-Output "    apply-plex-titles.ps1 threw: $($_.Exception.Message)" }
+
+          # ENQUEUE ANYTHING THAT HAS NO SUBTITLE SOURCE AT ALL, HERE, AUTOMATICALLY.
+          #
+          # A published file with no subtitles is one of three things, and only one of them belongs
+          # to the transcribe track: the disc had subtitles the rip lost (RE-RIP), the file carries
+          # bitmap subtitles (OCR, strictly better), or the disc genuinely had none (TRANSCRIBE).
+          # queue-transcribable.ps1 is what tells those apart, from disc evidence, and it re-checks
+          # every candidate itself - sidecar, subtitle stream, audio stream, duration - so calling
+          # it here cannot enqueue something that belongs elsewhere.
+          #
+          # It was not called from anywhere. So a show whose discs carry no subtitles published
+          # perfectly, verified, reclaimed - and then simply sat in the library with no subtitles
+          # and nothing pointing at it. Clayhanger, 2026-09-06, was the case that surfaced it: the
+          # user had to notice the four new episodes had no VOBSUB and say so.
+          #
+          # -Append, NEVER -Force. A run is only as wide as the sources it is given, so replacing
+          # the queue with this run's output would silently drop everything those sources do not
+          # cover: measured on 2026-09-06, a rebuild produced 17 rows against a queue of 72 and
+          # would have dropped all ELEVEN rows still genuinely pending, while looking safe because
+          # 60 of the 72 were merely stale. -Append adds and never removes, which is the only
+          # behaviour safe to run unattended on every pass.
+          try {
+            $audit = 'D:/video/_audit-transcribable-combined.json'
+            $qArgs = @('-NoProfile', '-File', 'D:/video/.claude/skills/disc-to-plex/scripts/queue-transcribable.ps1', '-Append')
+            if (Test-Path -LiteralPath $audit) { $qArgs += @('-AuditSet', $audit) }
+            & pwsh @qArgs 2>&1 | ForEach-Object { Write-Output "    $_" }
+          } catch { Write-Output "    queue-transcribable.ps1 threw: $($_.Exception.Message)" }
         }
       }
     }

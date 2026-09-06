@@ -61,7 +61,32 @@
 #>
 param(
   [Parameter(Mandatory)][string]$Disc,
-  [Parameter(Mandatory)][string]$SourceDisc,
+  [string]$SourceDisc,
+  # THE SECOND KIND OF REACHABLE SOURCE: the user still holds the PHYSICAL DISC.
+  #
+  # -SourceDisc asks a question about a DRIVE - is there a folder here that byte-matches the
+  # staging? That is the right question when the source was fetched from an external drive, and it
+  # is self-revoking: _release-completed.ps1 re-measures the folder, so unplugging the drive turns
+  # the refusal back on by itself.
+  #
+  # It is the WRONG question when the disc came in through the optical lane, or when the source
+  # drive has been swapped out but the disc itself is on a shelf. The justification for releasing
+  # staging is REPRODUCIBILITY - if we ever needed the item again, could we make it again? A
+  # physical disc answers yes just as well as a folder does; it is slower, not weaker.
+  #
+  # The League/Quatermass case, 2026-09-06: The Quatermass Experiment's staging held 7.72 GB while
+  # D: sat below its fetch floor and the optical lane could not hand two finished discs across. Its
+  # source drive (media2) was swapped out, so -SourceDisc could never be satisfied, and the only
+  # ways forward were to wait indefinitely for a drive swap or to hand-edit the record. The user:
+  # "it will consume 7.72GB for a long time and in the unlikely event of a discrepancy we would
+  # then have the disc available."
+  #
+  # THIS IS A WEAKER AUTHORISATION AND IS RECORDED AS SUCH. There is nothing for
+  # _release-completed.ps1 to re-measure, so unlike the -SourceDisc form it does NOT revoke itself.
+  # That is exactly why it demands an explicit switch, a named authoriser and a stated reason, and
+  # why the record says so in its own text: a future reader must be able to tell the two apart
+  # without knowing this history.
+  [switch]$PhysicalDiscHeld,
   [Parameter(Mandatory)][string]$AuthorisedBy,
   [Parameter(Mandatory)][string]$Because,
   [string]$CatalogueDir = 'D:/video/_catalogue',
@@ -95,9 +120,16 @@ if ("$Because".Trim().Length -lt 40) {
 # ---- 3. the source must be REACHABLE, now --------------------------------------------------------
 # The entire justification is "the source disc is still there". An unreachable source is not a
 # paperwork problem to be waved through; it is the original refusal being correct.
-if (-not (Test-Path -LiteralPath $SourceDisc -PathType Container)) {
-  Write-Output "REFUSE  $discName - -SourceDisc is not an existing folder: $SourceDisc"
-  Write-Output 'The authorisation rests on the source being reachable. It is not.'
+#
+# ...unless the source that is still there is the PHYSICAL DISC, which no Test-Path can see. Then
+# the operator asserts it, on the record, and the weaker guarantee is written into the record too.
+if (-not $PhysicalDiscHeld -and -not "$SourceDisc".Trim()) {
+  Write-Output "REFUSE  $discName - give -SourceDisc <folder>, or -PhysicalDiscHeld if the disc itself is to hand."
+  exit 2
+}
+if ($PhysicalDiscHeld -and "$SourceDisc".Trim()) {
+  Write-Output "REFUSE  $discName - -SourceDisc and -PhysicalDiscHeld are different claims; give exactly one."
+  Write-Output 'A folder can be re-measured at release time and a physical disc cannot, so which one this rests on must be unambiguous.'
   exit 2
 }
 
@@ -107,10 +139,20 @@ function Measure-Folder([string]$path) {
   [pscustomobject]@{ Files = [int]$agg.Count; Bytes = [long]($agg.Sum) }
 }
 
-$srcM = Measure-Folder $SourceDisc
-if ($srcM.Files -eq 0) {
-  Write-Output "REFUSE  $discName - $SourceDisc holds no files; that is not a source disc."
-  exit 2
+$srcM = $null
+if (-not $PhysicalDiscHeld) {
+  if (-not (Test-Path -LiteralPath $SourceDisc -PathType Container)) {
+    Write-Output "REFUSE  $discName - -SourceDisc is not an existing folder: $SourceDisc"
+    Write-Output 'The authorisation rests on the source being reachable. It is not.'
+    Write-Output 'If the SOURCE DRIVE is gone but you still hold the physical disc, that is -PhysicalDiscHeld, which is a'
+    Write-Output 'weaker and explicitly-recorded authorisation - not a way of restating this one.'
+    exit 2
+  }
+  $srcM = Measure-Folder $SourceDisc
+  if ($srcM.Files -eq 0) {
+    Write-Output "REFUSE  $discName - $SourceDisc holds no files; that is not a source disc."
+    exit 2
+  }
 }
 
 # ---- 4. if the staging is still here, it must BE that source -------------------------------------
@@ -124,8 +166,11 @@ if (Test-Path -LiteralPath $stagedDir -PathType Container) {
   $stgM     = Measure-Folder $stagedDir
   $stgFiles = $stgM.Files
   $stgBytes = $stgM.Bytes
-  $matched  = ($stgM.Files -eq $srcM.Files -and $stgM.Bytes -eq $srcM.Bytes)
-  if (-not $matched) {
+  # With -PhysicalDiscHeld there is nothing to compare against: the staging is measured and
+  # recorded, but "matches the source" is a claim only a reachable folder can support, so it stays
+  # false rather than being asserted on no evidence.
+  $matched  = if ($PhysicalDiscHeld) { $false } else { ($stgM.Files -eq $srcM.Files -and $stgM.Bytes -eq $srcM.Bytes) }
+  if (-not $PhysicalDiscHeld -and -not $matched) {
     Write-Output ("REFUSE  {0} - the staged folder does not match the source." -f $discName)
     Write-Output ("        staged : {0} files, {1} bytes  ({2})" -f $stgM.Files, $stgM.Bytes, $stagedDir)
     Write-Output ("        source : {0} files, {1} bytes  ({2})" -f $srcM.Files, $srcM.Bytes, $SourceDisc)
@@ -149,19 +194,30 @@ $auth = [ordered]@{
   authorisedAt = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss')
   because      = "$Because".Trim()
   sourceDisc   = [ordered]@{
+    kind           = $(if ($PhysicalDiscHeld) { 'physical-disc-held' } else { 'reachable-folder' })
     path           = "$SourceDisc"
-    files          = $srcM.Files
-    bytes          = $srcM.Bytes
+    files          = $(if ($srcM) { $srcM.Files } else { $null })
+    bytes          = $(if ($srcM) { $srcM.Bytes } else { $null })
     measuredAt     = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss')
     stagedFiles    = $stgFiles
     stagedBytes    = $stgBytes
     matchedStaging = $matched
   }
-  recheckAtRelease = 'NOT A RUBBER STAMP: _release-completed.ps1 re-measures sourceDisc.path at ' +
+  recheckAtRelease = $(if ($PhysicalDiscHeld) {
+    'THIS AUTHORISATION DOES NOT REVOKE ITSELF, and that is the difference from the usual form. ' +
+    'It rests on the operator holding the PHYSICAL DISC, which _release-completed.ps1 cannot ' +
+    'measure - so there is no folder to re-check and nothing that will turn the refusal back on ' +
+    'automatically. The reproducibility claim is that the item can be made again by re-ripping ' +
+    'that disc through the optical lane and re-running the same commands, which is slower than a ' +
+    're-fetch, not weaker. It authorises THIS record only; a shipped-outside-manifest record ' +
+    'without this field still refuses, which remains the default.'
+  } else {
+    'NOT A RUBBER STAMP: _release-completed.ps1 re-measures sourceDisc.path at ' +
     'release time and honours this authorisation ONLY while that folder is reachable and still ' +
     'totals sourceDisc.bytes. If the drive is detached or the copy has changed, the unconditional ' +
     'refusal comes back on by itself. This field authorises THIS record only - a ' +
     'shipped-outside-manifest record without it still refuses, which is the default.'
+  })
   scopeNote = 'The record itself STAYS. Its other function is permanent: without it _stallwatch.ps1 ' +
     'reports "needs MANIFEST" for this disc forever, and no manifest can ever clear that. ' +
     '"No manifest can produce it" (about the manifest format) and "the source is unavailable" ' +
@@ -193,8 +249,17 @@ Set-Content -LiteralPath $recPath -Value ($rec | ConvertTo-Json -Depth 8) -Encod
 
 Write-Output "AUTHORISED - $discName raw staging may now be released by _release-completed.ps1."
 Write-Output ("  record  : {0}" -f $recPath)
-Write-Output ("  source  : {0} ({1} files, {2:N2} GB){3}" -f `
-              $SourceDisc, $srcM.Files, ($srcM.Bytes/1GB), $(if ($matched) { ' - byte-identical to the staging' } else { '' }))
+if ($PhysicalDiscHeld) {
+  # Never print the folder shape here. The first cut did, and rendered "source : ( files, 0.00 GB)"
+  # for an authorisation that rests on no folder at all - a line that reads like a measurement of
+  # nothing rather than a different kind of evidence.
+  Write-Output '  source  : the PHYSICAL DISC, held by the operator - no folder to measure, and nothing'
+  Write-Output '            for _release-completed.ps1 to re-check, so this authorisation does NOT'
+  Write-Output '            revoke itself. Reproducing the item means re-ripping that disc.'
+} else {
+  Write-Output ("  source  : {0} ({1} files, {2:N2} GB){3}" -f `
+                $SourceDisc, $srcM.Files, ($srcM.Bytes/1GB), $(if ($matched) { ' - byte-identical to the staging' } else { '' }))
+}
 Write-Output ("  by      : {0}" -f $auth.authorisedBy)
 Write-Output ("  why     : {0}" -f $auth.because)
 Write-Output ''

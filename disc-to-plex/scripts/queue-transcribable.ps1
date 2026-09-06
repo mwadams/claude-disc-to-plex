@@ -65,7 +65,12 @@ param(
   [int]$MinSeconds = 120,
   # Required to replace a populated queue (or not-applicable register) with a SMALLER one. See
   # the guards before each write.
-  [switch]$Force
+  [switch]$Force,
+  # MERGE this run's eligible rows into the existing queue rather than replacing it. Adds only
+  # paths not already present, never removes. This is what the rip/publish tracks call, and what
+  # to reach for whenever the intent is "add these" rather than "rebuild everything" - see the
+  # long note at the write guard for why -Force is the wrong tool for that job.
+  [switch]$Append
 )
 $ErrorActionPreference = 'Continue'
 
@@ -231,6 +236,37 @@ if ($AuditSet) {
 $existing = 0
 if (Test-Path -LiteralPath $Out) {
   $existing = @(Import-Csv -LiteralPath $Out -ErrorAction SilentlyContinue).Count
+}
+# -Append: MERGE this run's rows into the queue instead of replacing it.
+#
+# WHY THIS IS THE RIGHT ANSWER AND -Force IS NOT. A rebuild is only ever as wide as the sources it
+# was given, and the queue accumulates across many runs with different -AuditSets. On 2026-09-06,
+# adding four Clayhanger episodes meant a run that produced 17 rows against a queue of 72, so the
+# shrink guard refused - correctly. Measured before touching anything: 60 of those 72 already had
+# their .srt and were merely stale, which makes -Force LOOK safe. It was not. Comparing the rebuilt
+# set against the live one showed it would have dropped ALL ELEVEN rows that were still genuinely
+# pending - Danger Man galleries, Doctor Who galleries, two film trailers, an Ultraviolet extra and
+# a League of Gentlemen interview - because this run's sources did not cover them. "Most of the
+# queue is done" is not evidence that the rest is disposable.
+#
+# So the operation actually wanted was never "replace with a smaller set". It was "add these".
+# Appending keeps every existing row untouched and adds only paths not already queued - each one
+# having passed the same sidecar / subtitle-stream / audio-stream / duration checks above, because
+# it comes out of this very run. It is also what makes the AUTOMATIC call safe: the rip and publish
+# tracks can enqueue newly published files on every pass without any risk of narrowing the queue.
+if ($Append -and (Test-Path -LiteralPath $Out)) {
+  $old = @(Import-Csv -LiteralPath $Out -ErrorAction SilentlyContinue)
+  $have = @{}
+  foreach ($o in $old) { if ("$($o.Path)") { $have["$($o.Path)".ToLowerInvariant()] = $true } }
+  $add = @($rows | Where-Object { "$($_.Path)" -and -not $have.ContainsKey("$($_.Path)".ToLowerInvariant()) })
+  if ($add.Count -eq 0) {
+    Write-Host "APPEND: nothing new - all $($rows.Count) eligible row(s) are already queued ($($old.Count) row(s) unchanged)."
+    exit 0
+  }
+  ($old + $add) | Sort-Object Work, Season, Episode | Export-Csv -LiteralPath $Out -NoTypeInformation -Encoding UTF8
+  Write-Host "APPEND: +$($add.Count) row(s) -> $Out (was $($old.Count), now $($old.Count + $add.Count)); nothing removed"
+  foreach ($a in ($add | Select-Object -First 10)) { Write-Host "   + $($a.Work) - $([IO.Path]::GetFileName($a.Path))" }
+  exit 0
 }
 if ($existing -gt 0 -and $rows.Count -lt $existing -and -not $Force) {
   Write-Host ""
