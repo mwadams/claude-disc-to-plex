@@ -130,14 +130,85 @@ function Test-SpecItem {
      an agent from disc evidence; the failure that matters is a MISSING or ZERO dvdTitle, because
      ffmpeg would then read title 0 and build a confident, wrong film. #>
   param([Parameter(Mandatory)]$Item, [int]$Index)
-  if ($null -eq $Item.dvdTitle)                     { return "item[$Index] has no dvdTitle" }
+  # An item comes EITHER from a dvdvideo title on the spec's disc, or from an existing FILE.
+  #
+  # The file source exists because a compilation is not always co-extensive with one disc. Led
+  # Zeppelin's bonus content spans two discs: the Communication Breakdown promotional film (1969) is
+  # a Disc ONE title, and Disc One is not staged. Without a file source that item is simply lost when
+  # the old library folder is retired - which is how a genuine extra disappears while every count
+  # still balances. A file item is SECOND GENERATION and says so in the log; prefer a disc title
+  # whenever the disc is available.
+  $hasT = $null -ne $Item.dvdTitle
+  $hasF = [bool]"$($Item.file)".Trim()
+  if ($hasT -and $hasF)      { return "item[$Index] declares BOTH dvdTitle and file - it can only have one source" }
+  if (-not $hasT -and -not $hasF) { return "item[$Index] has neither dvdTitle nor file" }
   $t = 0
-  if (-not [int]::TryParse("$($Item.dvdTitle)", [ref]$t)) { return "item[$Index] dvdTitle '$($Item.dvdTitle)' is not an integer" }
-  if ($t -lt 1)                                     { return "item[$Index] dvdTitle $t is not >= 1 (dvdvideo titles are 1-based; 0 would silently read the wrong title)" }
-  if (-not "$($Item.chapter)".Trim())               { return "item[$Index] (dvdTitle $t) has no chapter name" }
+  if ($hasT) {
+    if (-not [int]::TryParse("$($Item.dvdTitle)", [ref]$t)) { return "item[$Index] dvdTitle '$($Item.dvdTitle)' is not an integer" }
+    if ($t -lt 1)                                   { return "item[$Index] dvdTitle $t is not >= 1 (dvdvideo titles are 1-based; 0 would silently read the wrong title)" }
+  }
+  $what = if ($hasT) { "dvdTitle $t" } else { "file $(Split-Path -Leaf "$($Item.file)")" }
+  if (-not "$($Item.chapter)".Trim())               { return "item[$Index] ($what) has no chapter name" }
   $s = 0.0
-  if (-not [double]::TryParse("$($Item.seconds)", [ref]$s) -or $s -le 0) { return "item[$Index] (dvdTitle $t) has no positive 'seconds' - there would be nothing to verify the decode against" }
+  if (-not [double]::TryParse("$($Item.seconds)", [ref]$s) -or $s -le 0) { return "item[$Index] ($what) has no positive 'seconds' - there would be nothing to verify the decode against" }
   return $null
+}
+
+function ConvertFrom-SrtTime {
+  <# "00:01:02,500" -> 62.5 seconds. SRT uses a COMMA for the decimal separator, not a period. #>
+  param([Parameter(Mandatory)][string]$Text)
+  $m = [regex]::Match($Text.Trim(), '^(\d+):([0-5]?\d):([0-5]?\d)[,.](\d{1,3})$')
+  if (-not $m.Success) { throw "not an SRT timestamp: '$Text'" }
+  ([double]$m.Groups[1].Value) * 3600 + ([double]$m.Groups[2].Value) * 60 + [double]$m.Groups[3].Value +
+    ([double]$m.Groups[4].Value.PadRight(3, '0')) / 1000.0
+}
+
+function ConvertTo-SrtTime {
+  param([Parameter(Mandatory)][double]$Seconds)
+  if ($Seconds -lt 0) { $Seconds = 0 }   # a cue shifted before zero is clamped, never dropped
+  $ts = [TimeSpan]::FromSeconds($Seconds)
+  '{0:00}:{1:00}:{2:00},{3:000}' -f [int][math]::Floor($ts.TotalHours), $ts.Minutes, $ts.Seconds, $ts.Milliseconds
+}
+
+function Merge-SrtSet {
+  <# Shift each source SRT by its segment's start time and concatenate into one sidecar.
+
+     WHY: three of the Led Zeppelin extras (the NBC press conference, the Sydney segment and the
+     OGWT interview) carry REAL disc subtitle tracks, already OCR'd and published as .eng.srt
+     sidecars. Joining the videos into one title without doing the same to the subtitles silently
+     drops them - the compilation looks complete, every duration reconciles, and three items lose
+     their subtitles. Plex matches a sidecar on the media basename, so one merged file beside the
+     .mkv restores all of them.
+
+     Sources is an array of @{ Path = <srt or $null>; Offset = <seconds> }. Entries with no subtitle
+     contribute nothing, which is the normal case. #>
+  param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Sources)
+  $out = [Text.StringBuilder]::new()
+  $n = 0
+  foreach ($s in $Sources) {
+    if (-not $s.Path) { continue }
+    $raw = Get-Content -LiteralPath $s.Path -Raw -Encoding UTF8
+    # Split on blank lines; tolerate CRLF and a UTF-8 BOM.
+    foreach ($block in ($raw -replace "`r`n", "`n").TrimStart([char]0xFEFF) -split "`n`n+") {
+      $lines = @($block -split "`n" | Where-Object { $_.Trim().Length -or $false })
+      if ($lines.Count -lt 2) { continue }
+      $ti = 0
+      while ($ti -lt $lines.Count -and $lines[$ti] -notmatch '-->') { $ti++ }
+      if ($ti -ge $lines.Count) { continue }
+      $parts = $lines[$ti] -split '-->'
+      if ($parts.Count -ne 2) { continue }
+      $from = (ConvertFrom-SrtTime $parts[0]) + $s.Offset
+      $to   = (ConvertFrom-SrtTime $parts[1]) + $s.Offset
+      $text = @($lines[($ti+1)..($lines.Count-1)])
+      if (-not $text.Count) { continue }
+      $n++
+      [void]$out.AppendLine([string]$n)
+      [void]$out.AppendLine("$(ConvertTo-SrtTime $from) --> $(ConvertTo-SrtTime $to)")
+      $text | ForEach-Object { [void]$out.AppendLine($_) }
+      [void]$out.AppendLine('')
+    }
+  }
+  return @{ Text = $out.ToString(); Cues = $n }
 }
 
 function Test-LocalOutputPath {
@@ -179,8 +250,27 @@ if ($SelfTest) {
   T 'xml parses'                $(try { [void][xml]$xml; $true } catch { $false })
   T 'xml mismatch throws'       $(try { [void](New-ChapterXml -Names @('a') -Starts @(0.0,1.0)); $false } catch { $true })
 
+  T 'srt time parse'            ((ConvertFrom-SrtTime '00:01:02,500') -eq 62.5)
+  T 'srt time parse hours'      ((ConvertFrom-SrtTime '01:00:00,000') -eq 3600.0)
+  T 'srt time bad throws'       $(try { [void](ConvertFrom-SrtTime 'nope'); $false } catch { $true })
+  T 'srt time render'           ((ConvertTo-SrtTime 62.5) -eq '00:01:02,500')
+  T 'srt time render past 30m'  ((ConvertTo-SrtTime 1863.3) -like '00:31:03,*')
+  $tmpA = Join-Path ([IO.Path]::GetTempPath()) ("t-" + [guid]::NewGuid().ToString('N') + '.srt')
+  "1`n00:00:01,000 --> 00:00:02,000`nhello`n`n2`n00:00:03,000 --> 00:00:04,000`nworld`n" | Set-Content -LiteralPath $tmpA -Encoding UTF8
+  $m = Merge-SrtSet -Sources @(@{Path=$null;Offset=0.0}, @{Path=$tmpA;Offset=100.0})
+  T 'srt merge cue count'       ($m.Cues -eq 2)
+  T 'srt merge shifts by offset' ($m.Text -match '00:01:41,000 --> 00:01:42,000')
+  T 'srt merge renumbers'       ($m.Text.TrimStart().StartsWith('1'))
+  T 'srt merge keeps text'      ($m.Text -match 'hello' -and $m.Text -match 'world')
+  $m0 = Merge-SrtSet -Sources @(@{Path=$null;Offset=0.0})
+  T 'srt merge none is empty'   ($m0.Cues -eq 0 -and -not $m0.Text.Trim())
+  T 'item file source ok'       ($null -eq (Test-SpecItem ([pscustomobject]@{file='x.mkv';chapter='c';seconds=5}) 0))
+  T 'item both sources refused' ((Test-SpecItem ([pscustomobject]@{file='x.mkv';dvdTitle=3;chapter='c';seconds=5}) 0) -match 'BOTH')
+  T 'item neither source'       ((Test-SpecItem ([pscustomobject]@{chapter='c';seconds=5}) 0) -match 'neither')
   T 'item ok'                   ($null -eq (Test-SpecItem ([pscustomobject]@{dvdTitle=5;chapter='x';seconds=10}) 0))
-  T 'item no dvdTitle'          ((Test-SpecItem ([pscustomobject]@{chapter='x';seconds=10}) 0) -match 'no dvdTitle')
+  # Was 'no dvdTitle'; since a `file` source became legal the refusal names both, and the case is
+  # covered above by 'item neither source'. Kept so the sourceless item is still asserted here.
+  T 'item no source at all'     ((Test-SpecItem ([pscustomobject]@{chapter='x';seconds=10}) 0) -match 'neither dvdTitle nor file')
   T 'item dvdTitle zero'        ((Test-SpecItem ([pscustomobject]@{dvdTitle=0;chapter='x';seconds=10}) 0) -match 'not >= 1')
   T 'item dvdTitle nonint'      ((Test-SpecItem ([pscustomobject]@{dvdTitle='five';chapter='x';seconds=10}) 0) -match 'not an integer')
   T 'item no chapter'           ((Test-SpecItem ([pscustomobject]@{dvdTitle=5;chapter=' ';seconds=10}) 0) -match 'no chapter name')
@@ -239,10 +329,11 @@ if ($problems.Count) {
 
 # dvdTitle appearing twice means two chapters would hold identical content - always a spec error,
 # and one that a duration check cannot catch because both copies decode to the right length.
-$dupes = @($items | Group-Object { "$($_.dvdTitle)" } | Where-Object { $_.Count -gt 1 })
+$dupes = @($items | Group-Object { if ("$($_.file)".Trim()) { "file:$("$($_.file)".ToLowerInvariant())" } else { "dvd:$($_.dvdTitle)" } } |
+            Where-Object { $_.Count -gt 1 })
 if ($dupes.Count) {
   Write-Output "REFUSE - dvdTitle repeated in the spec (the same content would appear twice):"
-  $dupes | ForEach-Object { Write-Output "    dvdTitle $($_.Name) x$($_.Count): $((($_.Group | ForEach-Object { $_.chapter }) -join ' | '))" }
+  $dupes | ForEach-Object { Write-Output "    $($_.Name) x$($_.Count): $((($_.Group | ForEach-Object { $_.chapter }) -join ' | '))" }
   exit 2
 }
 
@@ -281,13 +372,19 @@ if ($outDir -and -not (Test-Path -LiteralPath $outDir)) { New-Item -ItemType Dir
 #   fps=25       PAL; a fixed rate keeps the appended timeline linear.
 $vf = "bwdif=mode=send_frame,scale=trunc(iw*sar/2)*2:ih,scale=${Width}:${Height}:force_original_aspect_ratio=decrease,pad=${Width}:${Height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=25"
 
-$parts = @(); $measured = @(); $names = @()
+$parts = @(); $measured = @(); $names = @(); $subs = @()
 $n = 0
 foreach ($it in $items) {
   $n++
   $part = Join-Path $WorkDir ("{0:00}.mkv" -f $n)
   $log  = Join-Path $WorkDir ("{0:00}.log" -f $n)
-  $inspec = @('-f','dvdvideo','-title',[string]$it.dvdTitle,'-i',$disc)
+  $fromFile = [bool]"$($it.file)".Trim()
+  if ($fromFile) {
+    if (-not (Test-Path -LiteralPath "$($it.file)")) { Write-Output "  FAILED - item $n names a file that does not exist: $($it.file)"; exit 1 }
+    $inspec = @('-i', "$($it.file)")
+  } else {
+    $inspec = @('-f','dvdvideo','-title',[string]$it.dvdTitle,'-i',$disc)
+  }
 
   # A title with no audio stream is not an error - it is a silent menu clip. Give it silence, so
   # every intermediate carries exactly one audio track and the append stays a stream copy.
@@ -315,10 +412,11 @@ foreach ($it in $items) {
     if (-not $reuse) { Remove-Item -LiteralPath $part -Force -ErrorAction SilentlyContinue }
   }
 
-  Write-Output ("  [{0}/{1}] dvdTitle {2} -> {3}{4}{5}" -f $n, $items.Count, $it.dvdTitle, (Split-Path -Leaf $part), $(if ($silent) { '  (no audio on disc; silence synthesised)' } else { '' }), $(if ($reuse) { '  (reusing existing intermediate)' } else { '' }))
+  $srcLabel = if ($fromFile) { "file $(Split-Path -Leaf "$($it.file)") [2nd generation]" } else { "dvdTitle $($it.dvdTitle)" }
+  Write-Output ("  [{0}/{1}] {2} -> {3}{4}{5}" -f $n, $items.Count, $srcLabel, (Split-Path -Leaf $part), $(if ($silent) { '  (no audio on disc; silence synthesised)' } else { '' }), $(if ($reuse) { '  (reusing existing intermediate)' } else { '' }))
   if (-not $reuse) { & $ff @args *> $log }
   if ((-not $reuse -and $LASTEXITCODE -ne 0) -or -not (Test-Path -LiteralPath $part)) {
-    Write-Output "  FAILED - ffmpeg exit $LASTEXITCODE on dvdTitle $($it.dvdTitle). Log tail:"
+    Write-Output "  FAILED - ffmpeg exit $LASTEXITCODE on $srcLabel. Log tail:"
     Get-Content -LiteralPath $log -Tail 20 | ForEach-Object { Write-Output "      $_" }
     exit 1
   }
@@ -330,7 +428,7 @@ foreach ($it in $items) {
   if ($delta -gt $ToleranceSeconds) {
     # The whole point of the guard: a title that decodes to the wrong length is a WRONG CUT, and a
     # wrong cut inside a compilation is invisible once joined.
-    Write-Output "  FAILED - dvdTitle $($it.dvdTitle) decoded $([math]::Round($dur,2))s but the spec says $want s (tolerance ${ToleranceSeconds}s)."
+    Write-Output "  FAILED - $srcLabel decoded $([math]::Round($dur,2))s but the spec says $want s (tolerance ${ToleranceSeconds}s)."
     Write-Output "           Either the spec's dvdTitle is wrong, or this demuxer truncates the title (multi-cell)."
     Write-Output "           Intermediates kept for inspection: $WorkDir"
     exit 1
@@ -339,6 +437,12 @@ foreach ($it in $items) {
   $parts    += $part
   $measured += $dur
   $names    += "$($it.chapter)".Trim()
+  $subs     += ,@{ Path = $(if ("$($it.subtitles)".Trim() -and (Test-Path -LiteralPath "$($it.subtitles)")) { "$($it.subtitles)" } else { $null }); Offset = 0.0 }
+  if ("$($it.subtitles)".Trim() -and -not (Test-Path -LiteralPath "$($it.subtitles)")) {
+    Write-Output "  FAILED - item $n names a subtitle file that does not exist: $($it.subtitles)"
+    Write-Output "           Refusing rather than dropping it: a missing sidecar is exactly the loss this merge exists to prevent."
+    exit 1
+  }
 }
 
 # --- Stage B: append (stream copy) ------------------------------------------------------------
@@ -364,6 +468,24 @@ if ($LASTEXITCODE -ne 0) {
   Write-Output "  FAILED - mkvpropedit exit $LASTEXITCODE applying chapters. Log:"
   Get-Content -LiteralPath (Join-Path $WorkDir 'propedit.log') -Tail 20 | ForEach-Object { Write-Output "      $_" }
   exit 1
+}
+
+# --- Stage C2: carry the subtitles across ------------------------------------------------------
+# Each source sidecar is shifted by its segment's MEASURED start and merged into one .eng.srt beside
+# the .mkv, which is how Plex finds it (it matches a sidecar on the media basename).
+for ($i = 0; $i -lt $subs.Count; $i++) { $subs[$i].Offset = $starts[$i] }
+$withSubs = @($subs | Where-Object { $_.Path })
+if ($withSubs.Count) {
+  $merged = Merge-SrtSet -Sources $subs
+  $srtOut = [IO.Path]::ChangeExtension($Out, $null) + 'eng.srt'
+  $merged.Text | Set-Content -LiteralPath $srtOut -Encoding UTF8
+  Write-Output ("  subtitles: merged {0} cue(s) from {1} sidecar(s) -> {2}" -f $merged.Cues, $withSubs.Count, (Split-Path -Leaf $srtOut))
+  if ($merged.Cues -eq 0) {
+    Write-Output "  FAILED - $($withSubs.Count) sidecar(s) were named but produced ZERO cues; refusing to ship an empty subtitle file."
+    exit 1
+  }
+} else {
+  Write-Output "  subtitles: none of the segments carries a sidecar - no .eng.srt written"
 }
 
 # --- Stage D: verify the artefact, not the exit codes ------------------------------------------
