@@ -106,8 +106,14 @@ function Get-ClosureVerdictLines {
     [Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()][object[]]$Lines,
     [ValidateSet('ships-nothing', 'shipped-outside')][string]$Kind = 'ships-nothing'
   )
+  # RETURN SHAPE MATTERS MORE THAN IT LOOKS. `return ,$out` protects a ONE-element result from
+  # PowerShell unrolling it to a bare string - but on an EMPTY array the same comma wraps it, so a
+  # caller writing `@(Get-ClosureVerdictLines ...)` gets an array holding one empty array, .Count is
+  # 1, and "no verdict" reads as "a verdict". Measured 2026-09-06: that turned a shipped-outside
+  # sidecar into a ships-nothing closure in the test suite - the same false-close this whole library
+  # exists to prevent, reintroduced by the return statement rather than the rule.
   $out = @()
-  if ($null -eq $Lines) { return ,$out }
+  if ($null -eq $Lines) { return @() }
   $rx = Get-ClosureMarkerPattern -Kind $Kind
   for ($i = 0; $i -lt $Lines.Count; $i++) {
     $clean = Remove-ClosureCommentPrefix $Lines[$i]
@@ -115,5 +121,6 @@ function Get-ClosureVerdictLines {
     if (Test-ClosureLineIsContinuation -Lines $Lines -Index $i) { continue }
     $out += $clean
   }
+  if ($out.Count -eq 0) { return @() }
   return ,$out
 }
