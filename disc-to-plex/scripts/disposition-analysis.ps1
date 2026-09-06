@@ -231,6 +231,36 @@ if (-not $pack.titles -or -not @($pack.titles).Count) {
   }
 }
 
+# ---------------------------------------------------------------------------- truncation verdict
+function Get-TruncationVerdict {
+  <#
+    PURE. Given the full title duration (an ffprobe walk) and the duration MakeMKV reported for the
+    fragment it produced, say whether the shortfall is truncation or a benign tail cell.
+
+    Extracted so it can be tested. The rule was wrong in TWO ways before 2026-09-06 and nothing
+    caught it, because the script had no tests and its output looked healthy either way. See
+    disposition-analysis.tests.ps1 for the measured cases this must satisfy.
+
+    Returns: 'none' | 'benign' | 'truncated'
+  #>
+  param(
+    [Parameter(Mandatory)][AllowNull()]$FullSec,
+    [Parameter(Mandatory)][AllowNull()]$TruncSec,
+    [double]$BenignAbsoluteSec = 2.0,     # pure HH:MM:SS flooring, up to 1 s, plus a sub-second cell
+    [double]$BenignPercent     = 0.5,     # measured benign population tops out at 0.32%
+    [double]$BenignCapSec      = 15.0     # ...and at 5 s; the cap stops a long title hiding a real loss
+  )
+  if ($null -eq $FullSec -or $null -eq $TruncSec) { return 'none' }
+  $full = [double]$FullSec; $trunc = [double]$TruncSec
+  if ($full -le 0) { return 'none' }
+  $short = $full - $trunc
+  if ($short -le 0) { return 'none' }
+  $pct = 100.0 * $short / $full
+  if ($short -le $BenignAbsoluteSec) { return 'benign' }
+  if ($pct -le $BenignPercent -and $short -le $BenignCapSec) { return 'benign' }
+  return 'truncated'
+}
+
 # ============================================================================ 4. TRUNCATION
 if ($pack.makemkvLog -and $pack.makemkvLog.titlesAdded) {
   $added = @($pack.makemkvLog.titlesAdded)
@@ -240,14 +270,83 @@ if ($pack.makemkvLog -and $pack.makemkvLog.titlesAdded) {
     if ($null -eq $mkTitleNo) { continue }
     $addRec = @($added | Where-Object { $_.makemkvTitleNumber -eq $mkTitleNo }) | Select-Object -Last 1
     if (-not $addRec) { continue }
-    # Match this MakeMKV title number to a catalogue row / dv title to find the FULL duration.
-    $catRow = @($pack.catalogue.rows | Where-Object { [int]$_.title -eq [int]$mkTitleNo }) | Select-Object -First 1
-    $dv = $(if ($catRow) { $catRow.dvdvideoTitle } else { $null })
+    # 🔴 THE LOG'S "Title #N" IS THE DVD TITLE NUMBER, NOT THE MAKEMKV OUTPUT INDEX.
+    #
+    # This matched `$_.title -eq $mkTitleNo` - the catalogue's 0-based MakeMKV index (t00, t01, ...)
+    # - and so paired every warning with the WRONG row, silently, always. Measured on Doctor Who
+    # "The Ark", 2026-09-06:
+    #
+    #   log "Title #2 was added (0:24:01)"  is catalogue t0 / dv2 (duration 0:24:01)
+    #     ...but it matched t2 / dv4, whose full walk is 1462 s   -> reported "TRUNCATED, 98.6%"
+    #   log "Title #4 was added (0:24:20)"  is catalogue t2 / dv4 (duration 0:24:20)
+    #     ...but it matched t4 / dv6 - the disc's 1:38:05 PLAY-ALL -> reported "TRUNCATED, 24.8%"
+    #
+    # Both findings were spurious; the real cause was a shared 5-sector / 0.48 s still cell dropped
+    # identically from all five VTS_02 titles, which is harmless. The disposition agent contradicted
+    # the script by hand-measuring the IFO cell tables, which is the only reason it was caught.
+    #
+    # Checked across ten discs carrying MakeMKV logs (A Matter of Life and Death, A Warning to the
+    # Curious, All Quiet on the Western Front, Blake's 7 Series 3 Disks 1-5, Day of the Triffids,
+    # Don't Look Now): matching a log line's Title # against `dvdvideoTitle` agreed 3-11 times per
+    # disc, and against the MakeMKV index ZERO times on every single disc. The convention is not
+    # ambiguous - the old code was simply reading the wrong field, and no finding it ever produced
+    # used the right denominator.
+    $catRow = @($pack.catalogue.rows | Where-Object { $null -ne $_.dvdvideoTitle -and [int]$_.dvdvideoTitle -eq [int]$mkTitleNo }) | Select-Object -First 1
+    if (-not $catRow) {
+      # SAY SO rather than `continue`. A warning that cannot be tied to a catalogued title is
+      # exactly the shape a real truncation takes on a title MakeMKV never enumerated, and silence
+      # here is how the defect above survived: the check reported "NONE DETECTED" and looked healthy.
+      Add-Finding -Topic 'truncation' -Subject "makemkv Title #$mkTitleNo" -Verdict 'UNAVAILABLE' -Confidence 'LOW' `
+        -Evidence @(("MakeMKV log: `"{0}`"" -f $rw.text),
+                    ("no catalogued title has dvdvideoTitle {0}, so the full-reel duration this fragment should be compared against is unknown" -f $mkTitleNo)) `
+        -Detail 'cannot compute a truncation percentage - check by hand against the IFO cell table'
+      continue
+    }
+    $dv = $catRow.dvdvideoTitle
+    $mkIndex = $catRow.title
     $probe = $(if ($dv) { @($pack.titles | Where-Object { $_.dvdvideoTitle -eq $dv }) | Select-Object -First 1 } else { $null })
     $fullSec = $(if ($probe -and $probe.emittedSec) { [double]$probe.emittedSec } else { $null })
     $truncSec = $null
     if ($addRec.duration -match '^(\d+):(\d+):(\d+)') { $truncSec = [int]$Matches[1] * 3600 + [int]$Matches[2] * 60 + [int]$Matches[3] }
-    if ($fullSec -and $truncSec -and $fullSec -gt $truncSec) {
+    # A SHORTFALL OF A COUPLE OF SECONDS IS NOT TRUNCATION, and calling it one is how a guard turns
+    # into noise that gets ignored. Two sources of harmless difference stack:
+    #   * MakeMKV prints its duration as HH:MM:SS, FLOORED - up to 1.0 s of pure formatting.
+    #   * DVDs routinely chain a sub-second still/padding cell at a title end. The Ark drops a shared
+    #     5-sector / 0.48 s cell identically from all five VTS_02 titles; nothing is lost.
+    # Real cell-dedup truncation is not marginal - the measured instances on this project run to
+    # whole minutes (Spaced S00E04: 70.12 s emitted against an expected 1076.92 s, a 93% loss).
+    # So: below the threshold, record what was seen and say it is benign; never claim TRUNCATED.
+    # THE THRESHOLD IS SET FROM THE MEASURED POPULATION, not picked. Across every catalogue on this
+    # machine carrying a MakeMKV cell-removal warning (2026-09-06), exactly THREE produce any
+    # shortfall at all, and all three are a single tail cell:
+    #     Day of the Triffids      Title #4    5 s of 1558 s   0.32%   "Cells 7-7 removed"
+    #     Blake's 7 S3 Disk 2      Title #6    3 s of 3089 s   0.10%   "Cells 10-10 removed"
+    #     The Mutants D1           Title #4    1 s of 1464 s   0.07%   "Cells 7-7 removed"
+    # Real cell-dedup truncation is nothing like this: Spaced S00E04 emitted 70.12 s against an
+    # expected 1076.92 s - a 93% loss. There are three orders of magnitude between the two
+    # populations, so any threshold in the gap separates them; these are deliberately generous.
+    #
+    # The band is deliberately ASYMMETRIC, because the two errors do not cost the same. A false
+    # BENIGN hides a real content loss - the failure this whole check exists to catch, and one that
+    # has reached the library before. A false TRUNCATED costs an agent a hand-measurement against the
+    # IFO cell table. So the band sits just above the measured benign population (max 0.32%, 5 s) and
+    # nowhere near the gap: 0.5% and 15 s. A 25-minute episode losing 12 s - which could be a real
+    # tail scene rather than a padding cell - flags rather than passes.
+    #
+    # The absolute cap also stops a long title swallowing a real loss: 0.5% of a three-hour feature
+    # is 54 s, which must still flag.
+    $shortSec = $(if ($fullSec -and $truncSec) { $fullSec - $truncSec } else { $null })
+    $shortPct = $(if ($shortSec -and $fullSec) { 100.0 * $shortSec / $fullSec } else { $null })
+    $verdict  = Get-TruncationVerdict -FullSec $fullSec -TruncSec $truncSec
+    if ($verdict -eq 'none') { continue }
+    if ($verdict -eq 'benign') {
+      Add-Finding -Topic 'truncation' -Subject "dv$dv (makemkv t$('{0:D2}' -f $mkIndex))" -Verdict 'BENIGN TAIL CELL' -Confidence 'HIGH' `
+        -Evidence @(("MakeMKV log: `"Title #{0} was added ({1})`" then `"{2}`"" -f $mkTitleNo, $addRec.duration, $rw.text),
+                    ("full walk {0:N2} s vs MakeMKV's {1} s - a shortfall of {2:N2} s ({3:N2}% of the title)" -f $fullSec, $truncSec, $shortSec, $shortPct)) `
+        -Detail 'a single still/padding cell at the title end, plus up to 1 s of MakeMKV flooring its duration to whole seconds. Reported so it is on the record, but this is NOT truncation.'
+      continue
+    }
+    if ($verdict -eq 'truncated') {
       $pct = [math]::Round(100.0 * $truncSec / $fullSec, 1)
       # Is the truncated fragment what actually got published?
       $pubHit = $null
@@ -262,7 +361,9 @@ if ($pack.makemkvLog -and $pack.makemkvLog.titlesAdded) {
         ("ffprobe -f dvdvideo -title {0} -count_packets (full walk, not the MakeMKV enumeration): {1:N2} s emitted" -f $dv, $fullSec)
       )
       if ($pubHit) { $ev += ("published NAS file duration {0:N3} s matches the TRUNCATED {1} s fragment, not the full {2:N2} s - {3}" -f $pubHit.durationSec, $truncSec, $fullSec, $pubHit.path) }
-      Add-Finding -Topic 'truncation' -Subject "dv$dv (makemkv t$('{0:D2}' -f $mkTitleNo))" -Verdict 'TRUNCATED' -Confidence 'HIGH' -Evidence $ev `
+      # The label now carries the catalogue's own index for this dv, not the log's Title # reused as
+      # if it were one - the confusion that produced the wrong denominators in the first place.
+      Add-Finding -Topic 'truncation' -Subject "dv$dv (makemkv t$('{0:D2}' -f $mkIndex))" -Verdict 'TRUNCATED' -Confidence 'HIGH' -Evidence $ev `
         -Detail ("published/enumerated is {0}% of the full reel" -f $pct)
     }
   }

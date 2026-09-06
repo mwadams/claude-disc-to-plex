@@ -1,8 +1,8 @@
 # Script index - GENERATED, do not edit
 
-Generated 2026-09-06 18:34 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
+Generated 2026-09-06 19:35 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
 
-**121 scripts under `scripts/`, 45 loop scripts under `D:/video/`. 0 with NO usable header, 46 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
+**122 scripts under `scripts/`, 45 loop scripts under `D:/video/`. 0 with NO usable header, 46 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
 
 Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library` = dot-source, defines functions only; `tests` = a test suite, exit 0 = all passed.
 
@@ -54,6 +54,7 @@ Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library
 | `correct-srt.ps1` | command | Run ONE machine-transcribed .srt through a Claude correction pass, and report what it cost. | when: faster-whisper produces fluent text with homophone errors a dictionary cannot catch, because both spellings are real words. | `pwsh -File correct-srt.ps1 -Srt "<file.eng.srt>" [-DryRun] [-Model haiku]` |
 | `disc-identity.ps1` | command | The permanent record of WHAT IS ON EACH DISC, kept on the NAS. | when: Working out which episode a disc title actually contains is the expensive step, and the cheap sources disagree: mymovies.xml numbering and the Plex agent often differ, and settling it has meant sni... | - |
 | `disposition-analysis.ps1` | command | Turn ONE disc's evidence pack (disposition-evidence.ps1) into FINDINGS a disposition agent can audit and use directly: a verdict, a confidence, and the evidence that produced it - never a bare number and never a bare... | when: a staged DVD is about to be dispositioned. Run this FIRST (it runs disposition-evidence.ps1 for you if the pack is missing or stale). | `pwsh -NoProfile -File disposition-analysis.ps1 -Unit "Don't Look Now"` |
+| `disposition-analysis.tests.ps1` | tests | Tests for disposition-analysis.ps1's TRUNCATION verdict. | when: The script had no tests, and its truncation check was wrong in two independent ways from the day it was written until 2026-09-06. | - |
 | `disposition-evidence.ps1` | command | Pre-flight ONE disc into a single evidence pack - every per-disc MEASUREMENT a disposition agent needs, taken once, so the agent reads one file and does only judgement. | when: a staged DVD is about to be dispositioned (or re-dispositioned), or an agent is about to run ffprobe / an IFO parse / a NAS listing by hand to answer "what is on this disc and what does the library... | `pwsh -NoProfile -File disposition-evidence.ps1 -Unit "Don't Look Now"` |
 | `drop-blank-frames.py` | python | Remove near-blank frames from a catalogue's evidence lists, and delete the files. | NO TRIGGER IN HEADER | - |
 | `dvd-angle-cells.py` | python | Read ONE ANGLE of a DVD multi-angle (ILVU-interleaved) title out of the VOBs. | when: `ffmpeg -f dvdvideo -title N` has no angle selector and SILENTLY RETURNS ANGLE 1. `transcode.ps1` has no angle field either. | `python dvd-angle-cells.py <VIDEO_TS dir> <vts> <pgc> --list` |
