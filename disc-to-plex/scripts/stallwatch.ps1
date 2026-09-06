@@ -691,7 +691,7 @@ if ($DischargePending -and (Test-Path -LiteralPath $DischargePending -PathType L
     $dp = Get-Content -LiteralPath $DischargePending -Raw | ConvertFrom-Json
     foreach ($p in $dp.PSObject.Properties) {
       $e = $p.Value
-      Write-Output ("*** RE-RIP NOT DISCHARGED: '{0}' published into '{1}' but delivered {2} of {3} owed ({4}). The register row stays {5}, so its staging cannot release - settle it by hand in D:/video/_rerip-worklist.tsv, or supply the missing evidence. Details: D:/video/_rerip-discharge-pending.json" -f `
+      Write-Output ("*** RE-RIP NOT DISCHARGED: '{0}' published into '{1}' but delivered {2} of {3} owed ({4}). The register row stays {5}, so its staging cannot release. If the obligation was never real (the commonest case - an inventory report claimed subtitles or a quality gain the disc does not actually hold), it can NEVER close by counting delivered files: put an anchored 'RE-RIP OBLIGATION REFUTED: <why, from content>' line in D:/video/_catalogue/<disc>.dispositions.txt and discharge-rerip.ps1 settles it on its next run. Otherwise supply the missing evidence. Details: D:/video/_rerip-discharge-pending.json" -f `
                     $p.Name, "$($e.work)", $e.delivered, $e.owed, "$($e.reason)", "$($e.status)")
       $dischargePendingNames += $p.Name
     }

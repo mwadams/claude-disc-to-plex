@@ -63,6 +63,22 @@ if (Test-Path -LiteralPath $editionGuard) {
   }
 }
 
+# SAME REASONING, DIFFERENT FAULT: a Season 00 item that ships BARE-NAMED with no `plexTitle` can
+# never be titled correctly afterwards. fix-plex-extras.ps1 parses the title out of the filename,
+# and a bare name (forced by an in-place `supersedes`, which must keep the legacy NAS filename) has
+# none - so Plex titles it by index and re-guesses on every refresh. Cheap to fix here, and after
+# publish it needs a human noticing and calling the API by hand: five Sweeney specials on
+# 2026-09-05, and S00E63 of The League of Gentlemen on 2026-09-06, which Plex titled "Christmas
+# Special - Extended Scene - Papa Lazarou" over a 63-minute Paul Jackson interview.
+$titleGuard = 'D:/video/.claude/skills/disc-to-plex/scripts/assert-season00-titles-declared.ps1'
+if (Test-Path -LiteralPath $titleGuard) {
+  & pwsh -NoProfile -File $titleGuard -Manifest $Manifest
+  if ($LASTEXITCODE -ne 0) {
+    Write-Output ("gate REFUSED: {0} - a Season 00 item would publish with no title Plex could get right. Not queued." -f (Split-Path $Manifest -Leaf))
+    exit 2
+  }
+}
+
 # THE LEDGER. Record WHICH manifest passed and WHAT IT CONTAINED when it did.
 #
 # The hash matters, not just the name: without it, gating an empty placeholder and then writing the
