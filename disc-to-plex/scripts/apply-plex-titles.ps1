@@ -142,6 +142,7 @@ foreach ($v in @($all.MediaContainer.Video)) {
 
 $set = 0; $already = 0; $missing = 0; $failed = 0; $lockedNow = 0
 $stillPending = @()
+$script:posterNeeded = @()
 foreach ($it in $want) {
   $leaf  = [IO.Path]::GetFileName("$($it.out)")
   $title = "$($it.plexTitle)".Trim()
@@ -205,14 +206,34 @@ foreach ($it in $want) {
   # An item whose title was ALREADY correct is not touched - its summary was written for the right
   # item and may well be good.
   $hadSummary = "$($ep.summary)".Trim()
+  $hadDate    = "$($ep.originallyAvailableAt)".Trim()
   try {
+    # THE AGENT GUESSES FOUR FIELDS AT ONCE, SO ALL FOUR ARE WRONG TOGETHER.
+    # Plex's TV agent assigns title, summary, POSTER and AIR DATE as one guess about one item. Fix
+    # only the title and the other three stay behind, describing whatever it thought this was - and
+    # they are more visible than the title, not less.
+    #
+    # Porridge Season 00, 2026-09-06, is the worked example. Four titles were corrected from
+    # on-screen title cards; the user then reported, separately and in turn, that the summaries were
+    # "anomalous", then that "the episode posters and dates are incorrect". Every date was the OLD
+    # title's date, shifted one slot exactly as the titles had been: "No Way Out" carried
+    # 1973-04-01 (the Prisoner and Escort pilot), "The Desperate Hours" carried 1975-12-24 (No Way
+    # Out's Christmas broadcast). Three separate reports, one cause.
+    #
+    # So the date is cleared and LOCKED with the summary. Cleared rather than corrected because this
+    # script cannot know a true broadcast date, and an empty locked field is honest where a
+    # confidently wrong one is not. The poster is regenerated below from the file itself, which is
+    # the one source that cannot be about a different item.
     $u = "$base/library/metadata/$($ep.ratingKey)?type=4&id=$($ep.ratingKey)&title.value=" +
-         [uri]::EscapeDataString($title) + '&title.locked=1&summary.value=&summary.locked=1'
+         [uri]::EscapeDataString($title) +
+         '&title.locked=1&summary.value=&summary.locked=1&originallyAvailableAt.value=&originallyAvailableAt.locked=1'
     Invoke-RestMethod -Uri $u -Headers $h -Method Put -TimeoutSec 30 | Out-Null
     if ($hadSummary) {
       Say ("    [plex-title] cleared the summary that belonged to the old title '{0}': '{1}'" -f `
            $ep.title, $(if ($hadSummary.Length -gt 80) { $hadSummary.Substring(0,80) + '...' } else { $hadSummary }))
     }
+    if ($hadDate) { Say ("    [plex-title] cleared the air date that belonged to the old title '{0}': {1}" -f $ep.title, $hadDate) }
+    $script:posterNeeded += [pscustomobject]@{ RatingKey = $ep.ratingKey; Out = "$($it.out)"; Title = $title }
     $back = [xml](Invoke-WebRequest -Uri "$base/library/metadata/$($ep.ratingKey)" -Headers $h -TimeoutSec 30).Content
     $now  = "$($back.MediaContainer.Video.title)"
     if ($now -eq $title) { Say ("    [plex-title] set + locked: {0} -> '{1}'" -f $leaf, $title); $set++ }
@@ -221,6 +242,49 @@ foreach ($it in $want) {
     Say ("    [plex-title] FAILED: {0} - {1}" -f $leaf, $_.Exception.Message); $failed++
   }
 }
+# ---- POSTERS, for the items whose title actually CHANGED --------------------------------------
+# ONLY those. fix-plex-extras.ps1's own header warns that a poster upload adds a new selected poster
+# every run, so doing this for every item on every publish would pile art up for no reason. An item
+# whose title was already right keeps the poster it has.
+#
+# The frame is taken from the FILE, at 40% through, which is the only source that cannot be about a
+# different programme: an agent-supplied poster is pulled from an online item it guessed at, and when
+# the guess was wrong - as it was for every corrected Porridge special - so is the picture.
+if (-not $WhatIf -and $script:posterNeeded.Count) {
+  $ffmpeg = 'D:/video/.transcode-tools/ffmpeg-n7.1/ffmpeg-n7.1-latest-win64-gpl-7.1/bin/ffmpeg.exe'
+  $ffprobe = 'D:/video/.transcode-tools/ffmpeg-n7.1/ffmpeg-n7.1-latest-win64-gpl-7.1/bin/ffprobe.exe'
+  if (-not (Test-Path -LiteralPath $ffmpeg -PathType Leaf)) { $ffmpeg = 'ffmpeg' ; $ffprobe = 'ffprobe' }
+  $tmp = Join-Path ([IO.Path]::GetTempPath()) ("plextitle-posters-{0}" -f $PID)
+  New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+  foreach ($p in $script:posterNeeded) {
+    # `out` is a LOCAL path at manifest time; by the moment titles are applied the file lives on the
+    # NAS. Try the NAS first, fall back to local - a poster is worth having either way, and a miss
+    # here must never fail a publish that genuinely succeeded.
+    $cands = @(
+      ("$($p.Out)" -replace '^D:/video/', '//NASTEAMV/Multimedia/' -replace '(?i)^D:\\video\\', '\\\\NASTEAMV\\Multimedia\\'),
+      "$($p.Out)"
+    )
+    $media = @($cands | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1)
+    if (-not $media.Count) { Say ("    [plex-title] poster skipped for '{0}' - file not found" -f $p.Title); continue }
+    try {
+      $dur = 0.0
+      [double]::TryParse("$(& $ffprobe -v error -show_entries format=duration -of csv=p=0 -- $media[0])".Trim(), [ref]$dur) | Out-Null
+      if ($dur -le 1) { Say ("    [plex-title] poster skipped for '{0}' - no usable duration" -f $p.Title); continue }
+      $at = [int]($dur * 0.40)
+      $jpg = Join-Path $tmp ("{0}.jpg" -f $p.RatingKey)
+      & $ffmpeg -hide_banner -loglevel error -ss $at -i $media[0] -frames:v 1 -q:v 3 $jpg -y 2>$null | Out-Null
+      if (-not (Test-Path -LiteralPath $jpg) -or (Get-Item -LiteralPath $jpg).Length -lt 4096) {
+        Say ("    [plex-title] poster skipped for '{0}' - frame extract failed or too small" -f $p.Title); continue
+      }
+      Invoke-RestMethod -Uri ("$base/library/metadata/$($p.RatingKey)/posters") -Headers $h -Method Post -InFile $jpg -ContentType 'image/jpeg' -TimeoutSec 60 | Out-Null
+      Say ("    [plex-title] poster regenerated from the file @{0}s: '{1}'" -f $at, $p.Title)
+    } catch {
+      Say ("    [plex-title] poster failed for '{0}': {1}" -f $p.Title, $_.Exception.Message)
+    }
+  }
+  Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 if (-not $WhatIf) { Write-Pending $Pending $stillPending }
 if ($set -or $failed -or $missing -or $lockedNow) {
   Say ("    [plex-title] {0} set, {1} already correct ({2} re-locked to stop agent drift), {3} not indexed yet (carried), {4} failed" -f `

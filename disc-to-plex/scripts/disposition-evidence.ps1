@@ -1180,7 +1180,22 @@ if ($pack.library) {
   if ($lb.plex -and $lb.plex.items) {
     foreach ($it in $lb.plex.items) {
       $tag = $(if ($null -ne $it.season) { ('S{0:D2}E{1:D2} ' -f [int]$it.season, [int]$it.episode) } else { '' })
-      foreach ($f in $it.files) { Add ("  {0}{1,-40} {2,10} s  {3,5}x{4,-4} {5,5} kbps {6} {7}  {8,14} B  {9}" -f $tag, ($it.title.Substring(0, [math]::Min(40, $it.title.Length))), (Fmt $f.durationSec), (Fmt $f.width), (Fmt $f.height), (Fmt $f.bitrateKbps), (Fmt $f.videoCodec), (Fmt $f.audioCodec), (Bytes $f.bytes), (Fmt $f.nasPath)) }
+      # DAR IS PRINTED because a published file can be the right resolution, the right bitrate and
+      # still WRONG: anamorphic SD stores a 16:9 picture in a 720x576 raster and relies on a flag to
+      # say how wide to display it. Flag it 4:3 and every player squashes the picture - faces come
+      # out narrow and tall - while width, height and bitrate all look perfect.
+      #
+      # `Porridge S00E04.mkv` ("Ronnie Barker Interview") sat in the library like that, and the
+      # re-rip quality scan could never have found it: the ratio was MEASURED here all along (see the
+      # -show_entries above, which has always asked for display_aspect_ratio) and simply never
+      # rendered, so no agent ever saw it. A measurement taken and not shown is not evidence.
+      # Plex's own Media.aspectRatio (a decimal - 1.33, 1.78), which is what the `files` records
+      # carry; the ffprobe DAR string lives on the separate nas-probe record. Either would do; this
+      # one is already beside the width/height on the very line being printed.
+      foreach ($f in $it.files) {
+        $darTxt = "$($f.aspectRatio)"; if (-not $darTxt) { $darTxt = '?' }
+        Add ("  {0}{1,-40} {2,10} s  {3,5}x{4,-4} DAR {5,-7} {6,5} kbps {7} {8}  {9,14} B  {10}" -f $tag, ($it.title.Substring(0, [math]::Min(40, $it.title.Length))), (Fmt $f.durationSec), (Fmt $f.width), (Fmt $f.height), $darTxt, (Fmt $f.bitrateKbps), (Fmt $f.videoCodec), (Fmt $f.audioCodec), (Bytes $f.bytes), (Fmt $f.nasPath))
+      }
       if ($it.streams) { foreach ($s in $it.streams) { Add ("        media {0} stream type={1} {2} lang={3} title='{4}' {5}{6}" -f $s.mediaId, $s.streamType, $s.codec, (Fmt $s.language), (Fmt $s.title), $(if ($s.width) { $s.width + 'x' + $s.height + ' ' + $s.frameRate + 'fps ' } else { '' }), $(if ($s.channels) { $s.channels + 'ch' } else { '' })) } }
       if ($it.extras) { foreach ($e in $it.extras) { foreach ($f in $e.files) { Add ("        extra '{0}' ({1}) {2} s  {3}" -f $e.title, (Fmt $e.subtype), (Fmt $f.durationSec), (Fmt $f.nasPath)) } } }
     }

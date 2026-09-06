@@ -61,7 +61,26 @@ Return ONLY a JSON array. No prose, no markdown fence. Each element:
 
 RULES
 - Correct only what is WRONG: mis-heard words that make no sense in context, and misspelled
-  character or actor names. "storks" heard as "stalks" is the target case.
+  PROPER NOUNS of any kind. "storks" heard as "stalks" is the target case.
+- THE WORD BOUNDARY CAN MOVE. Speech has no spaces in it, so a mis-hearing is not always one word
+  for one word: one word can be heard as two, or two as one. Every example above replaces a word
+  with a word, which is why this class was being missed entirely.
+      "rung corn"  -> "Runcorn"      (2 words -> 1: a town)
+      "in tents"   -> "intense"      (2 -> 1)
+      "a loud"     -> "aloud"        (2 -> 1)
+      "Newark"     -> "new ark"      (1 -> 2, the other direction)
+  Correct these the same way as any other mis-hearing: "from" is the exact text now, "to" is what
+  was actually said, and the word count may differ between them.
+- Proper nouns are NOT only the cast. The list below is characters and actors because that is what
+  can be supplied automatically, but places, towns, rivers, buildings, businesses, ships, regiments
+  and titles are mis-heard just as often and are just as wrong. The real example this pass missed
+  was both at once: "why do they bring clay all the way from rung corn? no they don't bring it from
+  rung corn" - a town, AND a boundary shift. Nothing in a cast list could have told you that; the
+  sentence could.
+- USE THE WHOLE TRANSCRIPT AS ITS OWN EVIDENCE. If a name appears several ways, they are almost
+  always ONE name, and the spelling that is a real place or person is the right one. In the example
+  above the correct "Runcorn" appears in the PREVIOUS cue. Reading the file as a whole is the point
+  of this pass - a dictionary cannot do it.
 - The "from" string MUST be copied character-for-character from the cue text. If you cannot quote
   it exactly, omit the correction. A proposal that does not match is discarded anyway.
 - Do NOT change style, punctuation, capitalisation, contractions or informal speech. This is
