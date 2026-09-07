@@ -79,6 +79,37 @@ if (Test-Path -LiteralPath $titleGuard) {
   }
 }
 
+# THIRD FAULT, SAME LOGIC: a DVD row that asks ffmpeg for the WRONG TITLE NUMBER. transcode.ps1
+# passes `title` straight to the dvdvideo demuxer as a 1-based dvdvideoTitle, so numbering the
+# chosen episodes 1..N - instead of using each one's true dvdvideoTitle - shifts every output by
+# however many leader/menu titles the selection skipped. 2026-09-07: two Tales of the Unexpected
+# Season 4 discs, manifested an hour apart by different agents; 7c5172b2 used titles 2..8 and
+# published, 38d2ed75 used 1..7 and quarantined all seven as .wrong-length after the encodes had
+# already run. The catalogue can settle it outright - it records each title's duration against its
+# dvdvideoTitle - so the disagreement is mechanical, not a matter of judgement.
+$numberingGuard = 'D:/video/.claude/skills/disc-to-plex/scripts/assert-dvd-title-numbering.ps1'
+if (Test-Path -LiteralPath $numberingGuard) {
+  & pwsh -NoProfile -File $numberingGuard -Manifest $Manifest
+  if ($LASTEXITCODE -ne 0) {
+    Write-Output ("gate REFUSED: {0} - DVD title numbers disagree with the disc catalogue by duration; every output would be shifted. Not queued." -f (Split-Path $Manifest -Leaf))
+    exit 2
+  }
+}
+
+# FOURTH FAULT, cheapest of the lot: an output NAME Windows cannot create. S04E01 "Would You
+# Believe It?" died as `Error opening output ...: Invalid argument` / ffmpeg exit -22, having
+# decoded nothing - and the line sat under fourteen lines of benign libdvdcss warnings that every
+# item on that disc printed, including the six that encoded fine. The episode was just absent from
+# Plex afterwards. Punctuated episode titles are ordinary, so this recurs.
+$pathGuard = 'D:/video/.claude/skills/disc-to-plex/scripts/assert-output-paths-legal.ps1'
+if (Test-Path -LiteralPath $pathGuard) {
+  & pwsh -NoProfile -File $pathGuard -Manifest $Manifest
+  if ($LASTEXITCODE -ne 0) {
+    Write-Output ("gate REFUSED: {0} - an output filename cannot be created on Windows. Not queued." -f (Split-Path $Manifest -Leaf))
+    exit 2
+  }
+}
+
 # THE LEDGER. Record WHICH manifest passed and WHAT IT CONTAINED when it did.
 #
 # The hash matters, not just the name: without it, gating an empty placeholder and then writing the

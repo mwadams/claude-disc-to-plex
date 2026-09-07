@@ -46,6 +46,10 @@ param(
   # caller sees exactly the same printed output as before.
   [string]$StateFile = 'D:/video/_stallwatch-state.json',
   [string]$ReclaimRoot = 'D:/video/_reclaim-queue',
+  # Hours a CONFIRMED reclaim may sit in RETRY before the board calls it stuck. 6 h is comfortably
+  # longer than any legitimate wait for a publish or an OCR pass, and far shorter than the four
+  # DAYS Azkaban went unnoticed on 2026-09-07.
+  [double]$ReclaimRetryWarnHours = 6,
   # Written by discharge-rerip.ps1: re-rip rows that PUBLISHED but delivered fewer than owed.
   [string]$DischargePending = 'D:/video/_rerip-discharge-pending.json',
   # A .dispositioning / .authoring marker older than this with nothing written reads as an agent
@@ -97,7 +101,7 @@ $stalls = @()
 $held   = @()
 $moving = @()
 # Collected for the state file (see -StateFile): what the alarm can name without re-parsing prose.
-$needsValidation = @(); $briefsReady = @(); $reclaimFailed = @(); $reclaimFailedStale = @(); $dischargePendingNames = @()
+$needsValidation = @(); $briefsReady = @(); $reclaimFailed = @(); $reclaimFailedStale = @(); $reclaimStuck = @(); $dischargePendingNames = @()
 # ONE BRIEF READY LINE PER BATCH, NOT PER UNIT (2026-09-04). _dispositions-loop.ps1 briefs the discs
 # of one work to ONE agent and saves the SAME brief under each member's name, so this board saw a
 # brief per unit and printed a "spawn an agent with: Follow the brief at ..." line per unit - two
@@ -610,6 +614,36 @@ if (Test-Path -LiteralPath $rqRoot) {
     $rqAlive = [System.Threading.Mutex]::TryOpenExisting(('Global' + [char]92 + 'video-reclaim-loop'), [ref]$rqH)
     if ($rqH) { $rqH.Dispose() }
   } catch { $rqAlive = $false }
+  # A RETRY THAT NEVER RESOLVES IS A STALL, AND NOTHING WAS MEASURING ITS AGE.
+  #
+  # failed/ is watched above because a refusal is loud. RETRY is the quiet one: the artefact stays
+  # in the queue, the loop rewrites its .status.txt every pass, and "will retry" at four days looks
+  # identical to "will retry" at four minutes. 2026-09-07: Harry Potter and the Prisoner of Azkaban
+  # was confirmed at 02:55 on 09-03 and had been returning RETRY ever since - two Deleted Scenes
+  # whose OCR was already recorded EXHAUSTED, so the sidecar it waited for was never coming. The
+  # operator asked the right question: "why did that not either alert you to needing to take action
+  # or automatically take action". Nothing did, because RETRY was modelled as transient and no
+  # clock was attached to it.
+  #
+  # A confirmation the operator has already given, sitting unexecuted, is exactly the class of
+  # thing this board exists to surface: it is work owed by US, and every hour it waits is staging
+  # not released.
+  foreach ($q in $rqPending) {
+    $st = Join-Path $q.DirectoryName ($q.BaseName + '.status.txt')
+    $since = $q.LastWriteTime
+    $why = ''
+    if (Test-Path -LiteralPath $st -PathType Leaf) {
+      $lines = @(Get-Content -LiteralPath $st -ErrorAction SilentlyContinue | Where-Object { $_ -match '^\s*(pending|refused|blocked)\s*:' })
+      if ($lines.Count) { $why = ($lines[-1] -replace '^\s*\w+\s*:\s*', '').Trim() }
+    }
+    $ageH = [math]::Round(((Get-Date) - $since).TotalHours, 1)
+    if ($ageH -ge $ReclaimRetryWarnHours) {
+      Write-Output ("*** RECLAIM STUCK: {0} - a CONFIRMED reclaim has been retrying for {1} h. This is OURS to clear, not the operator's to re-confirm." -f $q.Name, $ageH)
+      if ($why) { Write-Output ("       blocked on: {0}" -f $why) }
+      $reclaimStuck += $q.Name
+    }
+  }
+
   # A FAILED ARTEFACT CAN BE SUPERSEDED RATHER THAN RETRYABLE, AND SAYING "RETRY IT" IS THEN WRONG.
   #
   # This line is permanent: failed/ is never emptied, so every refusal is re-announced forever with
@@ -721,3 +755,4 @@ if ($StateFile) {
   }
   try { ($stateDoc | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $StateFile -Encoding UTF8 } catch { }
 }
+

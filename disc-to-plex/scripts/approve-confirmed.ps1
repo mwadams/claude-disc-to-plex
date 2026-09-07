@@ -109,12 +109,41 @@ foreach ($area in 'Movies', 'Television Shows') {
   $root = Join-Path $VideoRoot $area
   if (-not (Test-Path -LiteralPath $root)) { continue }
   foreach ($d in (Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue)) {
-    $n = @(Get-ChildItem -LiteralPath $d.FullName -Recurse -File -ErrorAction SilentlyContinue |
-           Where-Object { $_.Extension -in '.mkv', '.mp4', '.m4v', '.avi' }).Count
-    if ($n -gt 0) { $localWorks[$d.Name] = $n }
+    # KEEP THE FILES, NOT JUST THE COUNT. What is actually being confirmed is these files, and
+    # naming only the WORK invites the operator to confirm the wrong thing - see the listing below.
+    $files = @(Get-ChildItem -LiteralPath $d.FullName -Recurse -File -ErrorAction SilentlyContinue |
+               Where-Object { $_.Extension -in '.mkv', '.mp4', '.m4v', '.avi' })
+    if ($files.Count -gt 0) { $localWorks[$d.Name] = $files }
   }
 }
 $pending = @($pending | Where-Object { $localWorks.ContainsKey($_.Work) })
+
+# NEVER ASK TWICE FOR A NOD ALREADY GIVEN.
+# "Local files remain" is not the same question as "does the operator still owe a confirmation".
+# A work whose artefact is already in _reclaim-queue has been confirmed; its files remain only
+# because a RELEASE GATE is refusing - and that refusal is ours to clear, not theirs to re-answer.
+# 2026-09-07: Harry Potter and the Prisoner of Azkaban was confirmed at 02:55, and the reclaim has
+# been returning RETRY ever since ("2 file(s) still held by the per-file gate") because two Deleted
+# Scenes carry a dvd_subtitle stream and never got their .eng.srt. This script went on listing it as
+# awaiting confirmation, so the operator confirmed it FOUR times - the exact wall of noise the
+# self-clearing above exists to prevent, just from the other end.
+# So: partition. Still-owed goes in the list; already-confirmed-but-stuck is reported separately,
+# WITH the reason, because that is a work item for us.
+$confirmedWorks = @{}
+$rq = Join-Path $VideoRoot '_reclaim-queue'
+foreach ($a in (Get-ChildItem -LiteralPath $rq -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
+  try { $art = Get-Content -LiteralPath $a.FullName -Raw | ConvertFrom-Json } catch { continue }
+  $status = [IO.Path]::ChangeExtension($a.FullName, $null) + 'status.txt'
+  $why = ''
+  if (Test-Path -LiteralPath $status) {
+    $line = @(Get-Content -LiteralPath $status -ErrorAction SilentlyContinue | Where-Object { $_ -match '^\s*(pending|refused|blocked)\s*:' })
+    if ($line.Count) { $why = ($line[-1] -replace '^\s*\w+\s*:\s*', '').Trim() }
+  }
+  foreach ($w in @($art.works)) { if ($w) { $confirmedWorks["$w"] = @{ When = $a.LastWriteTime; Why = $why } } }
+}
+
+$stuck   = @($pending | Where-Object { $confirmedWorks.ContainsKey($_.Work) })
+$pending = @($pending | Where-Object { -not $confirmedWorks.ContainsKey($_.Work) })
 $pendingNames = @($pending | ForEach-Object { $_.Work } | Sort-Object -Unique)
 
 # ---- staging currently held, so the LIST shows the real prize -------------------------------------
@@ -128,8 +157,39 @@ if (Test-Path -LiteralPath $stage) {
 if (-not $Work.Count -and -not $All) {
   Write-Output "AWAITING YOUR CONFIRMATION - $($pendingNames.Count) work(s):"
   if (-not $pendingNames.Count) { Write-Output '   (none)' }
-  foreach ($p in ($pending | Sort-Object When)) { Write-Output ("   {0,-42} published {1}" -f $p.Work, $p.When) }
+  # NAME THE FILES. A work name alone is not the question being asked.
+  #
+  # 2026-09-07, in the operator's own words: "my confirmation was also incorrect. Because you just
+  # gave me a film title, I assumed you were asking for the feature. In fact, you were asking to
+  # confirm a specific set of extras which you did not list."
+  #
+  # Exactly so. The reclaim releases the LOCAL FILES that remain, and for a work published in
+  # stages those are usually a handful of late extras, not the feature - Azkaban's feature went to
+  # the NAS days before the two Deleted Scenes this gate was actually holding. Asked "is Harry
+  # Potter and the Prisoner of Azkaban in Plex?", anyone reasonably checks the film, sees it, and
+  # says yes. The confirmation then attaches to evidence nobody looked at, which is precisely the
+  # failure a human gate exists to prevent. So print what will be released, and check THOSE.
+  foreach ($p in ($pending | Sort-Object When)) {
+    Write-Output ("   {0,-42} published {1}" -f $p.Work, $p.When)
+    $fl = @($localWorks[$p.Work])
+    foreach ($f in ($fl | Sort-Object FullName)) {
+      $rel = $f.FullName -replace [regex]::Escape((Join-Path $VideoRoot '')), ''
+      $rel = ($rel -split '\\', 3)[-1]      # drop "Movies\<work>\" / "Television Shows\<work>\"
+      Write-Output ("        {0,8:N1} MB  {1}" -f ($f.Length / 1MB), $rel)
+    }
+    Write-Output ("        ^ CONFIRM THESE {0} file(s) in Plex - not the work as a whole. They are what the reclaim releases." -f $fl.Count)
+  }
   Write-Output ''
+  if ($stuck.Count) {
+    Write-Output "ALREADY CONFIRMED BY YOU - blocked downstream, do NOT confirm again ($($stuck.Count)):"
+    foreach ($s in ($stuck | Sort-Object Work)) {
+      $c = $confirmedWorks[$s.Work]
+      Write-Output ("   {0,-42} confirmed {1:MM-dd HH:mm}" -f $s.Work, $c.When)
+      if ($c.Why) { Write-Output ("        blocked: {0}" -f $c.Why) }
+    }
+    Write-Output '   These are OURS to clear, not yours to re-answer.'
+    Write-Output ''
+  }
   Write-Output ("_stage currently holds {0} GB. Approving a work releases its local published copies AND -" -f $stagedGB)
   Write-Output '   because this writes deriveUnits:true - the staging of every unit of that work whose outputs'
   Write-Output '   are all delivered and byte-verified. That second part is what hand-written artefacts missed.'

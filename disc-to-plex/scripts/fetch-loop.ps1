@@ -116,9 +116,52 @@ while ($true) {
   }
 
   $freeGB = [math]::Round([IO.DriveInfo]::new('D').AvailableFreeSpace / 1GB, 1)
-  if ($freeGB -lt $FloorGB) {
-    Write-Output ("[{0}] {1} GB free, floor {2} - holding, {3} disc(s) still to stage" -f `
-                  (Get-Date -Format 'HH:mm:ss'), $freeGB, $FloorGB, $left.Count)
+
+  # RESERVE ROOM FOR A FINISHED OPTICAL RIP, OR THIS LOOP STARVES THE OPTICAL LANE FOR EVER.
+  #
+  # Both tracks used the same 120 GB floor but tested it differently: this loop holds when
+  # `free < floor`, so it happily starts a disc at 120 GB and ends near 113; the optical handover
+  # (stage-optical-archives.ps1) holds when `free - need < floor`, so for a 6.94 GB archive it
+  # needs 127 GB. Our go-condition is satisfied exactly where theirs is not, so fetch wins every
+  # race - not occasionally, systematically.
+  #
+  # 2026-09-07: DVDVolume-0e950c46 verified at 04:32 and could not be handed over. A reclaim then
+  # freed 40 GB at 04:43, and this loop spent all of it on Sherlock Holmes discs 2-4 within ten
+  # minutes, leaving 118.2 GB - below the optical lane's threshold again. The archive sat on C:.
+  #
+  # The asymmetry matters: a fetch from E: is repeatable at any time, while an optical archive is a
+  # ~77-minute rip of a PHYSICAL disc sitting on a small C: volume with its own 15 GB floor. If one
+  # of the two has to wait, it must be this one. So raise our floor by whatever is waiting to come
+  # across, and let the optical lane through first.
+  $opticalReserveGB = 0.0
+  try {
+    $arch = 'C:/Users/matth/Videos/DVD'
+    if (Test-Path -LiteralPath $arch) {
+      $stagedNames = @{}
+      foreach ($ln in (Get-Content -LiteralPath 'D:/video/_optical-staged.tsv' -ErrorAction SilentlyContinue)) {
+        $n = ("$ln" -split "`t")[0]; if ($n) { $stagedNames[$n.Trim()] = $true }
+      }
+      foreach ($d in (Get-ChildItem -LiteralPath $arch -Directory -ErrorAction SilentlyContinue)) {
+        # Only COMPLETE archives count: a *.partial-* folder is a rip still running, and reserving
+        # for it would hold this loop for the whole 77 minutes rather than for the handover.
+        if ($d.Name -like '*.partial-*' -or $d.Name -eq '_failed') { continue }
+        if ($stagedNames.ContainsKey($d.Name)) { continue }
+        if (Test-Path -LiteralPath (Join-Path $d.FullName '_stage')) { continue }
+        $b = (Get-ChildItem -LiteralPath $d.FullName -Recurse -File -ErrorAction SilentlyContinue |
+              Measure-Object Length -Sum).Sum
+        $opticalReserveGB += [double]$b / 1GB
+      }
+    }
+  } catch { $opticalReserveGB = 0.0 }
+  # Capped, so a backlog of archives can never stop fetching altogether - the reserve exists to let
+  # the NEXT handover through, not to park this track behind an unbounded queue.
+  if ($opticalReserveGB -gt 50) { $opticalReserveGB = 50 }
+  $effectiveFloor = [math]::Round($FloorGB + $opticalReserveGB, 1)
+
+  if ($freeGB -lt $effectiveFloor) {
+    $note = if ($opticalReserveGB -gt 0) { " (floor {0} + {1:N2} GB reserved for a finished optical rip waiting to be staged)" -f $FloorGB, $opticalReserveGB } else { '' }
+    Write-Output ("[{0}] {1} GB free, floor {2}{3} - holding, {4} disc(s) still to stage" -f `
+                  (Get-Date -Format 'HH:mm:ss'), $freeGB, $effectiveFloor, $note, $left.Count)
     Start-Sleep -Seconds 120
     continue
   }

@@ -96,7 +96,21 @@ if (-not $Force -and (Test-Path -LiteralPath $outJson) -and (Test-Path -LiteralP
   foreach ($dep in @($catPath, $discInfoLog)) {
     if ((Test-Path -LiteralPath $dep) -and (Get-Item -LiteralPath $dep).LastWriteTimeUtc -gt $packTime) { $newer += $dep }
   }
+  # A CACHE HIT MUST PROVE THE FILE IS USABLE, NOT MERELY THAT IT EXISTS.
+  # DVDVolume-caa42d32 (2026-09-07) cached a pack that was two JSON documents concatenated. Every
+  # caller then failed with "did not parse as JSON" and every retry served the same corrupt file
+  # back, so the unit was permanently un-dispositionable without a hand-run -Force. Freshness was
+  # checked; validity never was. Parsing it costs milliseconds and turns a permanent poisoning
+  # into one extra rebuild.
+  $usable = $true
   if ($newer.Count -eq 0) {
+    try { $null = Get-Content -LiteralPath $outJson -Raw | ConvertFrom-Json }
+    catch {
+      $usable = $false
+      Write-Output ("cached pack does NOT parse as JSON ({0}) - regenerating rather than serving it" -f $_.Exception.Message)
+    }
+  }
+  if ($newer.Count -eq 0 -and $usable) {
     Write-Output ("CACHED: {0} (written {1}); -Force to regenerate. Read: {2}" -f $outJson, $packTime.ToLocalTime().ToString('s'), $outTxt)
     exit 0
   }
@@ -1251,10 +1265,29 @@ Add ''
 Add ("UNAVAILABLE ({0}) - repeated so it is not missed: {1}" -f $unavailable.Count, $(if ($unavailable.Count) { (($unavailable | ForEach-Object { $_.measurement }) -join ', ') } else { 'none' }))
 
 # ---------------------------------------------------------------------------------- write
-$tmpJson = $outJson + '.tmp'
+# THE TEMP NAME MUST BE UNIQUE PER PROCESS, NOT PER UNIT.
+#
+# `$outJson + '.tmp'` is atomic against a READER - the rename publishes a whole file or nothing -
+# but it is NOT atomic against a second WRITER of the same unit: both processes open the SAME temp
+# path, their output interleaves, and the rename then publishes the mess as if it were sound.
+#
+# 2026-09-07, DVDVolume-caa42d32. Two evidence builds ran concurrently (106 s and 90 s, both
+# finishing at 04:32:32). Each logged "EVIDENCE PACK WRITTEN ... 260 lines; 6 UNAVAILABLE" and
+# exited 0. The file was two JSON documents concatenated - 118,416 bytes against a healthy
+# sibling's 208,515 - and every later run failed with "did not parse as JSON", CACHED on the
+# corrupt pack, so the unit could never be dispositioned again without -Force. A poisoned cache
+# that reports success is the worst shape a failure can take.
+#
+# PID + ticks makes concurrent writers land on different temp files; the last rename wins and
+# whichever pack survives is internally consistent, because the two never share a buffer.
+$tmpJson = '{0}.{1}.{2}.tmp' -f $outJson, $PID, [DateTime]::UtcNow.Ticks
 $pack | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath $tmpJson -Encoding UTF8
 Move-Item -LiteralPath $tmpJson -Destination $outJson -Force
-Set-Content -LiteralPath $outTxt -Value ($L -join "`n") -Encoding UTF8
+
+# Same hazard, same fix: two writers straight into $outTxt truncate and interleave each other.
+$tmpTxt = '{0}.{1}.{2}.tmp' -f $outTxt, $PID, [DateTime]::UtcNow.Ticks
+Set-Content -LiteralPath $tmpTxt -Value ($L -join "`n") -Encoding UTF8
+Move-Item -LiteralPath $tmpTxt -Destination $outTxt -Force
 Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
 Log ("wrote {0} and {1}; {2} UNAVAILABLE; runtime {3} s" -f $outJson, $outTxt, $unavailable.Count, $pack.runtimeSeconds)
 Write-Output ("EVIDENCE PACK WRITTEN: {0}  ({1} lines; {2} UNAVAILABLE; {3} s)" -f $outTxt, $L.Count, $unavailable.Count, $pack.runtimeSeconds)
