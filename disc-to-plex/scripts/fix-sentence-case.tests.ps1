@@ -63,6 +63,24 @@ $once = Set-SentenceCase 'the boat. why not?'
 Check 'second pass changes nothing' (Set-SentenceCase $once) $once
 
 Write-Output ''
+Write-Output '7. A CUE IS NOT A SENTENCE - the cross-cue rule'
+# THE DEFECT THIS LOCKS DOWN. Every cue used to be treated as a sentence start, so the first letter
+# of each was capitalised unconditionally. A sentence routinely runs across two or three cues, so
+# this wrongly capitalised mid-sentence words at every boundary: measured against a true pre-pass
+# original on 2026-09-07 (Tales S03E04), 80 in ONE file - "...restaurants and nightclubs," followed
+# by "and there he feeds" became "And there he feeds". Every file in a 60-file sample was affected.
+# The operator's rule: only a previous cue ending in TERMINAL PUNCTUATION licenses a capital.
+Check 'continues after a comma'      (Set-SentenceCase 'and there he feeds upon titbits' -StartsSentence $false) 'and there he feeds upon titbits'
+Check 'continues after no punctuation'(Set-SentenceCase 'by a host of amateur legmen.' -StartsSentence $false)  'by a host of amateur legmen.'
+Check 'starts after a full stop'     (Set-SentenceCase 'or, best of all, royalty.' -StartsSentence $true)        'Or, best of all, royalty.'
+# A continuation still capitalises a LATER sentence that begins inside the same cue.
+Check 'later sentence inside a continuation' (Set-SentenceCase 'so long as it stays benign. then it turns.' -StartsSentence $false) 'so long as it stays benign. Then it turns.'
+# "i" is positional-independent and must still be fixed inside a continuation.
+Check 'pronoun inside a continuation' (Set-SentenceCase 'and i said no.' -StartsSentence $false) 'and I said no.'
+# Default must remain "starts a sentence", so single-string callers are unaffected.
+Check 'default is a sentence start'   (Set-SentenceCase 'the boat.') 'The boat.'
+
+Write-Output ''
 if ($fails) { Write-Output "$fails test(s) FAILED"; exit 1 }
 Write-Output 'all tests passed'
 exit 0

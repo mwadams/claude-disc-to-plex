@@ -31,9 +31,25 @@
   joined text; the original line breaks are then restored.
 
 .SAFETY
-  The original is copied to D:/video/_correction-originals/ before anything is written, mirroring
-  the path - the same convention _correct-loop.ps1 uses. The provenance gains a `sentenceCasePass`
-  block recording how many lines changed, so the work is auditable and a second run is a no-op.
+  The original is copied to **D:/video/_correction-originals/_pre-sentence-case/**, mirroring the
+  path, before this pass writes anything - and only if THIS pass has not already backed that file
+  up. That is a true snapshot of the file as this pass found it.
+
+  ⚠ IT DID NOT USED TO BE. Until 2026-09-07 this defaulted to `_correction-originals` itself, which
+  is _correct-loop.ps1's tree for PRE-CORRECTION text. Sharing one path across two passes made the
+  "copy only if absent" rule mean the wrong thing: an already-corrected file had a backup, so this
+  pass wrote none, and the pre-sentence-case state was never captured. A 329-file bulk run was then
+  started believing every file was recoverable - the SAFETY note said "the original is copied
+  before anything is written", with no mention of the condition. Only 3 files had a usable snapshot.
+  The other 326 are unrecoverable to their pre-pass text; see follow-up.md for that day's entry.
+
+  Two consequences worth carrying:
+    * a backup location must belong to ONE writer, or "already backed up" is ambiguous;
+    * before any BULK run, take your own verified backup anyway - hash-checked, with a manifest.
+      A per-file copy taken inside the modifying loop is only ever as complete as that loop's run.
+
+  The provenance gains a `sentenceCasePass` block recording how many lines changed, so the work is
+  auditable and a second run is a no-op.
 
   pwsh -NoProfile -File fix-sentence-case.ps1 -Srt '\\NAS\...\X.eng.srt' -WhatIf
   pwsh -NoProfile -File fix-sentence-case.ps1 -Dir '\\NAS\...\Season 01'
@@ -41,18 +57,39 @@
 param(
   [string]$Srt,
   [string]$Dir,
-  [string]$BackupRoot = 'D:/video/_correction-originals',
+  # ITS OWN LOCATION, NOT THE CORRECTION PASS'S.
+  # This defaulted to `_correction-originals`, which is where _correct-loop.ps1 puts PRE-CORRECTION
+  # text. Two passes sharing one backup path means the second can never take a snapshot: the copy is
+  # written only if none exists, so an already-corrected file kept its pre-correction backup and the
+  # pre-SENTENCE-CASE state was silently never captured. That is what made the 2026-09-07 bulk run
+  # irreversible for 326 of 329 files. Each pass now owns its own tree, so "only if none exists"
+  # means "only if THIS pass has not already backed this file up" - which is what it always meant.
+  [string]$BackupRoot = 'D:/video/_correction-originals/_pre-sentence-case',
   [switch]$Force,
   [switch]$WhatIf
 )
 $ErrorActionPreference = 'Stop'
 if (-not $Srt -and -not $Dir) { throw 'give -Srt <file> or -Dir <folder>' }
 
-function Set-SentenceCase([string]$text) {
-  # Capitalise the first letter, and the first letter after sentence-final punctuation. Closing
-  # quotes/brackets may intervene ( ." -> Next ). Only ever raises case.
+function Set-SentenceCase([string]$text, [bool]$StartsSentence = $true) {
+  # Capitalise the first letter of a SENTENCE, and the first letter after sentence-final
+  # punctuation. Closing quotes/brackets may intervene ( ." -> Next ). Only ever raises case.
+  #
+  # $StartsSentence says whether this cue BEGINS a sentence. It is false when the previous cue
+  # ended mid-sentence, and getting that wrong is the defect this parameter exists to prevent:
+  #
+  #   A SUBTITLE CUE IS NOT A SENTENCE. Cues are timing units; a sentence routinely runs across
+  #   two or three of them. This function used to assume every cue started a sentence, so it
+  #   capitalised the first letter of EVERY cue unconditionally. Measured 2026-09-07 on one file
+  #   (Tales S03E04) against its pre-pass backup: 80 words wrongly capitalised mid-sentence -
+  #   "restaurants and nightclubs," / "And there he feeds", "dropped to him" / "By a host of",
+  #   "rich dukes and duchesses," / "Or, best of all". Across a 60-file sample, EVERY file was
+  #   affected, 2,525 instances.
+  #
+  #   The rule, as the operator put it: "Only if we had a terminating punctuation mark at the end
+  #   of the previous cue block should we be capitalizing the start of the next."
   $sb = [Text.StringBuilder]::new($text)
-  $expectCap = $true
+  $expectCap = $StartsSentence
   for ($i = 0; $i -lt $sb.Length; $i++) {
     $ch = $sb[$i]
     if ($expectCap -and [char]::IsLetter($ch)) {
@@ -92,6 +129,7 @@ function Invoke-One([string]$path) {
   $out = [string[]]::new($lines.Length)
   $changed = 0
   $i = 0
+  $startsSentence = $true   # the first cue of a file begins a sentence; after that, see below
   while ($i -lt $lines.Length) {
     $out[$i] = $lines[$i]
     # an index line, a timestamp line, or a blank: copied through untouched
@@ -101,8 +139,16 @@ function Invoke-One([string]$path) {
     while ($i -lt $lines.Length -and -not [string]::IsNullOrWhiteSpace($lines[$i]) -and $lines[$i] -notmatch '^\d\d:\d\d:\d\d') { $i++ }
     $block = @($lines[$start..($i - 1)])
     $joined = ($block -join "`n")
-    $fixed = Set-SentenceCase $joined
+    # CARRY THE SENTENCE STATE ACROSS THE CUE BOUNDARY. The first cue of the file starts a
+    # sentence; every later cue does so only if the PREVIOUS cue's text ended in terminal
+    # punctuation (allowing a closing quote or bracket, and an ellipsis, to follow).
+    $fixed = Set-SentenceCase $joined -StartsSentence $startsSentence
     $split = $fixed -split "`n"
+    # State for the NEXT cue, taken from what this cue actually ends with. An ellipsis is treated
+    # as NOT terminating: "..." at a cue end is the standard subtitle convention for a sentence
+    # deliberately continued into the next cue, which is precisely the case in question.
+    $tail = ($split -join "`n").TrimEnd()
+    $startsSentence = ($tail -match '(?<!\.)[.!?]["'')\]]?\s*$') -or ($tail -match '[.!?]{2}["'')\]]?\s*$' -and $tail -notmatch '\.\.\.\s*$')
     for ($k = 0; $k -lt $block.Count; $k++) {
       $out[$start + $k] = $split[$k]
       if ($split[$k] -cne $block[$k]) { $changed++ }

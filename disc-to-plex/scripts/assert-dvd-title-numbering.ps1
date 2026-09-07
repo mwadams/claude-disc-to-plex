@@ -42,6 +42,7 @@
 param(
   [Parameter(Mandatory)][string]$Manifest,
   [string]$Catalogue = 'D:/video/_catalogue',
+  [string]$Stage = 'D:/video/_stage',
   [double]$ToleranceSec = 3.0,
   [switch]$Quiet
 )
@@ -106,6 +107,39 @@ if (-not $bad.Count) {
   exit 0
 }
 
+# REFUSE ONLY ON THE SHIFT SIGNATURE. A row that matches NO nearby title is not a numbering error.
+#
+# The catalogue records MakeMKV's declared length; transcode.ps1 checks the length ffmpeg actually
+# EMITS, and the dvdvideo demuxer is known to under-declare (see CLAUDE.md). So a small unexplained
+# delta is usually the demuxer, not the manifest - and refusing on it blocks correct work.
+#
+# 2026-09-07: this guard refused Lawrence of Arabia Disk 2 because one row declared 3,689.0 s while
+# the catalogue said 3,677 (1:01:17) and the dispositions independently said 61:17. It looked like a
+# clear error. It was not: `ffprobe -f dvdvideo -title 3` on the staged disc returns exactly
+# 3689.000000. The manifest was right, MakeMKV's figure was 12 s short, and my guard escalated a
+# good manifest to NEEDS-VALIDATION where it sat until a human asked.
+#
+# The off-by-one this guard exists for has an unmistakable signature: the recorded duration matches
+# a DIFFERENT title, consistently across rows. That is what gets refused. Anything else is reported
+# loudly and allowed through, because transcode.ps1's own duration gate is the authority on emitted
+# length and it runs anyway - quarantining a bad encode rather than shipping it.
+$shifted   = @($bad | Where-Object { $null -ne $_.Shift })
+$unmatched = @($bad | Where-Object { $null -eq $_.Shift })
+
+if (-not $shifted.Count) {
+  Say ("assert-dvd-title-numbering: PASS WITH WARNINGS - {0} of {1} DVD row(s) of '{2}' do not match the catalogue, but NONE matches another title, so this is not a numbering shift:" -f $unmatched.Count, $dvd.Count, $unit)
+  foreach ($b in $unmatched) {
+    Say ("   title {0,-3} expectSeconds {1,8:N1}  catalogue says {2}" -f $b.Title, $b.Expect, $b.Here)
+    Say ("        {0}" -f $b.Out)
+  }
+  Say  '   Most often the dvdvideo demuxer under-declaring: the catalogue holds MakeMKV''s figure while'
+  Say  '   the manifest holds the emitted length. Verify with:'
+  Say ("      ffprobe -v error -f dvdvideo -title <N> -i '{0}' -show_entries format=duration -of csv=p=0" -f ((Join-Path $Stage $unit) -replace '\\','/'))
+  Say  '   transcode.ps1 checks the EMITTED duration regardless and quarantines a wrong-length output,'
+  Say  '   so this is not gated here. Not refused.'
+  exit 0
+}
+
 Say ("assert-dvd-title-numbering: REFUSED - {0} of {1} DVD row(s) of '{2}' ask for a title whose catalogue duration is not the one recorded:" -f $bad.Count, $dvd.Count, $unit)
 foreach ($b in $bad) {
   Say ("   title {0,-3} expectSeconds {1,8:N1}  catalogue says {2,-14} {3}" -f $b.Title, $b.Expect, $b.Here,
@@ -129,3 +163,4 @@ if ($offsets.Count -eq $bad.Count -and $uniq.Count -eq 1) {
   Say  '   true dvdvideoTitle - short leader/menu titles the selection skipped still occupy numbers.'
 }
 exit 2
+
