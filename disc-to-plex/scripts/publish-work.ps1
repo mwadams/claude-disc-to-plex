@@ -232,16 +232,92 @@ if (-not (Get-Command Test-BitmapSubsPopulated -ErrorAction SilentlyContinue)) {
   throw 'lib-subtitles.ps1 failed to load - refusing to publish with the subtitle gate undefined'
 }
 if (-not $SkipSubtitleCheck) {
-  $awaiting = @()
-  foreach ($f in $local | Where-Object { $_.Extension -eq '.mkv' }) {
-    $sidecar = [IO.Path]::ChangeExtension($f.FullName, $null) + 'eng.srt'
-    if (Test-Path -LiteralPath $sidecar) { continue }
-    if (Test-BitmapSubsPopulated -Path $f.FullName -Ffprobe $ffprobe) { $awaiting += $f.Name }
+  # THE DECISION IS PER WORK, AND IT COMES FROM THE PLAN - not from inspecting the folder.
+  #
+  # Operator direction 2026-09-07: publication should trigger deterministically when a work's whole
+  # SCHEDULED set is complete, "rather than a hard gate on the individual folders themselves".
+  #
+  # WHY THAT IS THE RIGHT SHAPE. Everything this gate used to do was inference from the filesystem -
+  # "does ffprobe return a duration", "is there a sidecar beside it" - which cannot distinguish
+  # "this work is finished" from "this is all that happens to exist right now". A folder scan has no
+  # idea how many files the work is SUPPOSED to contain, so the only safe reading of a shortfall was
+  # to refuse everything, which is why the gate was blunt and why one un-OCR'd file held back
+  # sixty-two finished ones. An earlier fix of mine made it skip-and-publish-the-rest; that treated
+  # the symptom and made publication MORE folder-driven, the opposite direction. Reverted.
+  #
+  # The manifest already says exactly what the work comprises: one `out` per row. So ask the plan.
+  # A work is publishable when EVERY declared output exists locally with its subtitle situation
+  # RESOLVED - a sidecar present, or provably impossible (Test-BitmapSubsPopulated: a declared
+  # bitmap track with no packets, or one OCR has already rejected). Otherwise nothing publishes and
+  # the report names precisely what is outstanding and why.
+  #
+  # FALLS BACK, DELIBERATELY. A work with no manifest declaring into its folder cannot be judged
+  # from the plan - legacy content, hand-built items, subtitles-only republishes. For those the old
+  # per-file question is still the best available, so it is asked, unchanged.
+  # $LocalRoot, not $VideoRoot - this script has no such parameter, and Join-Path on a null root
+  # yields a relative path that silently matches nothing, so the plan would look EMPTY and every
+  # work would fall through to the per-file branch. A gate that fails open is the failure mode the
+  # dot-source check above exists to prevent; the same care applies to a path built from a variable.
+  $workOut = (Resolve-Path -LiteralPath $src).Path.TrimEnd('\')
+  $declared = @()
+  # THE PLAN IS EVERY GATED MANIFEST, WHEREVER IT NOW SITS - not just the ones that finished.
+  #
+  # Reading `done\` alone was wrong, and Moulin Rouge showed why within minutes of writing it: the
+  # feature disc's manifest sits in done\ declaring 9 outputs, while the EXTRAS disc's manifest -
+  # 55 more - had been moved to failed\ because one still-gallery item could not be built
+  # (build-still-slideshow.py exit 2: a duplicate page). 54 of its 55 outputs were on disk. A gate
+  # reading only done\ would have concluded the plan was 9 items, seen all 9 present, and published
+  # a work that is 54 files short of its plan - the exact premature publish this design exists to
+  # prevent, arrived at by looking in the wrong place.
+  #
+  # A manifest that is queued, running, done OR failed has been GATED, and everything it declares is
+  # owed. `failed` especially: a failed job is unfinished work, not cancelled work.
+  $queueDirs = @('_queue', '_queue\running', '_queue\done', '_queue\failed') |
+               ForEach-Object { Join-Path $LocalRoot $_ } |
+               Where-Object { Test-Path -LiteralPath $_ -PathType Container }
+  if (-not $queueDirs) {
+    throw "no queue directories found under '$LocalRoot' - refusing to publish with the plan-based gate unable to read the plan"
   }
-  if ($awaiting) {
-    Write-Warning ("REFUSING: {0} file(s) have bitmap subtitles but no OCR sidecar yet - run ocr-subtitles.ps1 first, or pass -SkipSubtitleCheck:" -f $awaiting.Count)
-    $awaiting | ForEach-Object { Write-Warning "    $_" }
-    exit 2
+  foreach ($mf in @($queueDirs | ForEach-Object { Get-ChildItem -LiteralPath $_ -Filter *.json -File -ErrorAction SilentlyContinue })) {
+    try { $rows = @(Get-Content -LiteralPath $mf.FullName -Raw | ConvertFrom-Json) } catch { continue }
+    foreach ($r in $rows) {
+      $o = "$($r.out)" -replace '/', '\'
+      if ($o -and $o.StartsWith($workOut, [StringComparison]::OrdinalIgnoreCase)) { $declared += $o }
+    }
+  }
+  $declared = @($declared | Sort-Object -Unique)
+
+  if ($declared.Count) {
+    $missing  = @($declared | Where-Object { -not (Test-Path -LiteralPath $_) })
+    $awaiting = @()
+    foreach ($o in @($declared | Where-Object { Test-Path -LiteralPath $_ })) {
+      if ([IO.Path]::GetExtension($o) -ne '.mkv') { continue }
+      $sidecar = [IO.Path]::ChangeExtension($o, $null) + 'eng.srt'
+      if (Test-Path -LiteralPath $sidecar) { continue }
+      if (Test-BitmapSubsPopulated -Path $o -Ffprobe $ffprobe) { $awaiting += (Split-Path $o -Leaf) }
+    }
+    if ($missing.Count -or $awaiting.Count) {
+      Write-Warning ("HOLDING the whole work: its plan declares {0} output(s); {1} not yet encoded, {2} awaiting OCR." -f $declared.Count, $missing.Count, $awaiting.Count)
+      $missing  | ForEach-Object { Write-Warning "    not encoded : $(Split-Path $_ -Leaf)" }
+      $awaiting | ForEach-Object { Write-Warning "    awaiting OCR: $_" }
+      Write-Warning '    Publication triggers when the whole declared set is complete. -SkipSubtitleCheck overrides the OCR half.'
+      exit 2
+    }
+    Write-Host ("plan satisfied: all {0} declared output(s) present with subtitles resolved" -f $declared.Count)
+  }
+  else {
+    # No manifest declares into this folder - judge per file, as before.
+    $awaiting = @()
+    foreach ($f in $local | Where-Object { $_.Extension -eq '.mkv' }) {
+      $sidecar = [IO.Path]::ChangeExtension($f.FullName, $null) + 'eng.srt'
+      if (Test-Path -LiteralPath $sidecar) { continue }
+      if (Test-BitmapSubsPopulated -Path $f.FullName -Ffprobe $ffprobe) { $awaiting += $f.Name }
+    }
+    if ($awaiting) {
+      Write-Warning ("REFUSING: {0} file(s) have bitmap subtitles but no OCR sidecar yet (no manifest declares into this folder, so the per-file check applies) - run ocr-subtitles.ps1 first, or pass -SkipSubtitleCheck:" -f $awaiting.Count)
+      $awaiting | ForEach-Object { Write-Warning "    $_" }
+      exit 2
+    }
   }
 }
 

@@ -364,13 +364,43 @@ def build(out, chains, dwell, fps, dar, drop_term, allow_dup, dry, work):
             dups.append((label, seen[h]))
         else:
             seen[h] = label
+    # A RE-AUTHORED SET AND A REPEATED PLATE ARE NOT THE SAME FAULT.
+    #
+    # This gate exists to catch a carve that swept the gallery TWICE - discs commonly author a still
+    # set several times over, and taking two runs yields an item that plays the whole set and then
+    # plays it again. That shows up as a LARGE share of the pages being duplicates, typically a
+    # contiguous second copy.
+    #
+    # It does not follow that ONE repeated page is a fault, and treating it as one is expensive:
+    # 2026-09-07, Moulin Rouge Extras. The Costume Gallery's page 37 is pixel-identical to page 35,
+    # with page 36 - a different photograph in the same "THE RED DRESS" section - between them. The
+    # disc simply authors that plate twice; pressing NEXT shows red-dress-A, red-dress-B,
+    # red-dress-A. Refusing it failed the item, which failed the whole 55-item manifest, which sent
+    # the job to _queue\failed and held the entire work back from publication for hours.
+    #
+    # So judge the SHAPE, not the presence:
+    #   * a large share duplicated  -> a second sweep of the same set. Refuse; that is the real bug.
+    #   * a few scattered repeats   -> how the disc is authored. Keep them, say so loudly, carry on.
+    #
+    # The page count is unaffected either way - expectPages is measured from the disc's own cells,
+    # so a legitimately repeated plate is already counted in it, and dropping it would FAIL that
+    # check instead. Keeping the page is what matches the disc.
+    dup_share = (float(len(dups)) / len(frames)) if frames else 0.0
+    DUP_REFUSE_SHARE = 0.25
+    if dups and not allow_dup and dup_share >= DUP_REFUSE_SHARE:
+        raise SystemExit('ERROR: %d of %d pages (%.0f%%) are pixel-duplicates of earlier ones '
+                         '(e.g. %s == %s). At that share this is a set carved TWICE, not a disc '
+                         'repeating a plate: carve the FIRST run only, or pass --allow-duplicates '
+                         'if the repeat is really part of the item (exit 2)'
+                         % (len(dups), len(frames), 100.0 * dup_share, dups[0][0], dups[0][1]))
     if dups and not allow_dup:
-        raise SystemExit('ERROR: %d of %d pages are pixel-duplicates of earlier ones '
-                         '(e.g. %s == %s). A disc often re-authors a still set several '
-                         'times; carve the FIRST run only, or pass --allow-duplicates if the '
-                         'repeat is really part of the item (exit 2)'
-                         % (len(dups), len(frames), dups[0][0], dups[0][1]))
-    if dups:
+        print('  NOTE: %d of %d page(s) (%.0f%%) repeat an earlier page - KEPT. Below the %.0f%% '
+              'share that would mean the set was carved twice, so this is the disc authoring the '
+              'same plate more than once (e.g. %s == %s). expectPages counts it, so dropping it '
+              'would be the error.'
+              % (len(dups), len(frames), 100.0 * dup_share, 100.0 * DUP_REFUSE_SHARE,
+                 dups[0][0], dups[0][1]))
+    elif dups:
         print('  NOTE: %d duplicate page(s) kept at the caller\'s request' % len(dups))
 
     # --- aspect: the cells' own answer, or the IFO's if the caller states it -----------

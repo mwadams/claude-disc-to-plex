@@ -101,7 +101,7 @@ $stalls = @()
 $held   = @()
 $moving = @()
 # Collected for the state file (see -StateFile): what the alarm can name without re-parsing prose.
-$needsValidation = @(); $briefsReady = @(); $reclaimFailed = @(); $reclaimFailedStale = @(); $reclaimStuck = @(); $dischargePendingNames = @()
+$needsValidation = @(); $briefsReady = @(); $reclaimFailed = @(); $reclaimFailedStale = @(); $reclaimStuck = @(); $manifestFailed = @(); $dischargePendingNames = @()
 # ONE BRIEF READY LINE PER BATCH, NOT PER UNIT (2026-09-04). _dispositions-loop.ps1 briefs the discs
 # of one work to ONE agent and saves the SAME brief under each member's name, so this board saw a
 # brief per unit and printed a "spawn an agent with: Follow the brief at ..." line per unit - two
@@ -435,6 +435,15 @@ foreach ($u in $units) {
                                           $inDone -notcontains $_ -and $inFailed -notcontains $_ })
   if ($failed.Count -gt 0) {
     $stalls += "{0,-28} manifest FAILED the gate or the encode -> {1}" -f $name, ($failed -join ", ")
+    # MACHINE-READABLE, so the alarm can raise it. This was printed and nothing else: the line went
+    # into $stalls as prose, and _stall-alarm.ps1 raises only on the NAMED lists below it
+    # (reclaimFailed, needsValidation, briefsReady, dischargePending) plus the space/stopped states.
+    # A failed encode therefore alerted NOBODY. 2026-09-07: moulin-rouge-extras.json failed at 07:44
+    # on one still-gallery item out of 55, and sat in _queue\failed for over two hours holding the
+    # whole work back, while the board printed this line on every run and no toast ever fired. The
+    # operator asked "how do you pick up those failures automatically so it doesn't block the
+    # process like it has this morning" - this is the missing half of the answer.
+    $manifestFailed += $name
   } elseif ($orphan.Count -gt 0) {
     # A manifest sitting in _pending while the dispositions track is alive is about to be validated
     # and gated by that track (its manifest step) - not waiting on the operator. Anywhere else, or
@@ -479,7 +488,7 @@ if ($stalls.Count -eq 0 -and $Quiet) {
   # The -Quiet early exit skips the audits below, so the state file is written here with what is
   # known - a quiet, un-stalled board - rather than left stale from an earlier, louder run.
   if ($StateFile) {
-    try { ([ordered]@{ at = (Get-Date).ToString('s'); stalls = @(); moving = @($moving); held = @($held); busy = [bool]$busy; queued = [int]$queued; running = [int]$running; unitsStaged = [int]$units.Count; fullyStopped = $false; nothingStaged = [bool]($units.Count -eq 0 -and -not $busy); spaceBlocked = $false; reclaimFailed = @(); reclaimFailedStale = @(); needsValidation = @(); briefsReady = @(); briefBatches = @(); dischargePending = @(); quietRun = $true } | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $StateFile -Encoding UTF8 } catch { }
+    try { ([ordered]@{ at = (Get-Date).ToString('s'); stalls = @(); moving = @($moving); held = @($held); busy = [bool]$busy; queued = [int]$queued; running = [int]$running; unitsStaged = [int]$units.Count; fullyStopped = $false; nothingStaged = [bool]($units.Count -eq 0 -and -not $busy); spaceBlocked = $false; reclaimFailed = @(); reclaimFailedStale = @(); manifestFailed = @(); needsValidation = @(); briefsReady = @(); briefBatches = @(); dischargePending = @(); quietRun = $true } | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $StateFile -Encoding UTF8 } catch { }
   }
   return
 }
@@ -748,6 +757,7 @@ if ($StateFile) {
     spaceBlocked   = [bool]$spaceBlocked
     reclaimFailed  = @($reclaimFailed)
     reclaimFailedStale = @($reclaimFailedStale)
+    manifestFailed = @($manifestFailed)
     needsValidation = @($needsValidation)
     briefsReady    = @($briefsReady)
     briefBatches   = @($briefBatchDocs)
@@ -755,4 +765,5 @@ if ($StateFile) {
   }
   try { ($stateDoc | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $StateFile -Encoding UTF8 } catch { }
 }
+
 
