@@ -43,6 +43,17 @@
 param(
   [string[]]$Work = @(),
   [switch]$All,
+  # How many works you saw on the list. With -All, refuses if the count has changed since - see below.
+  #
+  # NAMED ONLY. `pwsh -File script.ps1 -Work 'a','b','c'` passes arguments as COMMAND-LINE STRINGS
+  # and FLATTENS the array - 'a' binds to -Work and the rest bind POSITIONALLY to whatever comes
+  # next. Adding this int parameter therefore made a latent trap fire on 2026-09-07: a work name
+  # landed on -Expect and the call died with "cannot convert ... to type System.Int32". Loud, but
+  # only because the types differed; a numeric work name would have bound silently. The same trap
+  # is documented in _fetch-one.ps1's header. Call this script IN-PROCESS with `&` for arrays.
+  [Parameter(ValueFromPipeline = $false, ValueFromPipelineByPropertyName = $false)]
+  [ValidateRange(0, 1000)]
+  [int]$Expect,
   [string]$Note = '',
   [switch]$StagingOnly,          # units only: for a work whose local copies are already reclaimed
   [string]$VideoRoot = 'D:/video',
@@ -199,7 +210,32 @@ if (-not $Work.Count -and -not $All) {
   exit 0
 }
 
+# `-All` MEANS "EVERYTHING ON THE LIST I WAS SHOWN", AND THE LIST MOVES.
+#
+# The pipeline publishes continuously, so between printing the pending list and the operator saying
+# "yes" - a minute, or ten - other works finish and join it. `-All` then approves things the
+# operator has never seen, and a confirmation is the ONE gate they hold: everything downstream,
+# including deleting local copies and releasing staging, runs on their word.
+#
+# 2026-09-07, twice in two hours. At 09:56 they were shown 4 works and said "All are confirmed in
+# Plex"; -All approved 6, having swept in Private Schulz and Reach For The Sky. At 12:01 they were
+# shown 3 and said "I can confirm those 3 works on Plex"; -All approved 6 again, adding three
+# Sherlock Holmes titles. Both were caught and narrowed by hand, which is not a control.
+#
+# `-Expect <n>` is the control: state how many works the list showed, and this refuses if the list
+# has changed underneath. Cheap for the caller, and it converts a silent over-approval into a stop.
 $chosen = if ($All) { $pendingNames } else { $Work }
+if ($All -and $PSBoundParameters.ContainsKey('Expect') -and $Expect -ne $pendingNames.Count) {
+  Write-Output ("REFUSE - the pending list has CHANGED since you saw it: you expected {0} work(s), there are now {1}." -f $Expect, $pendingNames.Count)
+  Write-Output '   Pending right now:'
+  $pendingNames | ForEach-Object { Write-Output "      $_" }
+  Write-Output '   Nothing approved. Re-read the list, then name the works explicitly with -Work, or re-run -All -Expect with the new count.'
+  exit 2
+}
+if ($All -and -not $PSBoundParameters.ContainsKey('Expect')) {
+  Write-Output ("NOTE: -All is approving {0} work(s) - {1}" -f $pendingNames.Count, ($pendingNames -join ', '))
+  Write-Output '      Pass -Expect <n> to make this refuse if the list grew since you read it.'
+}
 $problems = @()
 foreach ($w in $chosen) { $p = Test-WorkIsPending -Name $w -Pending $pendingNames; if ($p) { $problems += $p } }
 if ($problems.Count) {
@@ -235,3 +271,5 @@ if ($WhatIf) { Write-Output '  WhatIf: nothing written'; exit 0 }
 ($doc | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $out -Encoding UTF8
 Write-Output '  queued - _reclaim-loop.ps1 will pick it up and apply every gate.'
 exit 0
+
+

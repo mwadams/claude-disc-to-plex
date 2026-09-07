@@ -1265,12 +1265,39 @@ foreach($it in $items){
   # so the 2 s / 25-frame tolerances are generous to seam effects and hostile to every known
   # failure mode. The wrong-length file is MOVED ASIDE, not left in place - a finalised output at
   # `out` is what the resume check trusts, so leaving it would make the failure permanent.
+  # THE TOLERANCE IS ASYMMETRIC, BECAUSE THE TWO DIRECTIONS ARE NOT THE SAME RISK.
+  #
+  # SHORT is dangerous: content is missing, which is the failure this guard was built for. Keep 2 s.
+  #
+  # LONG by a few seconds is usually the DVDVIDEO DEMUXER UNDER-DECLARING, not a bad encode. The
+  # manifest's expectSeconds comes from MakeMKV's declared length; ffmpeg routinely emits slightly
+  # more from the same title. Measured 2026-09-07: Lawrence of Arabia Disk 2 title 3 declares
+  # 3,677 s and `ffprobe -f dvdvideo -title 3` returns exactly 3,689.000000 - 12 s over.
+  #
+  # At ±2 s that cost four correct encodes in one morning. Both Definitive Sherlock Holmes discs
+  # failed with "2 of 6 item(s) FAILED", every one an OVERSHOOT of 2.80-4.41 s on a ~4,600 s film
+  # (0.06-0.10%), each film quarantined as .wrong-length and both jobs sent to _queue\failed. The
+  # films were fine.
+  #
+  # The over-run allowance is the rule this project already uses for the same question elsewhere -
+  # disposition-analysis.ps1's Get-TruncationVerdict calls a difference benign at <=2 s absolute, or
+  # <=0.5% and <=15 s. Reused here so one judgement is not made two ways.
+  #
+  # A WRONG CUT IS STILL CAUGHT. The founding case (The Champions D1 t2) differs by MINUTES: 3,179.6
+  # published against 2,494 enumerated is 27%, far outside 0.5% and far outside 15 s.
   if($itemOk -and (Has $it 'expectSeconds')){
     $gd = 0.0; [void][double]::TryParse("$(& $fp -v error -show_entries format=duration -of csv=p=0 $it.out 2>$null)".Trim().TrimEnd(','), [ref]$gd)
-    if([Math]::Abs($gd - [double]$it.expectSeconds) -gt 2.0){
-      Write-Output ("   !! WRONG LENGTH - output is {0:N2}s, manifest expects {1:N2}s; moved aside as .wrong-length" -f $gd, [double]$it.expectSeconds)
+    $want  = [double]$it.expectSeconds
+    $delta = $gd - $want                      # positive = output LONGER than declared
+    $overAllowed = [Math]::Min(15.0, [Math]::Max(2.0, $want * 0.005))
+    $bad = if ($delta -lt 0) { [Math]::Abs($delta) -gt 2.0 } else { $delta -gt $overAllowed }
+    if($bad){
+      Write-Output ("   !! WRONG LENGTH - output is {0:N2}s, manifest expects {1:N2}s ({2:+0.00;-0.00}s, allowance {3:N2}s over / 2.00s under); moved aside as .wrong-length" -f $gd, $want, $delta, $overAllowed)
       Move-Item -LiteralPath $it.out -Destination "$($it.out).wrong-length" -Force
       $itemOk = $false
+    }
+    elseif ($delta -gt 2.0) {
+      Write-Output ("   length +{0:N2}s over the declared {1:N2}s - within the {2:N2}s over-allowance; the dvdvideo demuxer under-declares, this is not a short cut" -f $delta, $want, $overAllowed)
     }
   }
   if($itemOk -and (Has $it 'expectFrames')){

@@ -433,6 +433,34 @@ foreach ($u in $units) {
   $live     = @($mNames | Where-Object { $inQueue -contains $_ -or $inRun -contains $_ })
   $orphan   = @($mNames | Where-Object { $inQueue -notcontains $_ -and $inRun -notcontains $_ -and
                                           $inDone -notcontains $_ -and $inFailed -notcontains $_ })
+  # A FAILURE THAT WAS SINCE RETRIED AND SUCCEEDED IS HISTORY, NOT AN OPEN FAULT.
+  #
+  # `failed\` is never emptied, so a manifest that failed once is reported for ever - even after a
+  # corrected copy has gone all the way through. The reclaim half of this board already makes this
+  # comparison ("FAILED at X but a LATER retry completed at Y"); the encode half did not, and I
+  # added an ALARM on top of it the same morning, which turned a stale line into a toast.
+  #
+  # 2026-09-07, the first run after that alarm went in reported FIVE failures. THREE were spent:
+  # moulin-rouge-extras.json had been superseded by moulin-rouge-extras.retry.json (its Costume
+  # Gallery built at 10:18), and both Sherlock discs had published under differently-named
+  # manifests. Only one was real. An alarm that cries wolf four times out of five is worse than no
+  # alarm, because the fifth is the one that gets ignored.
+  #
+  # THE TEST IS THE UNIT, NOT THE FILENAME. A retry is deliberately given a new name
+  # (`*.retry.json`, `*.fixed.json`, `*.named.json`) so it cannot collide with the artefact it
+  # replaces, so comparing names would find nothing. What matters is whether ANY manifest for this
+  # unit reached done\ AFTER the newest failed one - that is the same shape of question, asked of
+  # the unit rather than the file.
+  if ($failed.Count -gt 0) {
+    $newestFail = ($mentioned | Where-Object { $failed -contains $_.Name } |
+                   Sort-Object LastWriteTime -Descending | Select-Object -First 1).LastWriteTime
+    $laterDone  = @($mentioned | Where-Object { $inDone -contains $_.Name -and $_.LastWriteTime -ge $newestFail })
+    if ($laterDone.Count -gt 0) {
+      $moving += "{0,-28} a manifest FAILED ({1}) but a LATER one completed ({2}) - the failed/ copy is stale history; nothing to do" -f `
+                 $name, ($failed -join ', '), (($laterDone | ForEach-Object { $_.Name }) -join ', ')
+      continue
+    }
+  }
   if ($failed.Count -gt 0) {
     $stalls += "{0,-28} manifest FAILED the gate or the encode -> {1}" -f $name, ($failed -join ", ")
     # MACHINE-READABLE, so the alarm can raise it. This was printed and nothing else: the line went

@@ -211,8 +211,42 @@ function Repair-VobSubPalette {
     [void]$fs.Read($buf, 0, $buf.Length)
   } finally { $fs.Dispose() }
 
-  $starts = @($lines | ForEach-Object { if ($_ -match 'filepos:\s*([0-9a-fA-F]+)') { [Convert]::ToInt32($Matches[1], 16) } }) |
-              Select-Object -First 8
+  # SAMPLE ACROSS THE WHOLE TRACK, NOT ITS HEAD - and take enough cues for the ratio to settle.
+  #
+  # This was `Select-Object -First 8` with a `$decoded -ge 3` stop, i.e. the ink-weight ratio below
+  # was decided from the first THREE decodable cues of the file. Both halves of that are wrong:
+  #
+  #   THE HEAD IS BIASED. A subtitle track opens on titles and short bracketed sound cues -
+  #   "[ORCHESTRA TUNES INSTRUMENTS]", "[APPLAUSE]" - which are all-caps, short, and carry
+  #   proportionally less anti-alias than the lower-case dialogue making up the body of the track.
+  #
+  #   THREE CUES IS NOT A SAMPLE. The ratio is compared against a fixed 0.15 threshold, so a noisy
+  #   estimate is deciding a binary question.
+  #
+  # Moulin Rouge, 2026-09-07, is both faults at once. Per cue the ratio climbs 0.138, 0.145, 0.152,
+  # 0.189, 0.187, 0.248 ... and over the whole track it is 0.217 - a disc that plainly needs the
+  # repair. But cues 0, 1 and 3 are the first three that decode, they average 0.143, and this
+  # returned $null: MISSED BY 0.007 ON A THREE-CUE SAMPLE. seconv then isolated the anti-alias
+  # instead of the fill, and 1,986 lines of clean English SDH OCR'd to "FES OSE t ys" - 9% function
+  # words against the gate's 15% floor. The film sat unpublishable for five hours while the loop
+  # reported "WRONG-LANGUAGE SUBTITLE TRACK ... needs a re-encode", which was a FALSE diagnosis:
+  # rendering the cues showed correct English, and the same track with entry 8 merged into the fill
+  # OCR'd at 59% - mid-band for a genuine conversion (43-77%).
+  #
+  # So spread the sample over the whole file and decode ~20 cues. Cost is a few seconds against an
+  # OCR that already takes minutes; the estimate stops being a coin toss near the threshold. Discs
+  # that genuinely need no repair are nowhere near it (Kiki 0.00, Queen Christina 0.03), so a
+  # steadier estimate cannot start repairing them by accident.
+  $allStarts = @($lines | ForEach-Object { if ($_ -match 'filepos:\s*([0-9a-fA-F]+)') { [Convert]::ToInt32($Matches[1], 16) } })
+  $wantCues = 20
+  # Offer twice as many positions as cues wanted: some cues never decode (a fade authors an all-zero
+  # contrast, and 16 of Moulin Rouge's 700 simply do not decode), and running out of candidates
+  # silently shrinks the sample back towards the noisy case described above.
+  $offer = $wantCues * 2
+  $starts = if ($allStarts.Count -le $offer) { $allStarts } else {
+    $step = [math]::Max(1, [math]::Floor($allStarts.Count / $offer))
+    @(0..($offer - 1) | ForEach-Object { $allStarts[[math]::Min($_ * $step, $allStarts.Count - 1)] })
+  }
 
   $palIdx = $null; $alpha = $null; $hist = @(0,0,0,0); $decoded = 0
   foreach ($start in $starts) {
@@ -324,7 +358,7 @@ function Repair-VobSubPalette {
       }
       $decoded++
     }
-    if ($palIdx -and $alpha -and $decoded -ge 3) { break }
+    if ($palIdx -and $alpha -and $decoded -ge $wantCues) { break }
   }
   if (-not $palIdx -or -not $alpha) { return $null }
 
