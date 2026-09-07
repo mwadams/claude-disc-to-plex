@@ -386,6 +386,41 @@ foreach ($u in $Units) {
     $bytes += $packBytes
   }
 
+  # SAME RULE, THE OTHER SCRATCH: capture-evidence.py's speech wavs, in %TEMP%.
+  #
+  # These are deliberately not deleted at exit - the catalogue records each wav's path as provenance
+  # ("disc=...|dvdvideoTitle=...|offset=...|wav=..."), so while the disc is staged the sample stays
+  # re-checkable. Once the staging goes the disc goes with it and the wav can never be re-derived or
+  # compared, so the scratch is litter from that moment. Nothing swept it because the directory name
+  # carries only a pid and a uuid; capture-evidence.py now writes a `.unit` marker naming its disc,
+  # which is what this reads. 490 of these were once found in D:\temp going back weeks.
+  #
+  # The TRANSCRIPT TEXT is untouched - it lives in the catalogue, which is the durable record. Only
+  # the wav is removed, and only for THIS unit.
+  try {
+    $tempRoot = if ($env:TEMP) { $env:TEMP } else { 'D:/temp' }
+    $evDirs = @(Get-ChildItem -LiteralPath $tempRoot -Directory -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match '^capture-evidence[-_]' } |
+                Where-Object {
+                  $m = Join-Path $_.FullName '.unit'
+                  (Test-Path -LiteralPath $m) -and
+                  ((Get-Content -LiteralPath $m -First 1 -ErrorAction SilentlyContinue) -as [string]).Trim() -eq $unit
+                })
+    if ($evDirs.Count -gt 0) {
+      $evBytes = (Get-ChildItem -LiteralPath $evDirs.FullName -Recurse -File -ErrorAction SilentlyContinue |
+                  Measure-Object Length -Sum).Sum
+      if (-not $DryRun) {
+        foreach ($e in $evDirs) { Remove-Item -LiteralPath $e.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+      }
+      Write-Output ("        {0} - capture-evidence scratch released with the staging: {1} dir(s), {2:N2} GB (transcripts kept in the catalogue){3}" -f `
+                    $unit, $evDirs.Count, ($evBytes/1GB), $(if ($DryRun) { ' [DryRun]' } else { '' }))
+      if (-not $DryRun) { $bytes += $evBytes }
+    }
+  } catch {
+    # Never let scratch cleanup fail a staging release - the release is the important half.
+    Write-Output ("        {0} - capture-evidence scratch sweep skipped: {1}" -f $unit, $_.Exception.Message)
+  }
+
   $left = @($targets | Where-Object { Test-Path -LiteralPath $_ })
   if ($left.Count -gt 0) {
     Write-Output "PARTIAL $unit - $($left.Count) path(s) still present"

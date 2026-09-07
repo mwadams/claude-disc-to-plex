@@ -193,6 +193,19 @@ def main():
         scratch = os.path.join(os.environ.get('TEMP', '.'),
                                'capture-evidence-%d-%s' % (os.getpid(), uuid.uuid4().hex[:8]))
         os.makedirs(scratch, exist_ok=True)
+        # SAY WHOSE SCRATCH THIS IS, so it can be swept when that disc is released.
+        #
+        # The directory name carries only a pid and a uuid, so nothing downstream could tell which
+        # disc a scratch belonged to - and these are deliberately NOT deleted at exit: the wav paths
+        # are written into the catalogue as provenance ("disc=...|offset=...|wav=..."), so while the
+        # disc is staged they remain re-checkable evidence. Once its staging is released the disc is
+        # gone too and they are pure litter; 490 of these were once found going back weeks.
+        # `_release-completed.ps1` reads this file and removes the scratch with the unit.
+        try:
+            with open(os.path.join(scratch, '.unit'), 'w', encoding='utf-8') as fh:
+                fh.write(os.path.basename(os.path.normpath(disc)) + '\n')
+        except OSError:
+            pass    # a missing marker only costs us the targeted sweep; the age backstop still runs
         for sec in speech_at:
             status, text, wav = grab_speech(disc, dvd, mk_title, sec, scratch)
             if status == 'ok':

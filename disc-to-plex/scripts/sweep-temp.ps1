@@ -110,7 +110,18 @@ $evPatterns = @(
   '^disposition-evidence[-_]',
   '^capture-evidence[-_]',
   '^cards?[-_]',            # card-<hash> and cards_<pid>
-  '^seconv_ocr'
+  '^seconv_ocr',
+  # build-chaptered-compilation.ps1's RESUMABLE INTERMEDIATES - `compilation-<label>`, holding one
+  # .mkv per chapter. Added 2026-09-07 after `compilation-lz-v2` was found holding 1.40 GB: twelve
+  # numbered segments whose join, `Led Zeppelin DVD (2003).mkv`, had been published the day before
+  # at 1,427.8 MB against the segments' 1,428.3 MB - the same content, already shipped.
+  #
+  # These are BY DESIGN kept until the build finishes (that is what makes a killed run resumable
+  # rather than a restart), so nothing removes them on success and they are exactly the kind of
+  # thing this backstop is for. They are also large: a chapter set is the whole compilation again.
+  # The EvidenceHours dial is right for them - a compilation that has not been touched in hours is
+  # finished or abandoned, and either way its segments are rebuildable from the disc.
+  '^compilation[-_]'
 )
 $evCutoff = (Get-Date).AddHours(-$EvidenceHours)
 foreach ($d in @(Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue |
