@@ -127,6 +127,13 @@ param(
   [string]$LogDir = "."
 )
 $ErrorActionPreference = 'Continue'
+
+# THE LENGTH TOLERANCE, in one place. This file checks output length twice - seconds against the
+# container duration, frames against the packet count - and on 2026-09-07 the two copies of the rule
+# disagreed, accepting an overshoot on one line and quarantining it on the next.
+# sweep-superseded-quarantine.ps1 needs the same judgement a third time. See the lib's header.
+. "$PSScriptRoot/lib-length-tolerance.ps1"
+
 $tp = Get-Content (Join-Path $ToolsDir "tool-paths.json") | ConvertFrom-Json
 $ff = $tp.ffmpeg; $sm = $tp.supmover
 $fp = Join-Path (Split-Path $ff) 'ffprobe.exe'    # our ffprobe (has dvdvideo demuxer + libdvdcss)
@@ -1288,15 +1295,19 @@ foreach($it in $items){
   if($itemOk -and (Has $it 'expectSeconds')){
     $gd = 0.0; [void][double]::TryParse("$(& $fp -v error -show_entries format=duration -of csv=p=0 $it.out 2>$null)".Trim().TrimEnd(','), [ref]$gd)
     $want  = [double]$it.expectSeconds
-    $delta = $gd - $want                      # positive = output LONGER than declared
-    $overAllowed = [Math]::Min(15.0, [Math]::Max(2.0, $want * 0.005))
-    $bad = if ($delta -lt 0) { [Math]::Abs($delta) -gt 2.0 } else { $delta -gt $overAllowed }
+    # THE RULE LIVES IN lib-length-tolerance.ps1, not here - see its header. It was written twice
+    # and the two copies disagreed within the hour, which is what sent four correct Sherlock films
+    # back to _queue\failed a second time.
+    $lenV = Test-OutputDuration -GotSeconds $gd -ExpectSeconds $want
+    $delta = $lenV.Delta
+    $overAllowed = $lenV.OverAllowance
+    $bad = -not $lenV.Ok
     if($bad){
       Write-Output ("   !! WRONG LENGTH - output is {0:N2}s, manifest expects {1:N2}s ({2:+0.00;-0.00}s, allowance {3:N2}s over / 2.00s under); moved aside as .wrong-length" -f $gd, $want, $delta, $overAllowed)
       Move-Item -LiteralPath $it.out -Destination "$($it.out).wrong-length" -Force
       $itemOk = $false
     }
-    elseif ($delta -gt 2.0) {
+    elseif ($lenV.NotablyOver) {
       Write-Output ("   length +{0:N2}s over the declared {1:N2}s - within the {2:N2}s over-allowance; the dvdvideo demuxer under-declares, this is not a short cut" -f $delta, $want, $overAllowed)
     }
   }
@@ -1322,28 +1333,25 @@ foreach($it in $items){
     $gfTxt = "$(& $fp -v error -count_packets -select_streams v:0 -show_entries stream=nb_read_packets -of csv=p=0 $it.out 2>$null)".Trim().TrimEnd(',')
     $gf = 0; [void][int]::TryParse($gfTxt, [ref]$gf)
     $wantF = [int]$it.expectFrames
-    # Frame rate from the manifest's own two figures - they describe the same title, so their ratio
-    # is the fps the expectation was built at. Probe the output only when the manifest gives no
-    # seconds to divide by; fall back to the output's own rate rather than assuming 25.
+    $wantS = if(Has $it 'expectSeconds'){ [double]$it.expectSeconds } else { 0.0 }
+    # Probe the output's own rate ONLY when the manifest gives no seconds to divide by - otherwise
+    # the manifest's two figures describe the same title and their ratio is the authority.
     $fps = 0.0
-    if((Has $it 'expectSeconds') -and ([double]$it.expectSeconds) -gt 0){ $fps = $wantF / [double]$it.expectSeconds }
-    if($fps -le 0){
+    if($wantS -le 0){
       $r = "$(& $fp -v error -select_streams v:0 -show_entries stream=r_frame_rate -of csv=p=0 $it.out 2>$null)".Trim().TrimEnd(',')
       if($r -match '^(\d+)/(\d+)$' -and [double]$Matches[2] -ne 0){ $fps = [double]$Matches[1] / [double]$Matches[2] }
     }
-    $overSec = if((Has $it 'expectSeconds') -and ([double]$it.expectSeconds) -gt 0) {
-      [Math]::Min(15.0, [Math]::Max(2.0, ([double]$it.expectSeconds) * 0.005))
-    } else { 2.0 }
-    # Never TIGHTER than the 25 frames this guard has always allowed, whatever the arithmetic says.
-    $overFrames = [Math]::Max(25.0, $overSec * $fps)
-    $dF = $gf - $wantF                        # positive = output has MORE frames than declared
-    $badF = if($dF -lt 0){ [Math]::Abs($dF) -gt 25 } else { $dF -gt $overFrames }
+    $frmV = Test-OutputFrameCount -GotFrames $gf -ExpectFrames $wantF -ExpectSeconds $wantS -Fps $fps
+    $fps = $frmV.Fps
+    $overFrames = $frmV.OverAllowance
+    $dF = $frmV.Delta
+    $badF = -not $frmV.Ok
     if($badF){
       Write-Output ("   !! WRONG LENGTH - output has {0:N0} video frames, manifest expects {1:N0} ({2:+#;-#}, allowance {3:N0} over / 25 under); moved aside as .wrong-length" -f $gf, $wantF, $dF, $overFrames)
       Move-Item -LiteralPath $it.out -Destination "$($it.out).wrong-length" -Force
       $itemOk = $false
     }
-    elseif($dF -gt 25){
+    elseif($frmV.NotablyOver){
       Write-Output ("   {0:N0} frames over the declared {1:N0} (+{2:N2}s at {3:N3} fps) - within the {4:N0}-frame over-allowance; matches the length check above" -f $gf, $wantF, ($dF / [Math]::Max(0.001,$fps)), $fps, $overFrames)
     }
   }
