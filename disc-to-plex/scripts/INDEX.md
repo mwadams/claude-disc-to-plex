@@ -1,8 +1,8 @@
 # Script index - GENERATED, do not edit
 
-Generated 2026-09-07 18:37 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
+Generated 2026-09-07 19:32 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
 
-**132 scripts under `scripts/`, 45 loop scripts under `D:/video/`. 0 with NO usable header, 46 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
+**132 scripts under `scripts/`, 46 loop scripts under `D:/video/`. 0 with NO usable header, 46 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
 
 Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library` = dot-source, defines functions only; `tests` = a test suite, exit 0 = all passed.
 
@@ -180,6 +180,7 @@ Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library
 | `_stall-alarm.ps1` | command | STALL ALARM: make the operator board LOUD. Runs _stallwatch.ps1 on a timer and raises a Windows toast + a plainly-named file when the line has stopped - once per stall episode, never per poll. | when: On 2026-09-04 the pipeline produced no new encodes for six hours. Fetch and catalogue swept five discs on their own and the line stopped dead at the one manual step, dispositions. | `pwsh -File D:/video/_stall-alarm.ps1` |
 | `_stall-alarm.tests.ps1` | tests | Tests for the STALL ALARM's episode logic (_stall-alarm.ps1). Run: pwsh -File D:/video/_stall-alarm.tests.ps1 (exit 0 = all passed) | NO TRIGGER IN HEADER | - |
 | `_stallwatch.ps1` | command | Report which PIPELINE STAGE is waiting on the OPERATOR, per staged unit. | when: `_lanewatch` and `_idlewatch` say that something is idle. They do not say WHICH STEP is blocked, and every stall on 2026-08-23 was a specific missing step that only the operator could take: | - |
+| `_start-all-tracks.ps1` | command | Start every pipeline track that is NOT already running. The one command to run after a reboot. | when: 2026-09-07. The Windows SMB redirector on this machine wedged - the NAS was healthy (Plex answering in 0.0s, port 445 open) but every SMB call from here hung, Explorer included - and the only fix w... | `pwsh -File D:/video/_start-all-tracks.ps1` |
 | `_sync-loop.ps1` | command | SKILL->REPO track: keep the public repo current, forever, without anyone remembering to. | when: Every other track here drains itself - fetch, catalogue, rip, analyse, encode, OCR, publish. The only manual step in this pipeline is authoring a manifest. | `pwsh -File _sync-loop.ps1` |
 | `_sync-skill.ps1` | command | Sync the working skill into the public repo, safely. | when: The obvious one-liner is wrong in two ways, and both were paid for on 2026-08-25. | `pwsh -File _sync-skill.ps1` |
 | `_tail.ps1` | command | WHICH LOG IS THIS TRACK ACTUALLY WRITING? Resolve it, don't guess it. | when: `D:\video\_logs` contains two naming conventions and their abandoned predecessors: | `pwsh -File _tail.ps1 publish` |
