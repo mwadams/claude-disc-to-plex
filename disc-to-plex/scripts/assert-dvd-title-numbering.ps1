@@ -68,7 +68,17 @@ $catPath = Join-Path $Catalogue "$unit.catalogue.json"
 if (-not (Test-Path -LiteralPath $catPath)) { Say "assert-dvd-title-numbering: no catalogue for '$unit' - cannot judge"; exit 0 }
 try { $cat = Get-Content -LiteralPath $catPath -Raw | ConvertFrom-Json } catch { Say 'assert-dvd-title-numbering: unreadable catalogue'; exit 0 }
 
-# dvdvideoTitle -> seconds, from the catalogue's own "H:MM:SS" durations.
+# dvdvideoTitle -> the durations that title can legitimately produce.
+#
+# A LIST, NOT A SINGLE VALUE, because one dvdvideoTitle can yield SEVERAL entries. Some discs put a
+# whole series in ONE title and separate the episodes by chapter: Ripping Yarns is a 89-minute
+# dvdvideoTitle 1 holding three episodes (29:16 / 28:34 / 31:23), and MakeMKV enumerates them as
+# t00/t01/t02 - three catalogue rows, all `dvdvideoTitle 1`.
+#
+# Keyed by a single value, the last row silently won and the other two durations became unmatchable,
+# so a perfectly correct manifest would have drawn warnings naming real episodes as wrong. (It would
+# not have been REFUSED - none of them matches a different title, so the shift test saves it - but a
+# guard that cries wolf on correct input is how the next real warning gets ignored.)
 $byTitle = @{}
 foreach ($t in @($cat.titles)) {
   $n = $t.dvdvideoTitle
@@ -76,22 +86,31 @@ foreach ($t in @($cat.titles)) {
   $d = "$($t.duration)"
   if ($d -notmatch '^\d+:\d{2}:\d{2}$') { continue }
   $p = $d.Split(':')
-  $byTitle[[int]$n] = ([int]$p[0]) * 3600 + ([int]$p[1]) * 60 + [int]$p[2]
+  $secs = ([int]$p[0]) * 3600 + ([int]$p[1]) * 60 + [int]$p[2]
+  $k = [int]$n
+  if (-not $byTitle.ContainsKey($k)) { $byTitle[$k] = @() }
+  $byTitle[$k] += $secs
 }
 if ($byTitle.Count -lt 2) { Say "assert-dvd-title-numbering: catalogue for '$unit' carries no usable per-title durations - cannot judge"; exit 0 }
+
+# True when ANY duration this title can produce matches, within tolerance.
+function Test-TitleMatches([hashtable]$Map, [int]$Title, [double]$Expect, [double]$Tol) {
+  if (-not $Map.ContainsKey($Title)) { return $false }
+  foreach ($s in @($Map[$Title])) { if ([math]::Abs([double]$s - $Expect) -le $Tol) { return $true } }
+  return $false
+}
 
 # Per row: does the catalogue's duration for the title we are ASKING FOR match the duration we
 # RECORDED? If not, is there a uniform offset that does? A consistent shift is the signature.
 $bad = @(); $offsets = @()
 foreach ($r in $dvd) {
   $n = [int]$r.title; $exp = [double]$r.expectSeconds
-  $here = $byTitle[$n]
-  if ($null -ne $here -and [math]::Abs($here - $exp) -le $ToleranceSec) { continue }
+  if (Test-TitleMatches $byTitle $n $exp $ToleranceSec) { continue }
+  $here = if ($byTitle.ContainsKey($n)) { (@($byTitle[$n]) -join '/') } else { $null }
   $hit = $null
   foreach ($k in -3..3) {
     if ($k -eq 0) { continue }
-    $c = $byTitle[$n + $k]
-    if ($null -ne $c -and [math]::Abs($c - $exp) -le $ToleranceSec) { $hit = $k; break }
+    if (Test-TitleMatches $byTitle ($n + $k) $exp $ToleranceSec) { $hit = $k; break }
   }
   $bad += [pscustomobject]@{
     Title = $n; Expect = $exp
@@ -163,4 +182,5 @@ if ($offsets.Count -eq $bad.Count -and $uniq.Count -eq 1) {
   Say  '   true dvdvideoTitle - short leader/menu titles the selection skipped still occupy numbers.'
 }
 exit 2
+
 
