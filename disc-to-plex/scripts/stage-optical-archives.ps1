@@ -45,11 +45,28 @@ param(
   # manifests ("do NOT encode into the last few GB") while the archive drained happily.
   # (Set to 40 when first written on 2026-09-06; the user caught the inconsistency immediately.)
   #
-  # If C: fills while D: is under this floor, that is NOT something to solve by lowering it: it
-  # means discs are being fed faster than the line drains, and the answer is to confirm published
-  # works in Plex so reclaims can run. The optical lane has its own 15 GB floor on C: as a backstop
-  # and will refuse the next disc rather than fill the archive volume.
-  [int]$MinFreeGB      = 120,
+  # 70, LOWERED FROM 120 on 2026-09-07 at the operator's direction. This REVERSES the stance the
+  # next paragraph argued, and the reversal is kept visible rather than rewritten, because the
+  # original reasoning was sound for the situation it was written in and may become sound again.
+  #
+  # WHAT CHANGED. The old note said: if C: fills while D: is under this floor, do not lower it -
+  # discs are being fed faster than the line drains, so confirm published works and let reclaims
+  # run. That assumed the 120 GB was being contended for by work that would USE it. It was not.
+  # `_fetch-loop.ps1` was pulling from E: whenever free space touched 120, so every GB a reclaim
+  # freed was spent within minutes on a disc nothing would look at for a day - 27 units / 202 GB
+  # staged with 140 still listed. The floor was not protecting the encoders; it was protecting a
+  # queue that was already 20 units too deep.
+  #
+  # Fetch now stops at a staging DEPTH of 10 units (see _fetch-loop.ps1 -MaxStagedUnits) and
+  # reserves the whole optical buffer besides, so space freed here stays free. With that competitor
+  # gone, 70 GB is enough for an encode's working set while letting buffered discs off C: - which
+  # had fallen to 29.7 GB, i.e. one disc from stopping the optical lane entirely.
+  #
+  # The rest of the old reasoning still holds and is still the first thing to try:
+  # The optical lane has its own 15 GB floor on C: as a backstop and will refuse the next disc
+  # rather than fill the archive volume. If BOTH volumes are tight, the answer is still to confirm
+  # published works in Plex so reclaims can run - not to lower this again.
+  [int]$MinFreeGB      = 70,
   [switch]$WhatIf
 )
 $ErrorActionPreference = 'Stop'

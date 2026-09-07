@@ -26,7 +26,29 @@ param(
   # anything because freeing space requires publishing, which requires encoding.
   # The working set for one unit is roughly: disc 40 + rips 30 + encode 15 + headroom.
   [int]$FloorGB = 120,
-  [string]$SrcRoot = 'E:\Movies'
+  [string]$SrcRoot = 'E:\Movies',
+
+  # ---- optical reserve: keep room for the OPTICAL BUFFER, which is the scarce lane ----------------
+  # An optical disc is a ~77-minute physical rip onto a small C: volume; the operator can only load
+  # so many before the buffer fills and ripping stops. A fetch from E: is repeatable at any time, so
+  # when the two compete this one yields. Sized to the whole buffer at the operator's direction
+  # (2026-09-07): "we typically have no more than 6 discs in the buffer (as that fills C:)".
+  [int]$OpticalReserveDiscs = 6,
+  [double]$OpticalDiscGB    = 8.5,   # a dual-layer DVD; deliberately generous
+
+  # ---- how far ahead to fetch --------------------------------------------------------------------
+  # STAGING DEPTH, NOT DISK SPACE, IS THE RIGHT LIMIT NOW.
+  # This loop's only brake used to be the free-space floor, which made sense when filling _stage from
+  # E: was the bottleneck. It is not any more: dispositions is, at roughly one unit every 13 minutes
+  # through a single serialised agent. On 2026-09-07 _stage held 27 units / 202 GB with 140 discs
+  # still listed to fetch, so every GB a reclaim freed was spent within minutes pulling a disc that
+  # nothing would look at for a day - starving the encoders, the optical handover, and the reclaims
+  # themselves. Fetching further ahead than the line can consume converts free space into latency.
+  #
+  # So: stop fetching once this many units are staged and not yet completed. 10 is ~2 hours of
+  # authoring at the measured rate - a real buffer, not a hoard. Raise it if authoring ever gets
+  # faster than fetching again, which is the situation this default assumes is over.
+  [int]$MaxStagedUnits = 10
 )
 
 # SINGLE INSTANCE. Two copies would both pick the same "next" disc and robocopy it concurrently
@@ -115,6 +137,17 @@ while ($true) {
     continue
   }
 
+  # DEPTH FIRST: is the line already holding more than it can chew? Cheaper than the space test and
+  # the one that actually matters now - see $MaxStagedUnits.
+  $stagedNow = @(Get-ChildItem 'D:/video/_stage' -Directory -ErrorAction SilentlyContinue |
+                 Where-Object { $_.Name -notlike '*-rip' })
+  if ($stagedNow.Count -ge $MaxStagedUnits) {
+    Write-Output ("[{0}] {1} unit(s) staged (limit {2}) - holding; the line is authoring-bound, not fetch-bound. {3} disc(s) still to stage" -f `
+                  (Get-Date -Format 'HH:mm:ss'), $stagedNow.Count, $MaxStagedUnits, $left.Count)
+    Start-Sleep -Seconds 300
+    continue
+  }
+
   $freeGB = [math]::Round([IO.DriveInfo]::new('D').AvailableFreeSpace / 1GB, 1)
 
   # RESERVE ROOM FOR A FINISHED OPTICAL RIP, OR THIS LOOP STARVES THE OPTICAL LANE FOR EVER.
@@ -133,6 +166,12 @@ while ($true) {
   # ~77-minute rip of a PHYSICAL disc sitting on a small C: volume with its own 15 GB floor. If one
   # of the two has to wait, it must be this one. So raise our floor by whatever is waiting to come
   # across, and let the optical lane through first.
+  # SIZED TO THE WHOLE OPTICAL BUFFER, not just to what has finished ripping.
+  # Operator, 2026-09-07: "we typically have no more than 6 discs in the buffer (as that fills C:)
+  # so that much reserve would be ideal." The optical lane is the SCARCE one - each disc is a
+  # ~77-minute physical rip onto a small C: volume, and the operator can only load so many before
+  # the buffer is full and ripping stops altogether. A fetch from E: is repeatable at any time.
+  # So reserve for the buffer as a whole, and let this loop wait.
   $opticalReserveGB = 0.0
   try {
     $arch = 'C:/Users/matth/Videos/DVD'
@@ -142,20 +181,28 @@ while ($true) {
         $n = ("$ln" -split "`t")[0]; if ($n) { $stagedNames[$n.Trim()] = $true }
       }
       foreach ($d in (Get-ChildItem -LiteralPath $arch -Directory -ErrorAction SilentlyContinue)) {
-        # Only COMPLETE archives count: a *.partial-* folder is a rip still running, and reserving
-        # for it would hold this loop for the whole 77 minutes rather than for the handover.
-        if ($d.Name -like '*.partial-*' -or $d.Name -eq '_failed') { continue }
+        if ($d.Name -eq '_failed') { continue }
         if ($stagedNames.ContainsKey($d.Name)) { continue }
         if (Test-Path -LiteralPath (Join-Path $d.FullName '_stage')) { continue }
         $b = (Get-ChildItem -LiteralPath $d.FullName -Recurse -File -ErrorAction SilentlyContinue |
               Measure-Object Length -Sum).Sum
-        $opticalReserveGB += [double]$b / 1GB
+        if ($d.Name -like '*.partial-*') {
+          # A RIP STILL RUNNING STILL NEEDS ROOM WHEN IT FINISHES. The first version of this skipped
+          # partials, so the room appeared only once the rip completed - by which time this loop had
+          # usually spent it. Reserve a whole disc for it now; its partial size understates what it
+          # will be. (Never counted as more than one disc.)
+          $opticalReserveGB += [math]::Max($OpticalDiscGB, [double]$b / 1GB)
+        } else {
+          $opticalReserveGB += [double]$b / 1GB
+        }
       }
     }
   } catch { $opticalReserveGB = 0.0 }
-  # Capped, so a backlog of archives can never stop fetching altogether - the reserve exists to let
-  # the NEXT handover through, not to park this track behind an unbounded queue.
-  if ($opticalReserveGB -gt 50) { $opticalReserveGB = 50 }
+  # Capped at the buffer's real capacity, so a runaway archive directory can never stop fetching
+  # altogether - the reserve exists to keep the optical lane draining, not to park this track behind
+  # an unbounded queue.
+  $reserveCap = [double]$OpticalReserveDiscs * [double]$OpticalDiscGB
+  if ($opticalReserveGB -gt $reserveCap) { $opticalReserveGB = $reserveCap }
   $effectiveFloor = [math]::Round($FloorGB + $opticalReserveGB, 1)
 
   if ($freeGB -lt $effectiveFloor) {
