@@ -35,6 +35,11 @@ $ErrorActionPreference = 'Stop'
 $now = Get-Date
 $waiting = @()
 
+# Get-BitmapSubsVerdict lives here: it is THE one place the pipeline's subtitle-state distinctions
+# are made, and publish consults it - so this report must consult the same thing rather than
+# re-deriving a weaker answer from the container.
+. "$PSScriptRoot/lib-subtitles.ps1"
+
 # Needed to ask a file whether it actually carries a bitmap subtitle stream - see the note where
 # $why is worked out. Fail closed: without ffprobe we cannot measure, so say so rather than guess.
 $toolPaths = Join-Path $VideoRoot '.transcode-tools/tool-paths.json'
@@ -91,14 +96,36 @@ foreach ($area in 'Television Shows', 'Movies') {
     # pipeline keeps having to catch elsewhere.
     #
     # `_publish.ps1` refuses on a BITMAP subtitle stream with no sidecar beside it. So ask the file.
+    # ...AND THE SAME FAULT WAS STILL HERE, ONE LAYER UP. Asking ffprobe "does a bitmap stream
+    # exist" is not the same question as "is this file waiting on OCR", because a stream that OCR
+    # HAS ALREADY READ AND FOUND EMPTY is settled: Set-BitmapSubsExhausted records that, and it
+    # explicitly stops blocking publish. 2026-09-07: six of The Song Remains The Same's featurettes
+    # are wordless performance items whose subtitle streams carry no usable text - all six settled
+    # `exhausted` - and the board named every one of them as "NO OCR SIDECAR yet (publish refuses
+    # the whole work until every file has one)". That sends the next reader to check the OCR track,
+    # which is draining perfectly, while the actual reason the work has not published is that its
+    # manifest is still in _queue.
+    #
+    # So ask the VERDICT, which is the thing publish actually consults, not the container.
     $srt = [IO.Path]::ChangeExtension($f.FullName, $null) + 'eng.srt'
     if (Test-Path -LiteralPath $srt) {
       $why = 'ready - waiting on the publish loop'
     } else {
-      $bitmap = @(& $ffprobe -v error -select_streams s -show_entries stream=codec_name `
-                    -of csv=p=0 $f.FullName 2>$null) -match 'dvd_subtitle|hdmv_pgs_subtitle|dvb_subtitle'
-      $why = if ($bitmap) { 'NO OCR SIDECAR yet (publish refuses the whole work until every file has one)' }
-             else { 'ready - no subtitle stream, so no sidecar is needed' }
+      $verdict = try { Get-BitmapSubsVerdict -Path $f.FullName -Ffprobe $ffprobe } catch { $null }
+      $why = switch -Wildcard ("$verdict") {
+        'none'      { 'ready - no subtitle stream, so no sidecar is needed' }
+        'empty'     { 'ready - subtitle stream declared but carries no packets, so no sidecar is possible' }
+        'exhausted' { 'ready - OCR ran and found no usable text; settled, and NOT blocking publish' }
+        'blocked:*' { "BLOCKED - $($verdict -replace '^blocked:','') (publish refuses the work until this is resolved)" }
+        'populated' { 'NO OCR SIDECAR yet (publish refuses the whole work until every file has one)' }
+        default     {
+          # No verdict cached at all - fall back to the container, and say that is what this is.
+          $bitmap = @(& $ffprobe -v error -select_streams s -show_entries stream=codec_name `
+                        -of csv=p=0 $f.FullName 2>$null) -match 'dvd_subtitle|hdmv_pgs_subtitle|dvb_subtitle'
+          if ($bitmap) { 'NO OCR SIDECAR yet (publish refuses the whole work until every file has one)' }
+          else { 'ready - no subtitle stream, so no sidecar is needed' }
+        }
+      }
     }
     $waiting += [pscustomobject]@{ File = $rel; WaitedMin = [int]$ageMin; Why = $why }
   }

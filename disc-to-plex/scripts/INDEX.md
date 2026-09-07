@@ -1,8 +1,8 @@
 # Script index - GENERATED, do not edit
 
-Generated 2026-09-07 12:55 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
+Generated 2026-09-07 14:03 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
 
-**128 scripts under `scripts/`, 45 loop scripts under `D:/video/`. 0 with NO usable header, 46 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
+**129 scripts under `scripts/`, 45 loop scripts under `D:/video/`. 0 with NO usable header, 46 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
 
 Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library` = dot-source, defines functions only; `tests` = a test suite, exit 0 = all passed.
 
@@ -19,6 +19,7 @@ Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library
 | `assert-drive-releasable.ps1` | command | Answer, before a source drive is unplugged: DOES ANYTHING STILL NEED IT? | when: Swapping a drive out is the one routine action in this project that can turn a recoverable situation into a stuck one, and nothing checked it. | `pwsh -NoProfile -File assert-drive-releasable.ps1 -Label media2` |
 | `assert-dvd-title-numbering.ps1` | command | REFUSE a DVD manifest whose `title` numbers do not agree, BY DURATION, with the disc's own catalogue - the off-by-one that ships every episode one slot out. | when: 2026-09-07, Tales of the Unexpected Season 4. Two discs of the same show were manifested by two different agents within the hour: | `pwsh -NoProfile -File assert-dvd-title-numbering.ps1 -Manifest D:/video/_queue/x.json` |
 | `assert-edition-layout.ps1` | command | Refuse a manifest that puts an {edition-...} file in a movie folder which also ships local extras. | when: Measured on this server, 2026-08-27: | `pwsh -File assert-edition-layout.ps1 -Manifest D:/video/_manifests/sunrise.json` |
+| `assert-expectations-consistent.ps1` | command | REFUSE a manifest whose `expectSeconds` and `expectFrames` cannot both describe the same title - two figures that imply no real frame rate, so one of them was copied from somewhere else. | when: 2026-09-07, The Song Remains The Same. A playlist row read | `pwsh -NoProfile -File assert-expectations-consistent.ps1 -Manifest D:/video/_queue/x.json` |
 | `assert-output-paths-legal.ps1` | command | REFUSE a manifest whose output filename contains a character Windows cannot put in a file name. | when: 2026-09-07, Tales of the Unexpected S04E01 "Would You Believe It?". The manifest declared | `pwsh -NoProfile -File assert-output-paths-legal.ps1 -Manifest D:/video/_queue/x.json` |
 | `assert-season00-titles-declared.ps1` | command | REFUSE a manifest that ships a BARE-NAMED Season 00 item without declaring its `plexTitle`. | when: Plex's TV agent titles an episode it does not recognise BY INDEX - "Episode 16", or worse, a real title belonging to a different item. | - |
 | `assert-season00-titles-declared.tests.ps1` | tests | Tests for assert-season00-titles-declared.ps1 - the gate that stops a bare-named Season 00 item publishing with no title Plex could get right. | NO TRIGGER IN HEADER | - |

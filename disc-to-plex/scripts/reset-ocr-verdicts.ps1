@@ -65,6 +65,12 @@ param(
   # 'empty' and 'exhausted' are positive findings about the media rather than about our OCR.
   [string]$Verdict = 'blocked:*',
 
+  # Verdicts to leave alone even when -Verdict matches them. The default exempts the one 'blocked'
+  # shape that is NOT a statement about our OCR: "no bitmap subtitle stream in the requested
+  # language" means the file carries no eng bitmap track to read at all, so no fix to the OCR path
+  # can overturn it and re-running would only re-record the same finding. Pass '' to include them.
+  [string]$ExcludeVerdict = 'blocked:no bitmap subtitle stream*',
+
   # Optional wildcard on the file path, for working a single title or one show.
   [string]$PathMatch = '*',
 
@@ -100,6 +106,7 @@ foreach ($f in $files) {
   if (-not (Test-Path -LiteralPath $cache)) { continue }
   $v = (Get-Content -LiteralPath $cache -Raw).Trim()
   if ($v -notlike $Verdict) { continue }
+  if ($ExcludeVerdict -and ($v -like $ExcludeVerdict)) { continue }
 
   # A file that ALREADY has a sidecar is not blocked by this verdict, whatever the verdict says.
   # Re-OCRing it would burn CPU to reproduce something we already have, so report it apart rather

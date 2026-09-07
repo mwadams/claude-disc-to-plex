@@ -110,6 +110,23 @@ if (Test-Path -LiteralPath $pathGuard) {
   }
 }
 
+# FIFTH FAULT, and the cheapest of all - it needs no disc, no catalogue and no probe, only the two
+# numbers already in the row. expectSeconds and expectFrames are TWO MEASUREMENTS OF ONE QUANTITY,
+# so their ratio has to be a real frame rate; when it is not, one of them was copied from another
+# title. The Song Remains The Same's playlist row paired 969.068 s with 27,007 frames - 27.87 fps -
+# because the seconds were updated when the row was re-pointed at the playlist and the frames were
+# left behind from the truncated Extras 08 it supersedes. ffmpeg then encoded the playlist
+# perfectly (969.109 s, 29,043 frames, exactly matching the source) and transcode.ps1 quarantined
+# that correct output as .wrong-length, failing all ten items. Caught here it costs nothing.
+$expectGuard = 'D:/video/.claude/skills/disc-to-plex/scripts/assert-expectations-consistent.ps1'
+if (Test-Path -LiteralPath $expectGuard) {
+  & pwsh -NoProfile -File $expectGuard -Manifest $Manifest
+  if ($LASTEXITCODE -ne 0) {
+    Write-Output ("gate REFUSED: {0} - expectSeconds and expectFrames cannot describe the same title; one is stale. Not queued." -f (Split-Path $Manifest -Leaf))
+    exit 2
+  }
+}
+
 # THE LEDGER. Record WHICH manifest passed and WHAT IT CONTAINED when it did.
 #
 # The hash matters, not just the name: without it, gating an empty placeholder and then writing the

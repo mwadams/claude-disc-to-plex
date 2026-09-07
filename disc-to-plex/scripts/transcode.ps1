@@ -1300,13 +1300,51 @@ foreach($it in $items){
       Write-Output ("   length +{0:N2}s over the declared {1:N2}s - within the {2:N2}s over-allowance; the dvdvideo demuxer under-declares, this is not a short cut" -f $delta, $want, $overAllowed)
     }
   }
+  # THE FRAME GUARD MUST AGREE WITH THE SECONDS GUARD ABOVE. It is the SAME measurement in another
+  # unit, so a difference the seconds guard has just called benign cannot be a failure here.
+  #
+  # 2026-09-07: the seconds guard was made asymmetric for the dvdvideo demuxer's under-declaration
+  # and both Definitive Sherlock Holmes discs were re-queued - and failed again, identically. The
+  # log says both halves of the contradiction in consecutive lines:
+  #
+  #     length +4.41s over the declared 4,587.00s - within the 15.00s over-allowance; ...
+  #     !! WRONG LENGTH - output has 114,785 video frames, manifest expects 114,675
+  #
+  # 110 frames at 25 fps IS 4.41 s. One guard accepted it and the next rejected it, so fixing only
+  # the first bought nothing: four correct films stayed quarantined and both jobs went back to
+  # _queue\failed. Two guards on one quantity must not be able to disagree.
+  #
+  # So the over-allowance is the seconds allowance converted to frames, and the UNDER tolerance
+  # stays at 25 frames - deliberately tighter than the seconds guard's 2 s, because an under-run is
+  # dropped frames (The Champions D1 t2 lost 592) and that is the failure this guard was written
+  # for. Loosening the over side does not weaken the under side at all.
   if($itemOk -and (Has $it 'expectFrames')){
     $gfTxt = "$(& $fp -v error -count_packets -select_streams v:0 -show_entries stream=nb_read_packets -of csv=p=0 $it.out 2>$null)".Trim().TrimEnd(',')
     $gf = 0; [void][int]::TryParse($gfTxt, [ref]$gf)
-    if([Math]::Abs($gf - [int]$it.expectFrames) -gt 25){
-      Write-Output ("   !! WRONG LENGTH - output has {0:N0} video frames, manifest expects {1:N0}; moved aside as .wrong-length" -f $gf, [int]$it.expectFrames)
+    $wantF = [int]$it.expectFrames
+    # Frame rate from the manifest's own two figures - they describe the same title, so their ratio
+    # is the fps the expectation was built at. Probe the output only when the manifest gives no
+    # seconds to divide by; fall back to the output's own rate rather than assuming 25.
+    $fps = 0.0
+    if((Has $it 'expectSeconds') -and ([double]$it.expectSeconds) -gt 0){ $fps = $wantF / [double]$it.expectSeconds }
+    if($fps -le 0){
+      $r = "$(& $fp -v error -select_streams v:0 -show_entries stream=r_frame_rate -of csv=p=0 $it.out 2>$null)".Trim().TrimEnd(',')
+      if($r -match '^(\d+)/(\d+)$' -and [double]$Matches[2] -ne 0){ $fps = [double]$Matches[1] / [double]$Matches[2] }
+    }
+    $overSec = if((Has $it 'expectSeconds') -and ([double]$it.expectSeconds) -gt 0) {
+      [Math]::Min(15.0, [Math]::Max(2.0, ([double]$it.expectSeconds) * 0.005))
+    } else { 2.0 }
+    # Never TIGHTER than the 25 frames this guard has always allowed, whatever the arithmetic says.
+    $overFrames = [Math]::Max(25.0, $overSec * $fps)
+    $dF = $gf - $wantF                        # positive = output has MORE frames than declared
+    $badF = if($dF -lt 0){ [Math]::Abs($dF) -gt 25 } else { $dF -gt $overFrames }
+    if($badF){
+      Write-Output ("   !! WRONG LENGTH - output has {0:N0} video frames, manifest expects {1:N0} ({2:+#;-#}, allowance {3:N0} over / 25 under); moved aside as .wrong-length" -f $gf, $wantF, $dF, $overFrames)
       Move-Item -LiteralPath $it.out -Destination "$($it.out).wrong-length" -Force
       $itemOk = $false
+    }
+    elseif($dF -gt 25){
+      Write-Output ("   {0:N0} frames over the declared {1:N0} (+{2:N2}s at {3:N3} fps) - within the {4:N0}-frame over-allowance; matches the length check above" -f $gf, $wantF, ($dF / [Math]::Max(0.001,$fps)), $fps, $overFrames)
     }
   }
   # CFR-DECODE COUNT vs PACKET COUNT - the guard for a SEAM OVERSHOOT, which expectFrames is
