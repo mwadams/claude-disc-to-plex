@@ -127,6 +127,21 @@ if (Test-Path -LiteralPath $expectGuard) {
   }
 }
 
+# SIXTH FAULT, and the operator found this one rather than any check: an extra filed into a movie
+# subfolder Plex does not recognise is not an extra at all - the scanner indexes it as a FILM.
+# Moulin Rouge's four stills galleries went to "Still Galleries\" on 2026-09-07 and turned up in
+# the Films library as titles ("Costume Gallery", "The Little Red Book", and one mis-matched to an
+# unrelated film). Everything else about them was right: encoded, verified, published, byte-matched.
+# references/naming.md has always listed the eight valid folders; writing it down was not enough.
+$extrasGuard = 'D:/video/.claude/skills/disc-to-plex/scripts/assert-extras-folders-recognised.ps1'
+if (Test-Path -LiteralPath $extrasGuard) {
+  & pwsh -NoProfile -File $extrasGuard -Manifest $Manifest
+  if ($LASTEXITCODE -ne 0) {
+    Write-Output ("gate REFUSED: {0} - a movie extra would be filed where Plex does not look; it would be indexed as a separate film. Not queued." -f (Split-Path $Manifest -Leaf))
+    exit 2
+  }
+}
+
 # THE LEDGER. Record WHICH manifest passed and WHAT IT CONTAINED when it did.
 #
 # The hash matters, not just the name: without it, gating an empty placeholder and then writing the

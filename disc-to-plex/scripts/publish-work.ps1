@@ -288,7 +288,30 @@ if (-not $SkipSubtitleCheck) {
   $declared = @($declared | Sort-Object -Unique)
 
   if ($declared.Count) {
-    $missing  = @($declared | Where-Object { -not (Test-Path -LiteralPath $_) })
+    # A RECLAIMED OUTPUT IS SATISFIED, NOT MISSING. This gate asks "is the whole declared set
+    # finished", and it was answering it by testing the LOCAL path only - which is exactly the one
+    # thing that stops being true the moment a file succeeds.
+    #
+    # The pipeline's whole point is publish -> user confirms -> reclaim deletes the local copy. So a
+    # declared output that shipped weeks ago has NO local file, and this read it as "not yet
+    # encoded" and held the entire work. Pride and Prejudice, 2026-09-07: S01E01-E03 published on
+    # 30 July and were reclaimed; the plan for that folder still declares them, so every later pass
+    # held all four of the day's corrected re-rips behind three episodes that were already on the
+    # NAS and perfect. 27 attempts, then the circuit breaker tripped - and the failure was SILENT,
+    # because the loop only surfaces lines matching 'verified|REFUSING|NOT PUBLISHING' and this
+    # gate's wording matched none of them (fixed below).
+    #
+    # So the question is "does this output EXIST anywhere it should" - locally, or already on the
+    # NAS. It stays a real gate: an output that is in neither place has genuinely not been encoded.
+    function Test-DeclaredSatisfied([string]$OutPath) {
+      if (Test-Path -LiteralPath $OutPath) { return $true }
+      $rel = $OutPath.Substring($workOut.Length).TrimStart('\')
+      $onNas = Join-Path $dst $rel
+      return (Test-Path -LiteralPath $onNas)
+    }
+    $missing  = @($declared | Where-Object { -not (Test-DeclaredSatisfied $_) })
+    # OCR is only ever asked of a LOCAL file - a reclaimed one was published with its subtitle state
+    # already settled, and there is no local copy left to probe.
     $awaiting = @()
     foreach ($o in @($declared | Where-Object { Test-Path -LiteralPath $_ })) {
       if ([IO.Path]::GetExtension($o) -ne '.mkv') { continue }
@@ -297,7 +320,12 @@ if (-not $SkipSubtitleCheck) {
       if (Test-BitmapSubsPopulated -Path $o -Ffprobe $ffprobe) { $awaiting += (Split-Path $o -Leaf) }
     }
     if ($missing.Count -or $awaiting.Count) {
-      Write-Warning ("HOLDING the whole work: its plan declares {0} output(s); {1} not yet encoded, {2} awaiting OCR." -f $declared.Count, $missing.Count, $awaiting.Count)
+      # THE WORD 'REFUSING' IS LEAD, NOT DECORATION. _publish-loop.ps1 surfaces only the lines
+      # matching 'verified|REFUSING|NOT PUBLISHING'; anything else is dropped, and a gate whose
+      # refusal is invisible reads in the log as a publish that simply did nothing. That is how
+      # Pride and Prejudice was held 27 times with no line in the log saying why - the loop printed
+      # its own "PARTIAL: 0 landed this pass" and nothing else, so the cause looked like robocopy.
+      Write-Warning ("REFUSING - HOLDING the whole work: its plan declares {0} output(s); {1} neither local nor on the NAS, {2} awaiting OCR." -f $declared.Count, $missing.Count, $awaiting.Count)
       $missing  | ForEach-Object { Write-Warning "    not encoded : $(Split-Path $_ -Leaf)" }
       $awaiting | ForEach-Object { Write-Warning "    awaiting OCR: $_" }
       Write-Warning '    Publication triggers when the whole declared set is complete. -SkipSubtitleCheck overrides the OCR half.'
