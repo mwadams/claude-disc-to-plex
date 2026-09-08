@@ -105,7 +105,7 @@ $stalls = @()
 $held   = @()
 $moving = @()
 # Collected for the state file (see -StateFile): what the alarm can name without re-parsing prose.
-$needsValidation = @(); $briefsReady = @(); $reclaimFailed = @(); $reclaimFailedStale = @(); $reclaimStuck = @(); $manifestFailed = @(); $dischargePendingNames = @()
+$needsValidation = @(); $briefsReady = @(); $reclaimFailed = @(); $reclaimFailedStale = @(); $reclaimStuck = @(); $manifestFailed = @(); $manifestFailedStale = @(); $dischargePendingNames = @()
 # UNITS THAT HAVE NOT YET REACHED THE ENCODERS - the input to "encodersStarved" below. Incremented
 # once per unit that still needs dispositions or a manifest, whichever branch it lands in.
 $awaitingAuthoring = 0
@@ -507,6 +507,19 @@ foreach ($u in $units) {
     if ($laterDone.Count -gt 0) {
       $moving += "{0,-28} a manifest FAILED ({1}) but a LATER one completed ({2}) - the failed/ copy is stale history; nothing to do" -f `
                  $name, ($failed -join ', '), (($laterDone | ForEach-Object { $_.Name }) -join ', ')
+      # MACHINE-READABLE, exactly as reclaimFailedStale already is, so a sweep can ARCHIVE these
+      # without re-implementing the test. The resolution question - "did a LATER manifest for this
+      # UNIT reach done\" - is subtle (a retry is deliberately renamed, so comparing filenames finds
+      # nothing) and a second copy of it would drift from this one. Whoever tidies the folder must
+      # be answering the same question the board answers, or the board will keep reporting what the
+      # sweep just moved, or worse the sweep will move something the board still considers open.
+      #
+      # WHY TIDY AT ALL: this line is re-derived on EVERY board run and never goes away. 17 failed
+      # manifests on 2026-09-08, 7 of them producing one of these lines each, six of those from that
+      # day alone - and a board whose output is mostly explained noise is one whose real lines get
+      # skimmed. That is the crowding-out failure this project has already had once, when error
+      # records drowned the OCR gate.
+      foreach ($fn in @($failed)) { $manifestFailedStale += $fn }
       continue
     }
   }
@@ -565,7 +578,7 @@ if ($stalls.Count -eq 0 -and $Quiet) {
   # The -Quiet early exit skips the audits below, so the state file is written here with what is
   # known - a quiet, un-stalled board - rather than left stale from an earlier, louder run.
   if ($StateFile) {
-    try { ([ordered]@{ at = (Get-Date).ToString('s'); stalls = @(); moving = @($moving); held = @($held); busy = [bool]$busy; queued = [int]$queued; running = [int]$running; unitsStaged = [int]$units.Count; fullyStopped = $false; nothingStaged = [bool]($units.Count -eq 0 -and -not $busy); spaceBlocked = $false; awaitingAuthoring = 0; encodersStarved = $false; reclaimFailed = @(); reclaimFailedStale = @(); manifestFailed = @(); needsValidation = @(); briefsReady = @(); briefBatches = @(); dischargePending = @(); quietRun = $true } | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $StateFile -Encoding UTF8 } catch { }
+    try { ([ordered]@{ at = (Get-Date).ToString('s'); stalls = @(); moving = @($moving); held = @($held); busy = [bool]$busy; queued = [int]$queued; running = [int]$running; unitsStaged = [int]$units.Count; fullyStopped = $false; nothingStaged = [bool]($units.Count -eq 0 -and -not $busy); spaceBlocked = $false; awaitingAuthoring = 0; encodersStarved = $false; reclaimFailed = @(); reclaimFailedStale = @(); manifestFailed = @(); manifestFailedStale = @(); needsValidation = @(); briefsReady = @(); briefBatches = @(); dischargePending = @(); quietRun = $true } | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $StateFile -Encoding UTF8 } catch { }
   }
   return
 }
@@ -846,6 +859,7 @@ if ($StateFile) {
     reclaimFailed  = @($reclaimFailed)
     reclaimFailedStale = @($reclaimFailedStale)
     manifestFailed = @($manifestFailed)
+    manifestFailedStale = @($manifestFailedStale)
     needsValidation = @($needsValidation)
     briefsReady    = @($briefsReady)
     briefBatches   = @($briefBatchDocs)
