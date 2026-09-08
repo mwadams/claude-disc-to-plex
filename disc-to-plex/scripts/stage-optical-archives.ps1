@@ -21,6 +21,13 @@
   is moved but NOT recorded, so the catalogue loop leaves it alone and it is visible as staged-but-
   ungated rather than silently half-done.
 
+  TWO ARCHIVE SHAPES, TWO GUARANTEES. A protected disc (ARccOS/RipGuard - see disc-backup's
+  references/protected-discs.md) has a fabricated filesystem, so it is ripped straight to title MKVs
+  by backup-dvd-makemkv.ps1 and verified by CONTENT: no VIDEO_TS, no byte total, no IFO comparison.
+  Both shapes are staged and gated here; what they are NOT is described in the same words, because
+  the difference between a byte-exact copy and a set of re-encodable titles is exactly what a reader
+  of _optical-staged.tsv months later needs to see.
+
 .SAFETY
   * .partial-* folders are NEVER touched. A rip in progress owns its folder.
   * An existing destination is never overwritten - that disc is reported and skipped.
@@ -70,6 +77,10 @@ param(
   [switch]$WhatIf
 )
 $ErrorActionPreference = 'Stop'
+# Test-MakeMkvBackupSidecar lives with the ripper that writes those sidecars. Dot-sourced rather
+# than reimplemented: "is this content-verified rip intact where it now lives" must have exactly
+# one answer, and _optical-loop.ps1 asks the same function the same question before it ever gets here.
+. "$PSScriptRoot/../../disc-backup/scripts/lib-optical.ps1"
 function Say([string]$m) { Write-Output $m }
 
 if (-not (Test-Path -LiteralPath $ArchiveRoot)) { Say "no archive root at $ArchiveRoot"; exit 0 }
@@ -138,7 +149,16 @@ foreach ($d in @(Get-ChildItem -LiteralPath $ArchiveRoot -Directory -Force -Erro
   }
   $dest = Join-Path $Stage $target
 
-  $need = [long]$j.bytes
+  # TWO SHAPES OF ARCHIVE ARRIVE HERE, and they carry different sidecars.
+  # A protected disc (ARccOS/RipGuard) cannot be sector-copied at all, so backup-dvd-makemkv.ps1
+  # rips its TITLES to MKV and verifies by CONTENT - there is no VIDEO_TS, no `bytes` total, no
+  # IFO/BUP comparison and no read-error count, because none of those exist on that path.
+  # Left unhandled this did not fail loudly: `$j.bytes` was $null so the space check reserved
+  # nothing, the post-move check compared 0 against 0 and PASSED, and only `@($null).Count -ne 0`
+  # stopped the gate - the disc would be staged and then sit there ungated for ever, which reads on
+  # the board as "nothing is briefing it" rather than "the handover does not know this shape".
+  $content = ("$($j.verifiedBy)" -eq 'content')
+  $need = if ($content) { [long](@($j.titles | ForEach-Object { [long]$_.Bytes } | Measure-Object -Sum).Sum) } else { [long]$j.bytes }
   $free = [IO.DriveInfo]::new([IO.Path]::GetPathRoot((Resolve-Path $Stage).Path)).AvailableFreeSpace
   if (($free - $need) -lt ([long]$MinFreeGB * 1GB)) {
     Say ("  HOLD {0} - {1:N2} GB needed, {2:N1} GB free on the stage volume, floor {3} GB" -f $d.Name, ($need/1GB), ($free/1GB), $MinFreeGB)
@@ -156,17 +176,28 @@ foreach ($d in @(Get-ChildItem -LiteralPath $ArchiveRoot -Directory -Force -Erro
   # RE-VERIFY WHERE IT NOW LIVES. The sidecar's byte total must still hold after the move; anything
   # else means a short copy, and recording it in _fetch-done.txt would assert a completeness that
   # was never re-established.
-  $vts = Join-Path $dest 'VIDEO_TS'
-  $now = 0L
-  if (Test-Path -LiteralPath $vts) { $now = [long](@(Get-ChildItem -LiteralPath $vts -File -ErrorAction SilentlyContinue) | Measure-Object Length -Sum).Sum }
-  if ($now -ne $need) {
-    Say ("  !! {0} STAGED BUT NOT GATED - VIDEO_TS is {1:N0} B, the sidecar says {2:N0} B. Not written to _fetch-done.txt." -f $d.Name, $now, $need)
-    $failed++; continue
-  }
-  $ifoDiff = @($j.ifoBup.different).Count
-  if ($ifoDiff -ne 0 -or [int]$j.readErrors -ne 0) {
-    Say ("  !! {0} STAGED BUT NOT GATED - sidecar reports {1} IFO/BUP difference(s), {2} read error(s)." -f $d.Name, $ifoDiff, $j.readErrors)
-    $failed++; continue
+  if ($content) {
+    # Every title the ripper verified must still be here at the size it recorded. That is the whole
+    # of what can be re-established after a move on this path - and it is the same check the optical
+    # loop makes, so the two cannot disagree about what "still good" means.
+    $chk = Test-MakeMkvBackupSidecar -Sidecar $j -Folder $dest
+    if (-not $chk.Ok) {
+      Say ("  !! {0} STAGED BUT NOT GATED - the content-verified titles do not survive the move: {1}. Not written to _fetch-done.txt." -f $d.Name, $chk.Reason)
+      $failed++; continue
+    }
+  } else {
+    $vts = Join-Path $dest 'VIDEO_TS'
+    $now = 0L
+    if (Test-Path -LiteralPath $vts) { $now = [long](@(Get-ChildItem -LiteralPath $vts -File -ErrorAction SilentlyContinue) | Measure-Object Length -Sum).Sum }
+    if ($now -ne $need) {
+      Say ("  !! {0} STAGED BUT NOT GATED - VIDEO_TS is {1:N0} B, the sidecar says {2:N0} B. Not written to _fetch-done.txt." -f $d.Name, $now, $need)
+      $failed++; continue
+    }
+    $ifoDiff = @($j.ifoBup.different).Count
+    if ($ifoDiff -ne 0 -or [int]$j.readErrors -ne 0) {
+      Say ("  !! {0} STAGED BUT NOT GATED - sidecar reports {1} IFO/BUP difference(s), {2} read error(s)." -f $d.Name, $ifoDiff, $j.readErrors)
+      $failed++; continue
+    }
   }
 
   if ($done -notcontains $target) {
@@ -176,7 +207,11 @@ foreach ($d in @(Get-ChildItem -LiteralPath $ArchiveRoot -Directory -Force -Erro
   # The ledger is what makes the collision check survive a reclaim: once staging is released the
   # fingerprint is gone from this machine, and _fetch-done.txt records only a NAME.
   "{0}`t{1}`t{2}`t{3}" -f $target, $fp, (Get-Date -Format 'o'), $need | Add-Content -LiteralPath $ledger
-  Say ("  OK {0}{1} - staged and recorded (bytes match the sidecar, IFO/BUP identical, 0 read errors)" -f $target, $(if ($target -ne $d.Name) { " (from archive folder '$($d.Name)')" } else { '' }))
+  # NEVER THE SAME WORDS FOR THE TWO GUARANTEES. What this line claims is what a future reader will
+  # believe about how the disc was preserved.
+  $how = if ($content) { 'CONTENT-verified: every ripped title present at its verified size; NOT byte-verified, and cannot be - the disc''s own listing is fabricated' }
+         else { 'bytes match the sidecar, IFO/BUP identical, 0 read errors' }
+  Say ("  OK {0}{1} - staged and recorded ({2})" -f $target, $(if ($target -ne $d.Name) { " (from archive folder '$($d.Name)')" } else { '' }), $how)
   $moved++
 }
 
