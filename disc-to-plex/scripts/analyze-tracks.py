@@ -795,9 +795,36 @@ def main():
             top.sort(key=lambda l: -max((s['channels'] or 0) for s in cand if s['spokenLang'] == l))
         winner = top[0]
         inLang = [s for s in cand if s['spokenLang'] == winner]
-        primary = max(inLang, key=lambda s: (s['channels'] or 0, -s['a']))
+        # CHANNEL COUNT ELECTS THE PRIMARY ONLY WHEN A REAL MULTICHANNEL MIX IS IN PLAY.
+        #
+        # "The programme is the widest mix" is true of modern content - a 5.1 feature against a 2.0
+        # commentary - and false of archive television, where the programme is MONO and a commentary
+        # recorded decades later is ordinary 2.0. On Out of the Unknown (BBC 1965, BFI 2006) this
+        # rule elected the COMMENTARY as primary on roughly half the dual-audio titles: whenever the
+        # commentary cues in the sampled window were too weak to exclude the stereo track from the
+        # vote above, 2 > 1 decided it. Measured 2026-09-08 - disc 4: The Machine Stops correct,
+        # Level Seven inverted; disc 3: one of two inverted.
+        #
+        # That is not a cosmetic mislabel. The inverted evidence then DEADLOCKS the pipeline:
+        # assert-tracks-analysed.ps1 refuses any manifest that disagrees with the evidence, and the
+        # only edit it accepts is the one that makes the manifest wrong - so a correct manifest
+        # cannot be expressed at all.
+        #
+        # So: with a genuine surround mix present (>= 3 channels) the old preference stands, because
+        # there the channel count really does identify the programme. With only mono and stereo in
+        # play it identifies nothing, and the election falls back to AUTHORING ORDER - the disc's
+        # first audio track. That is a real convention rather than a guess: the programme audio is
+        # authored first and commentaries are appended after it, which is also why the old tiebreak
+        # already preferred the lower index once channels tied.
+        multichannel = max((s['channels'] or 0) for s in inLang) >= 3
+        if multichannel:
+            primary = max(inLang, key=lambda s: (s['channels'] or 0, -s['a']))
+            how = f"widest mix ({primary['channels']}ch)"
+        else:
+            primary = min(inLang, key=lambda s: s['a'])
+            how = "first authored track (no multichannel mix, so channel count decides nothing)"
         print(f"primary reference: a:{primary['a']} ({winner}) - "
-              f"{best} of {len(cand)} speech track(s) are {winner}")
+              f"{best} of {len(cand)} speech track(s) are {winner}; elected by {how}")
     if primary is None:
         for s in streams:
             if s['role'] is None and s['spokenLang']:

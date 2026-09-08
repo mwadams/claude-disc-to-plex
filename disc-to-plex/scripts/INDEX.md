@@ -1,6 +1,6 @@
 # Script index - GENERATED, do not edit
 
-Generated 2026-09-08 18:30 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
+Generated 2026-09-08 19:36 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
 
 **133 scripts under `scripts/`, 46 loop scripts under `D:/video/`. 0 with NO usable header, 46 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
 
