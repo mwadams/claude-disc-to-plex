@@ -303,5 +303,25 @@ while ($true) {
     break    # one title per pass - re-read the dispositions before choosing the next
   }
 
-  if (-not $did) { Start-Sleep -Seconds 90 }
+  # SAY SOMETHING WHILE IDLE, or silence is unreadable.
+  #
+  # This loop already opens a transcript, but it only ever WRITES when it rips. So a track with
+  # nothing to do and a track that is wedged look identical: a log whose newest line is the
+  # start-up banner. On 2026-09-08 this one had been silent for 3h09m and I could not tell which it
+  # was without reading the loop's source - the same ambiguity that had me report the correct track
+  # stalled when it was merely starting up.
+  #
+  # Throttled to twice an hour: often enough that a stopped clock is obvious within the half hour,
+  # rare enough that the log stays readable. A loop that says "idle, and here is what I looked at"
+  # is answering the question someone actually has.
+  if (-not $did) {
+    if (-not $script:lastIdleSay -or ((Get-Date) - $script:lastIdleSay).TotalMinutes -ge 30) {
+      $script:lastIdleSay = Get-Date
+      $cands = @(Get-ChildItem "$Catalogue/*.dispositions.txt" -ErrorAction SilentlyContinue).Count
+      $staged = @(Get-ChildItem $Stage -Directory -ErrorAction SilentlyContinue).Count
+      Write-Output ("[{0}] idle - nothing to rip: {1} dispositions file(s) across {2} staged unit(s), none asking for a title this pass" -f `
+                    (Get-Date -Format 'HH:mm:ss'), $cands, $staged)
+    }
+    Start-Sleep -Seconds 90
+  }
 }

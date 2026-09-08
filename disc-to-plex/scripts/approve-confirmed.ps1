@@ -283,7 +283,29 @@ if ($All) {
 }
 $chosen = $Work
 $problems = @()
-foreach ($w in $chosen) { $p = Test-WorkIsPending -Name $w -Pending $pendingNames; if ($p) { $problems += $p } }
+# -StagingOnly IS EXEMPT FROM THE PENDING CHECK, and without this exemption the switch is dead code.
+#
+# The pending list SELF-CLEARS: "a work is still PENDING only while local files remain under
+# D:/video". -StagingOnly is documented as "units only: for a work whose local copies are already
+# reclaimed". Those two conditions are mutually exclusive, so every work the switch exists to serve
+# is guaranteed to be absent from the list it was being checked against. Discovered 2026-09-08
+# trying to use it on Taxi Driver: confirmed by the operator on 09-06, its local copies released by
+# one of the six works-only artefacts of that day, and 7.5 GB of staging stranded ever since with
+# no sanctioned way to free it.
+#
+# Safe, because the pending list is not what makes a release safe. Every gate still runs inside
+# _reclaim-loop.ps1: deriveUnitsForWorks returns only units whose every output is DELIVERED AND
+# BYTE-VERIFIED on the NAS, and a unit that fails is refused. What is checked here instead is that
+# the switch is being used for what it says: a work with nothing left locally.
+if ($StagingOnly) {
+  foreach ($w in $chosen) {
+    if ($localWorks.ContainsKey($w) -and @($localWorks[$w]).Count) {
+      $problems += ("'$w' still has $(@($localWorks[$w]).Count) local file(s) - use the normal path, not -StagingOnly (which exists for works whose local copies are already gone).")
+    }
+  }
+} else {
+  foreach ($w in $chosen) { $p = Test-WorkIsPending -Name $w -Pending $pendingNames; if ($p) { $problems += $p } }
+}
 if ($problems.Count) {
   Write-Output "REFUSE - $($problems.Count) name(s) not on the pending list:"
   $problems | ForEach-Object { Write-Output "    $_" }
