@@ -77,6 +77,32 @@ param(
   [switch]$WhatIf
 )
 $ErrorActionPreference = 'Stop'
+
+# SINGLE INSTANCE, MACHINE-WIDE. This script MOVES folders, so two of it running at once is not a
+# slow path - it is a torn one.
+#
+# 2026-09-08, Out of the Unknown disc 3. _optical-loop.ps1 invokes this from TWO places: once from
+# its own post-eject handoff, and once from a 5-minute periodic sweep that the handoff did not
+# reset. Both fired within three seconds. The first pass moved all five titles, wrote the ledger row
+# and gated the unit correctly. The second found the destination already there, could not read its
+# sidecar mid-move so judged it "a DIFFERENT disc (fingerprints differ)" - the two sidecars were
+# identical - staged the leftovers as "<name> (2)", and reported "5 of 5 verified title file(s)
+# MISSING" about a folder holding nothing but a sidecar. Meanwhile the loop's own verdict, running
+# between the two, reported the two ALPHABETICALLY FIRST files as missing because the sweep had
+# already carried them off: a success message with a MISSING clause inside it.
+#
+# Nothing was lost - the gate is the ledger and _fetch-done.txt, and both were right - but every one
+# of those messages was false, and a lane that lies about what it did cannot be read.
+$stageMutexName = 'Global' + [char]92 + 'video-stage-optical'
+$stageMutex = New-Object System.Threading.Mutex($false, $stageMutexName)
+# NB: Write-Output, not Say - `function Say` is defined further down and does not exist yet here.
+if ($null -eq $stageMutex) { Write-Output 'could not create the staging mutex - refusing to run unguarded'; exit 0 }
+if (-not $stageMutex.WaitOne(0)) {
+  # Not an error: the other pass is doing exactly this work, and it will finish it.
+  Write-Output 'another stage-optical-archives pass is already running - leaving it to that one'
+  exit 0
+}
+try {
 # Test-MakeMkvBackupSidecar lives with the ripper that writes those sidecars. Dot-sourced rather
 # than reimplemented: "is this content-verified rip intact where it now lives" must have exactly
 # one answer, and _optical-loop.ps1 asks the same function the same question before it ever gets here.
@@ -216,4 +242,6 @@ foreach ($d in @(Get-ChildItem -LiteralPath $ArchiveRoot -Directory -Force -Erro
 }
 
 Say ("stage-optical-archives: {0} staged, {1} skipped, {2} failed" -f $moved, $skipped, $failed)
+}
+finally { try { $stageMutex.ReleaseMutex() } catch { }; $stageMutex.Dispose() }
 if ($failed) { exit 1 }

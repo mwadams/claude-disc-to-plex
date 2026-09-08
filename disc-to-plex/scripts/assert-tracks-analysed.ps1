@@ -427,8 +427,26 @@ foreach ($it in $items) {
                    [int](@($it.audioTracks)[0]) } else { $null }
       if ($null -ne $mainIdx -and $mainIdx -ne $ci) {
         $main = $byIdx[$mainIdx]
+        # ...EXCEPT WHERE THE PREMISE DOES NOT HOLD: A MONO PROGRAMME.
+        #
+        # "The programme mix is the one with the channels" assumes the programme HAS a mix worth
+        # the name. Archive television has none: Out of the Unknown (BBC, 1965) is MONO, and the
+        # BFI's 2006 release carries commentaries recorded four decades later in ordinary 2.0. So
+        # 2 > 1 fires on a pairing that is not merely fine but the norm for the entire category -
+        # every mono-era disc with a modern commentary would be refused, and the manifest, the
+        # analyser and the transcripts were all correct (2026-09-08, disc 2 "Sucker Bait": a:0 mono
+        # carried the drama, a:1 stereo carried people discussing the casting and direction, with
+        # similarityToPrimary 0.09 confirming they are not the same content).
+        #
+        # NARROW, so the Farscape catch above survives intact: only a MONO main paired with a
+        # commentary of at most 2.0 is exempt - the standard two-speakers-in-a-room mix. Farscape's
+        # inversion had a 2.0 main against a 5.1 "commentary" and still fires. A mono main against
+        # a 5.1 "commentary" is still absurd and still fires. What is no longer refused is exactly
+        # the ordinary shape: mono programme, stereo commentary.
+        $monoMainStereoComm = ($s -and $main -and $main.channels -and $s.channels -and
+                               [int]$main.channels -eq 1 -and [int]$s.channels -le 2)
         if ($s -and $main -and $s.channels -and $main.channels -and
-            [int]$s.channels -gt [int]$main.channels) {
+            [int]$s.channels -gt [int]$main.channels -and -not $monoMainStereoComm) {
           $problems += "$(Split-Path $out -Leaf): a:$ci is tagged as commentary but carries " +
                        "$($s.channels) channels against a:$mainIdx's $($main.channels) - the " +
                        "wider mix is the programme, so this pair is INVERTED. Re-read both " +
