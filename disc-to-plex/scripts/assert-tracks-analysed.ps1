@@ -190,10 +190,51 @@ foreach ($it in $items) {
         if ($probeRan -and $n -eq 0) {
           $trivial = $true
         } elseif ($probeRan -and $n -gt 0) {
-          $problems += "$(Split-Path $out -Leaf): audioTracks [] claims this title has NO audio, " +
-                       "but the probe finds $n audio stream(s) - an empty claim here silently " +
-                       "drops real audio. Select the stream(s) or evidence why not"
-          continue
+          # ...UNLESS EVERY ONE OF THOSE STREAMS IS EVIDENCED AS DIGITAL SILENCE.
+          #
+          # "Select the stream(s) or evidence why not" had no reachable answer for a title whose
+          # audio is silent on every stream: selecting one is refused below (role 'silent?' /
+          # 'analysis-failed'), and [] is refused here. The Sixth Sense's two 6-second Italian cards
+          # (title 3 "Il Sesto Senso - Italian Title Card", title 4 "Italian Dubbing Cast Credits")
+          # hit exactly that on 2026-09-08 - NO value could pass, which is the failure this file
+          # already names twice: "a gate that can only be satisfied by a false claim forces exactly
+          # the override it exists to prevent".
+          #
+          # The refusal above exists for The Saint D8's mute newsreel - a manifest that dropped REAL
+          # audio. That reason does not reach a title with no audio to drop, and the distinction is
+          # measurable rather than argued: analyze-tracks.py's own per-stream verdict. Measured
+          # independently on those two titles, ffmpeg volumedetect returned mean AND max both
+          # exactly -91.0 dB on all four streams - a signal that never deviates.
+          #
+          # NARROW BY CONSTRUCTION: every stream must be evidenced silent. One measurably real
+          # stream and this refuses exactly as before. An analysis that never ran cannot approve
+          # anything either - `role` absent is not silence.
+          $silentEv = "$($it.src).tracks.json"
+          if ((Test-Path -LiteralPath "$($it.src)" -PathType Container) -and $null -ne $it.title) {
+            $t2 = "$($it.src).title$($it.title).tracks.json"
+            if (Test-Path -LiteralPath $t2) { $silentEv = $t2 }
+          }
+          $allSilent = $false
+          if (Test-Path -LiteralPath $silentEv) {
+            try {
+              $sev = Get-Content -LiteralPath $silentEv -Raw | ConvertFrom-Json
+              $st = @($sev.streams)
+              # Silent on the measurement, not on a failure to measure: a stream whose level was
+              # never taken (audioLevelDb null, role 'analysis-failed') evidences nothing. Requiring
+              # a NUMBER here is what stops "the analyser fell over" from reading as "there is no audio".
+              $measured = @($st | Where-Object { $null -ne $_.audioLevelDb -and [double]$_.audioLevelDb -le -60 })
+              $allSilent = ($st.Count -gt 0 -and $measured.Count -eq $st.Count)
+            } catch { $allSilent = $false }
+          }
+          if ($allSilent) {
+            $trivial = $true
+          } else {
+            $problems += "$(Split-Path $out -Leaf): audioTracks [] claims this title has NO audio, " +
+                         "but the probe finds $n audio stream(s) - an empty claim here silently " +
+                         "drops real audio. Select the stream(s), or have analyze-tracks.py measure " +
+                         "every stream as silent (all at or below -60 dB), which is accepted here"
+            continue
+          }
         }
       }
     }

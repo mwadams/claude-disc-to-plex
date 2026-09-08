@@ -44,6 +44,10 @@ param(
   # script and read it - and on 2026-09-04 the line stood for six hours while nobody did.
   # _stall-alarm.ps1 reads this file and raises a toast. '' disables the write; every existing
   # caller sees exactly the same printed output as before.
+  # _dispositions-loop.ps1's own state, read ONLY for its recorded auth probe (auth.ok) - see
+  # $dispRunnerOk below. A PARAMETER rather than a hard-coded path so tests can state whether a
+  # runner exists instead of inheriting whatever the real machine happens to be doing.
+  [string]$DispositionsState = 'D:/video/_dispositions-state.json',
   [string]$StateFile = 'D:/video/_stallwatch-state.json',
   [string]$ReclaimRoot = 'D:/video/_reclaim-queue',
   # Hours a CONFIRMED reclaim may sit in RETRY before the board calls it stuck. 6 h is comfortably
@@ -102,6 +106,9 @@ $held   = @()
 $moving = @()
 # Collected for the state file (see -StateFile): what the alarm can name without re-parsing prose.
 $needsValidation = @(); $briefsReady = @(); $reclaimFailed = @(); $reclaimFailedStale = @(); $reclaimStuck = @(); $manifestFailed = @(); $dischargePendingNames = @()
+# UNITS THAT HAVE NOT YET REACHED THE ENCODERS - the input to "encodersStarved" below. Incremented
+# once per unit that still needs dispositions or a manifest, whichever branch it lands in.
+$awaitingAuthoring = 0
 # ONE BRIEF READY LINE PER BATCH, NOT PER UNIT (2026-09-04). _dispositions-loop.ps1 briefs the discs
 # of one work to ONE agent and saves the SAME brief under each member's name, so this board saw a
 # brief per unit and printed a "spawn an agent with: Follow the brief at ..." line per unit - two
@@ -114,6 +121,20 @@ $needsValidation = @(); $briefsReady = @(); $reclaimFailed = @(); $reclaimFailed
 $briefBatches = [ordered]@{}
 $spaceBlocked = $false
 $dispTrackAlive = Test-TrackAlive 'video-dispositions-loop'
+# ALIVE IS NOT THE SAME AS ABLE TO RUN A BRIEF, and conflating them broke this both ways in one day.
+#
+# _dispositions-loop.ps1 runs in BRIEF-ONLY mode when the Windows claude CLI is not logged in: the
+# track is alive, it writes every brief, and NOTHING will ever pick them up - that is precisely the
+# case "BRIEF READY, no authenticated runner" exists to report. But an AUTHENTICATED loop also
+# writes a brief before launching its agent, and reporting THAT as a stall produced five false
+# alerts on 2026-09-08 while the loop drained them correctly at -MaxConcurrent 1.
+#
+# So the discriminator is the loop's own recorded auth probe, not its liveness. Absent or unreadable
+# state = not authenticated: a brief nobody can be shown to be running is worth reporting.
+$dispRunnerOk = $false
+if ($dispTrackAlive) {
+  try { $dispRunnerOk = [bool]((Get-Content -LiteralPath $DispositionsState -Raw -ErrorAction Stop | ConvertFrom-Json).auth.ok) } catch { $dispRunnerOk = $false }
+}
 
 foreach ($u in $units) {
   $name = $u.Name
@@ -177,6 +198,7 @@ foreach ($u in $units) {
       continue
     }
     if (-not (Test-Path -LiteralPath $disp)) {
+      $awaitingAuthoring++          # no dispositions yet => no manifest yet => the encoders cannot see it
       # SAME MARKER RULE AS MANIFESTS. A disposition subagent takes MINUTES - on a 35-title extras
       # disc it took forty - and writes nothing until it finishes. Without a marker that is
       # indistinguishable from "nobody has started", so the monitor reported discs as blocked on a
@@ -188,8 +210,12 @@ foreach ($u in $units) {
       #                     names the operator's validation, which is the one review left to them;
       #   marker, fresh     an agent is working (the track's, or one the main session spawned);
       #   marker, STALE     nothing written for hours - the agent died; a stall, not "moving";
-      #   brief, no marker  the track has NO AUTHENTICATED RUNNER and wrote the brief for someone
-      #                     to hand to an agent - a stall whose remedy is one line.
+      #   brief, no marker  the brief is written and waiting. If the dispositions track is ALIVE
+      #                     this is simply QUEUED - the track runs one agent at a time
+      #                     (-MaxConcurrent 1) and will pick it up. Only when that track is DOWN is
+      #                     it a stall whose remedy is one line. Reporting it as a stall regardless
+      #                     of the track produced five simultaneous false "no authenticated runner"
+      #                     alerts on 2026-09-08 while the loop was draining them correctly.
       $nvFile   = Join-Path $Pending ($name + '.NEEDS-VALIDATION.txt')
       $marker   = Join-Path $Pending ($name + '.dispositioning')
       $brief    = Join-Path $Pending ($name + '.dispositions-brief.md')
@@ -204,10 +230,27 @@ foreach ($u in $units) {
           $moving += "{0,-28} dispositions being written (subagent working, {1:N0} min)" -f $name, $mAge.TotalMinutes
         }
       } elseif (Test-Path -LiteralPath $brief) {
-        $bh = (Get-FileHash -LiteralPath $brief -Algorithm SHA256).Hash
-        if (-not $briefBatches.Contains($bh)) { $briefBatches[$bh] = @{ Units = @(); Brief = $brief; Phase = 'dispositions' }; $stalls += ('{{BRIEF-BATCH:' + $bh + '}}') }
-        $briefBatches[$bh].Units += $name
-        $briefsReady += $name
+        # A BRIEF IS ONLY A STALL WHEN NOTHING WILL RUN IT.
+        #
+        # This branch used to fire on the mere EXISTENCE of the brief file, without first asking
+        # whether the dispositions track was alive - so every brief that track had written and was
+        # about to pick up was reported as "BRIEF READY, no authenticated runner", and
+        # _stall-alarm.ps1 raised a toast per unit. 2026-09-08: five simultaneous false alerts while
+        # the loop was working through them correctly, one at a time (-MaxConcurrent 1). The
+        # operator reasonably read that as "prepared briefs are not being fed to a runner"; they
+        # were, in the only order the loop is allowed to run them.
+        #
+        # The manifest-orphan branch further down already reasons exactly this way. This file's own
+        # warning applies: an alarm that cries wolf four times in five is worse than no alarm,
+        # because the fifth is the one that gets ignored.
+        if ($dispRunnerOk) {
+          $moving += "{0,-28} brief written - queued for _dispositions-loop's authenticated runner" -f $name
+        } else {
+          $bh = (Get-FileHash -LiteralPath $brief -Algorithm SHA256).Hash
+          if (-not $briefBatches.Contains($bh)) { $briefBatches[$bh] = @{ Units = @(); Brief = $brief; Phase = 'dispositions' }; $stalls += ('{{BRIEF-BATCH:' + $bh + '}}') }
+          $briefBatches[$bh].Units += $name
+          $briefsReady += $name
+        }
       } elseif ($dispTrackAlive) {
         $moving += "{0,-28} queued for _dispositions-loop" -f $name
       } else {
@@ -386,6 +429,7 @@ foreach ($u in $units) {
     if ($viaRip.Count -gt 0) {
       $moving += "{0,-28} its RIP carries the manifest ({1})" -f $name, (($viaRip.Name) -join ', ')
     } else {
+      $awaitingAuthoring++          # dispositions exist but no manifest yet - still short of the encoders
       # IS SOMEONE ALREADY WRITING IT? A manifest subagent takes minutes, and during that time
       # nothing exists to find - so this looked exactly like "nobody has started", and the monitor
       # said so on a four-minute cycle. The marker is dropped when the agent is briefed.
@@ -404,10 +448,15 @@ foreach ($u in $units) {
           $moving += "{0,-28} manifest being authored (subagent working, {1:N0} min)" -f $name, $mAge2.TotalMinutes
         }
       } elseif (Test-Path -LiteralPath $brief2) {
-        $bh2 = (Get-FileHash -LiteralPath $brief2 -Algorithm SHA256).Hash
-        if (-not $briefBatches.Contains($bh2)) { $briefBatches[$bh2] = @{ Units = @(); Brief = $brief2; Phase = 'manifest' }; $stalls += ('{{BRIEF-BATCH:' + $bh2 + '}}') }
-        $briefBatches[$bh2].Units += $name
-        $briefsReady += $name
+        # Same rule as the dispositions-phase brief above: queued behind a live track is not stalled.
+        if ($dispRunnerOk) {
+          $moving += "{0,-28} manifest brief written - queued for _dispositions-loop's authenticated runner" -f $name
+        } else {
+          $bh2 = (Get-FileHash -LiteralPath $brief2 -Algorithm SHA256).Hash
+          if (-not $briefBatches.Contains($bh2)) { $briefBatches[$bh2] = @{ Units = @(); Brief = $brief2; Phase = 'manifest' }; $stalls += ('{{BRIEF-BATCH:' + $bh2 + '}}') }
+          $briefBatches[$bh2].Units += $name
+          $briefsReady += $name
+        }
       } elseif ($dispTrackAlive) {
         $moving += "{0,-28} queued for _dispositions-loop (manifest step)" -f $name
       } else {
@@ -516,7 +565,7 @@ if ($stalls.Count -eq 0 -and $Quiet) {
   # The -Quiet early exit skips the audits below, so the state file is written here with what is
   # known - a quiet, un-stalled board - rather than left stale from an earlier, louder run.
   if ($StateFile) {
-    try { ([ordered]@{ at = (Get-Date).ToString('s'); stalls = @(); moving = @($moving); held = @($held); busy = [bool]$busy; queued = [int]$queued; running = [int]$running; unitsStaged = [int]$units.Count; fullyStopped = $false; nothingStaged = [bool]($units.Count -eq 0 -and -not $busy); spaceBlocked = $false; reclaimFailed = @(); reclaimFailedStale = @(); manifestFailed = @(); needsValidation = @(); briefsReady = @(); briefBatches = @(); dischargePending = @(); quietRun = $true } | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $StateFile -Encoding UTF8 } catch { }
+    try { ([ordered]@{ at = (Get-Date).ToString('s'); stalls = @(); moving = @($moving); held = @($held); busy = [bool]$busy; queued = [int]$queued; running = [int]$running; unitsStaged = [int]$units.Count; fullyStopped = $false; nothingStaged = [bool]($units.Count -eq 0 -and -not $busy); spaceBlocked = $false; awaitingAuthoring = 0; encodersStarved = $false; reclaimFailed = @(); reclaimFailedStale = @(); manifestFailed = @(); needsValidation = @(); briefsReady = @(); briefBatches = @(); dischargePending = @(); quietRun = $true } | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $StateFile -Encoding UTF8 } catch { }
   }
   return
 }
@@ -781,6 +830,17 @@ if ($StateFile) {
     running        = [int]$running
     unitsStaged    = [int]$units.Count
     fullyStopped   = [bool]($stalls.Count -gt 0 -and -not $busy -and $queued -eq 0 -and $running -eq 0)
+    # THE ENCODERS ARE THE EXPENSIVE RESOURCE AND `fullyStopped` DOES NOT SPEAK FOR THEM.
+    # `busy` is true whenever ANY track is working - a disc rip, a catalogue sweep - so on
+    # 2026-09-08 the GPU lanes sat idle for half an hour with `fullyStopped = False`, because the
+    # optical drive was reading. That is not a stopped line, but it IS idle capacity, and the
+    # operator spotted it before any instrument did.
+    #
+    # Starved = nothing queued, nothing encoding, and at least one staged unit still short of a
+    # manifest. The last clause is what keeps this quiet when idleness is CORRECT: once everything
+    # staged has been encoded, awaitingAuthoring is 0 and this never fires.
+    awaitingAuthoring = [int]$awaitingAuthoring
+    encodersStarved   = [bool]($queued -eq 0 -and $running -eq 0 -and $awaitingAuthoring -gt 0)
     nothingStaged  = [bool]($units.Count -eq 0 -and -not $busy)
     spaceBlocked   = [bool]$spaceBlocked
     reclaimFailed  = @($reclaimFailed)
