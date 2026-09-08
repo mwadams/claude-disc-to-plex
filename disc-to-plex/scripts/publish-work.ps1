@@ -310,13 +310,26 @@ if (-not $SkipSubtitleCheck) {
       return (Test-Path -LiteralPath $onNas)
     }
     $missing  = @($declared | Where-Object { -not (Test-DeclaredSatisfied $_) })
-    # OCR is only ever asked of a LOCAL file - a reclaimed one was published with its subtitle state
-    # already settled, and there is no local copy left to probe.
+    # OCR is only ever asked of a LOCAL file - there is no local copy of a reclaimed one to probe.
+    #
+    # BUT THE SIDECAR IS RECLAIMED SEPARATELY FROM ITS MEDIA, and that is the case this missed.
+    # A .srt is small and publishes on its first attempt; the .mkv beside it may NOT, because
+    # publish is no-clobber (/XC /XN /XO) and an in-place re-rip has to wait for -Overwrite. So the
+    # sidecar reaches the NAS, byte-verifies, and the reclaim releases the local copy - while the
+    # .mkv is still sitting here unpublished. Looking for the sidecar locally then reports "awaiting
+    # OCR" for a file whose subtitles were OCR'd perfectly and are already on the server.
+    #
+    # Pride and Prejudice, 2026-09-07/08: all four episodes OCR'd cleanly ("497 cues, 0% junk"),
+    # the sidecars published, the reclaim took the local copies at 07:31, and the work then held
+    # with "4 awaiting OCR" - unpublishable forever, because re-running OCR would only recreate a
+    # file the reclaim is entitled to remove again. A deadlock, not a backlog.
+    #
+    # So ask the same question the media half asks: does this sidecar exist ANYWHERE it should?
     $awaiting = @()
     foreach ($o in @($declared | Where-Object { Test-Path -LiteralPath $_ })) {
       if ([IO.Path]::GetExtension($o) -ne '.mkv') { continue }
       $sidecar = [IO.Path]::ChangeExtension($o, $null) + 'eng.srt'
-      if (Test-Path -LiteralPath $sidecar) { continue }
+      if (Test-DeclaredSatisfied $sidecar) { continue }
       if (Test-BitmapSubsPopulated -Path $o -Ffprobe $ffprobe) { $awaiting += (Split-Path $o -Leaf) }
     }
     if ($missing.Count -or $awaiting.Count) {
