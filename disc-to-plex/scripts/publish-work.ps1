@@ -278,14 +278,63 @@ if (-not $SkipSubtitleCheck) {
   if (-not $queueDirs) {
     throw "no queue directories found under '$LocalRoot' - refusing to publish with the plan-based gate unable to read the plan"
   }
+  # Collect per MANIFEST, not as a flat list, because whether a declaration is still owed depends on
+  # which manifest made it and when - see the supersession rule below.
+  $byManifest = @()
   foreach ($mf in @($queueDirs | ForEach-Object { Get-ChildItem -LiteralPath $_ -Filter *.json -File -ErrorAction SilentlyContinue })) {
     try { $rows = @(Get-Content -LiteralPath $mf.FullName -Raw | ConvertFrom-Json) } catch { continue }
-    foreach ($r in $rows) {
+    $outs = @()
+    foreach ($r in @($rows | Where-Object { $_ -is [pscustomobject] })) {
       $o = "$($r.out)" -replace '/', '\'
-      if ($o -and $o.StartsWith($workOut, [StringComparison]::OrdinalIgnoreCase)) { $declared += $o }
+      if ($o -and $o.StartsWith($workOut, [StringComparison]::OrdinalIgnoreCase)) { $outs += $o }
+    }
+    if (-not $outs.Count) { continue }
+    $byManifest += [pscustomobject]@{
+      Name = $mf.Name; When = $mf.LastWriteTime
+      Failed = ($mf.Directory.Name -eq 'failed'); Done = ($mf.Directory.Name -eq 'done')
+      Outs = $outs
     }
   }
-  $declared = @($declared | Sort-Object -Unique)
+
+  # A FAILED MANIFEST THAT A LATER ONE SUPERSEDED IS HISTORY, NOT OUTSTANDING WORK.
+  #
+  # The rule above - "a failed job is unfinished work, not cancelled work" - is right when the
+  # failure is the last word on that content. It is wrong when the author has since written a NEW
+  # manifest for the same work and that one COMPLETED: the new manifest is the current plan, and
+  # the old one's unique declarations describe an approach that was abandoned.
+  #
+  # The Song Remains The Same, 2026-09-07/08. `the-song-remains-the-same.named.json` (failed, 10:52)
+  # declares `End Credits.mkv`, cut from 00045/00054.m2ts. `the-song-remains-the-same.playlist.fixed
+  # .json` (done, 13:34) ships the documentary WITH its credits as a single item from title_t04.mkv
+  # instead - the operator's decision, already carried out. So `End Credits.mkv` is never going to
+  # exist, and this gate held all 14 finished files of the work waiting for it while the publish
+  # breaker tripped 60 times.
+  #
+  # This is the reasoning _stallwatch.ps1 already applies and says out loud: "a manifest FAILED but
+  # a LATER one completed - the failed/ copy is stale history; nothing to do." The board knew. The
+  # gate did not.
+  #
+  # SCOPED TIGHTLY: only a manifest in failed\, only when a manifest in done\ for THIS WORK is
+  # strictly newer, and only for outputs the newer plan does not itself declare. A failed manifest
+  # with nothing after it still holds the work, exactly as before.
+  $newestDone = @($byManifest | Where-Object { $_.Done } | Sort-Object When -Descending | Select-Object -First 1)
+  $superseded = @()
+  foreach ($m in $byManifest) {
+    if (-not $m.Failed) { continue }
+    if (-not $newestDone.Count -or $newestDone[0].When -le $m.When) { continue }
+    $superseded += $m
+  }
+  $stillOwed = @($byManifest | Where-Object { $superseded -notcontains $_ })
+  $declared  = @($stillOwed | ForEach-Object { $_.Outs } | Sort-Object -Unique)
+
+  if ($superseded.Count) {
+    $dropped = @($superseded | ForEach-Object { $_.Outs } | Sort-Object -Unique | Where-Object { $declared -notcontains $_ })
+    if ($dropped.Count) {
+      Write-Host ("plan: {0} output(s) declared only by a SUPERSEDED failed manifest are no longer owed (a later manifest completed for this work):" -f $dropped.Count)
+      foreach ($d in $dropped) { Write-Host ("      {0}" -f (Split-Path $d -Leaf)) }
+      foreach ($m in $superseded) { Write-Host ("      superseded: {0} ({1:MM-dd HH:mm}) by {2} ({3:MM-dd HH:mm})" -f $m.Name, $m.When, $newestDone[0].Name, $newestDone[0].When) }
+    }
+  }
 
   if ($declared.Count) {
     # A RECLAIMED OUTPUT IS SATISFIED, NOT MISSING. This gate asks "is the whole declared set
@@ -308,6 +357,29 @@ if (-not $SkipSubtitleCheck) {
       $rel = $OutPath.Substring($workOut.Length).TrimStart('\')
       $onNas = Join-Path $dst $rel
       return (Test-Path -LiteralPath $onNas)
+    }
+    # AN OUTPUT WINDOWS CANNOT CREATE WILL NEVER ARRIVE - do not wait for it for ever.
+    #
+    # Tales of the Unexpected, 2026-09-08. `_queue\failed\dvdvolume-7c5172b2.json` declares
+    #     Tales of the Unexpected (1979) - S04E01 - Would You Believe It?.mkv
+    # and that manifest FAILED precisely because of the '?': ffmpeg exit -22, "Error opening output
+    # ...: Invalid argument". The episode was then re-encoded correctly by a later manifest as
+    # "... Would You Believe It.mkv" (no '?'), which completed and is on the NAS with its sidecar.
+    #
+    # But the dead manifest's declaration outlived it, and this gate counted it as an output still
+    # owed. So the WHOLE work was held - 58 declared outputs, one of them impossible - and six
+    # finished Season 05 episodes sat unpublishable behind it while the publish breaker tripped 40
+    # times. The operator was then shown those six as "PUBLISHED AND AWAITING YOUR PLEX
+    # CONFIRMATION" and asked to confirm files that had never left this machine.
+    #
+    # A path containing [<>:"/\|?*] cannot be created on Windows by anything, ever - which is what
+    # assert-output-paths-legal.ps1 exists to say at the gate. Waiting for one is not caution, it is
+    # a deadlock. Report it loudly (it means a manifest needs correcting) and do not block on it.
+    $illegalLeaf = @($declared | Where-Object { (Split-Path $_ -Leaf) -match '[<>:"|?*]' })
+    if ($illegalLeaf.Count) {
+      Write-Warning ("{0} declared output(s) carry a name Windows cannot create - they can never arrive, so they do NOT hold this work. Correct the manifest that declares them:" -f $illegalLeaf.Count)
+      $illegalLeaf | ForEach-Object { Write-Warning ("    impossible name: {0}" -f (Split-Path $_ -Leaf)) }
+      $declared = @($declared | Where-Object { (Split-Path $_ -Leaf) -notmatch '[<>:"|?*]' })
     }
     $missing  = @($declared | Where-Object { -not (Test-DeclaredSatisfied $_) })
     # OCR is only ever asked of a LOCAL file - there is no local copy of a reclaimed one to probe.

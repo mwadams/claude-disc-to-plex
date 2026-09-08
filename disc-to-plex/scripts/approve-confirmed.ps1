@@ -38,12 +38,12 @@
 .EXAMPLE
   pwsh -File approve-confirmed.ps1
   pwsh -File approve-confirmed.ps1 -Work 'Spaced','Sleepy Hollow' -Note 'both confirmed'
-  pwsh -File approve-confirmed.ps1 -All -Note 'all confirmed'
 #>
 param(
   [string[]]$Work = @(),
   [switch]$All,
-  # How many works you saw on the list. With -All, refuses if the count has changed since - see below.
+  # Vestigial: -All is REFUSED (see below), so this no longer guards anything. Kept so an old
+  # habit gets the explanation rather than a binding error.
   #
   # NAMED ONLY. `pwsh -File script.ps1 -Work 'a','b','c'` passes arguments as COMMAND-LINE STRINGS
   # and FLATTENS the array - 'a' binds to -Work and the rest bind POSITIONALLY to whatever comes
@@ -57,6 +57,9 @@ param(
   [string]$Note = '',
   [switch]$StagingOnly,          # units only: for a work whose local copies are already reclaimed
   [string]$VideoRoot = 'D:/video',
+  # Needed to ask whether a file is REALLY published before asking the operator to confirm it.
+  # Read-only here: this script never writes to the NAS, it only tests for presence.
+  [string]$NasRoot = '\\NASTEAMV\Multimedia',
   [switch]$WhatIf,
   [switch]$SelfTest
 )
@@ -182,13 +185,46 @@ if (-not $Work.Count -and -not $All) {
   # failure a human gate exists to prevent. So print what will be released, and check THOSE.
   foreach ($p in ($pending | Sort-Object When)) {
     Write-Output ("   {0,-42} published {1}" -f $p.Work, $p.When)
-    $fl = @($localWorks[$p.Work])
-    foreach ($f in ($fl | Sort-Object FullName)) {
+    # ASK ONLY ABOUT FILES THAT ARE ACTUALLY ON THE NAS.
+    #
+    # This listed every local file of a "published" work, taking the word from a WORK-level
+    # register. A work stays in that register while any of its files remain local - which is also
+    # true when publish has FAILED for some of them. So the two can disagree, and on 2026-09-08
+    # they did: Tales of the Unexpected's six Season 05 episodes were printed under "PUBLISHED AND
+    # AWAITING YOUR PLEX CONFIRMATION" when the NAS had no Season 05 folder at all. The operator was
+    # asked to confirm, in Plex, six files that had never left this machine - and said so.
+    #
+    # That is the same defect as `verified N/N` describing only the files publish CHOSE to copy: a
+    # work-level claim outrunning file-level reality. The reclaim's own gate would have refused to
+    # release them, so nothing was at risk of deletion - but asking a false question wastes the one
+    # gate a human holds, and teaches the operator that the list cannot be trusted.
+    #
+    # So measure. A file that is not on the NAS is NOT awaiting confirmation; it is awaiting
+    # PUBLISH, and saying so points at the real blocker instead of hiding it behind a nod.
+    # NOT $all - PowerShell variable names are CASE-INSENSITIVE, so `$all` IS the `-All` switch
+    # parameter. Assigning an array to it replaced the switch and the next binding of -All died
+    # with "Cannot convert System.Object[] to SwitchParameter" - from a line that never mentions it.
+    $localFiles = @($localWorks[$p.Work])
+    $fl = @(); $unpub = @()
+    foreach ($f in $localFiles) {
       $rel = $f.FullName -replace [regex]::Escape((Join-Path $VideoRoot '')), ''
-      $rel = ($rel -split '\\', 3)[-1]      # drop "Movies\<work>\" / "Television Shows\<work>\"
-      Write-Output ("        {0,8:N1} MB  {1}" -f ($f.Length / 1MB), $rel)
+      $rel = ($rel -split '\\', 3)[-1]
+      # The library mirrors under both roots - D:\video\<Kind>\<Work>\... and
+      # \\NASTEAMV\Multimedia\<Kind>\<Work>\... - so the NAS path is the local one with the root
+      # swapped. Built from the SAME string that produced $rel, so the two cannot drift apart.
+      $onNas = Join-Path $NasRoot ($f.FullName.Substring((Join-Path $VideoRoot '').Length))
+      if (Test-Path -LiteralPath $onNas) { $fl += [pscustomobject]@{ F = $f; Rel = $rel } }
+      else { $unpub += [pscustomobject]@{ F = $f; Rel = $rel } }
     }
-    Write-Output ("        ^ CONFIRM THESE {0} file(s) in Plex - not the work as a whole. They are what the reclaim releases." -f $fl.Count)
+    foreach ($x in ($fl | Sort-Object Rel)) { Write-Output ("        {0,8:N1} MB  {1}" -f ($x.F.Length / 1MB), $x.Rel) }
+    if ($fl.Count) {
+      Write-Output ("        ^ CONFIRM THESE {0} file(s) in Plex - not the work as a whole. They are what the reclaim releases." -f $fl.Count)
+    }
+    if ($unpub.Count) {
+      Write-Output ("        !! {0} further local file(s) of this work are NOT ON THE NAS - do NOT confirm them; they are waiting on PUBLISH, not on you:" -f $unpub.Count)
+      foreach ($x in ($unpub | Sort-Object Rel)) { Write-Output ("           {0,8:N1} MB  {1}" -f ($x.F.Length / 1MB), $x.Rel) }
+      Write-Output  '           Check the publish loop for this work - a plan gate holding it, or a tripped breaker.'
+    }
   }
   Write-Output ''
   if ($stuck.Count) {
@@ -206,7 +242,6 @@ if (-not $Work.Count -and -not $All) {
   Write-Output '   are all delivered and byte-verified. That second part is what hand-written artefacts missed.'
   Write-Output ''
   Write-Output '   pwsh -File approve-confirmed.ps1 -Work ''<name>'' -Note ''<their words>'''
-  Write-Output '   pwsh -File approve-confirmed.ps1 -All -Note ''<their words>'''
   exit 0
 }
 
@@ -224,18 +259,29 @@ if (-not $Work.Count -and -not $All) {
 #
 # `-Expect <n>` is the control: state how many works the list showed, and this refuses if the list
 # has changed underneath. Cheap for the caller, and it converts a silent over-approval into a stop.
-$chosen = if ($All) { $pendingNames } else { $Work }
-if ($All -and $PSBoundParameters.ContainsKey('Expect') -and $Expect -ne $pendingNames.Count) {
-  Write-Output ("REFUSE - the pending list has CHANGED since you saw it: you expected {0} work(s), there are now {1}." -f $Expect, $pendingNames.Count)
-  Write-Output '   Pending right now:'
-  $pendingNames | ForEach-Object { Write-Output "      $_" }
-  Write-Output '   Nothing approved. Re-read the list, then name the works explicitly with -Work, or re-run -All -Expect with the new count.'
+# `-All` IS FORBIDDEN. Operator direction, 2026-09-08: "-All should never be used. You should be
+# required to explicitly state what is being recovered."
+#
+# It had already gone wrong three times, and the count guard added after the first two did not stop
+# the third. 2026-09-08 09:23 the operator was shown six works and said "I can confirm all 6 works";
+# by 09:28 Pride and Prejudice had finished its reclaim and dropped off while Tales of the
+# Unexpected had joined - the COUNT was still six, so `-Expect 6` passed, and -All approved a work
+# the operator had never been shown. (Worse, its six Season 05 episodes were not even on the NAS.)
+#
+# The count can never carry this. A set of six is not the same six, and only the NAMES say which.
+# So there is no blanket approval any more: name every work, and the approval below states exactly
+# what it releases.
+if ($All) {
+  Write-Output 'REFUSED: -All is not available. Approving "everything on the list" cannot be safe,'
+  Write-Output '   because the list MOVES - the pipeline publishes continuously, so between printing'
+  Write-Output '   it and the operator answering, works join and leave. On 2026-09-08 the set changed'
+  Write-Output '   identity while keeping its count, and -Expect passed a work nobody had been shown.'
+  Write-Output ''
+  Write-Output '   Name each work explicitly instead - one -Work per confirmation:'
+  foreach ($n in $pendingNames) { Write-Output ("      pwsh -File approve-confirmed.ps1 -Work '{0}' -Note '<their words>'" -f $n) }
   exit 2
 }
-if ($All -and -not $PSBoundParameters.ContainsKey('Expect')) {
-  Write-Output ("NOTE: -All is approving {0} work(s) - {1}" -f $pendingNames.Count, ($pendingNames -join ', '))
-  Write-Output '      Pass -Expect <n> to make this refuse if the list grew since you read it.'
-}
+$chosen = $Work
 $problems = @()
 foreach ($w in $chosen) { $p = Test-WorkIsPending -Name $w -Pending $pendingNames; if ($p) { $problems += $p } }
 if ($problems.Count) {
