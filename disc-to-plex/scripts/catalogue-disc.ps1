@@ -142,8 +142,41 @@ if((Test-Path -LiteralPath $Disc -PathType Leaf) -and $Disc -match '\.iso$'){
     elseif($isos.Count -gt 1){ throw "no BDMV/VIDEO_TS and $($isos.Count) iso files in $Disc - point -Disc at the one you want" }
   }
 }
-Write-Output ("cataloguing $discName (minlength=$MinLength){0} ..." -f $(if($isIso){' [ISO]'}else{''}))
-$info = & $MakeMkv -r --cache=1 --minlength=$MinLength info $source 2>&1
+# A RIP UNIT: a folder of TITLE MKVs with no disc structure at all.
+#
+# 2026-09-08, Out of the Unknown disc 1. Its DVD carries structural copy protection that dvdbackup
+# cannot read (see disc-backup/references/protected-discs.md), so the disc was ripped STRAIGHT TO
+# MKV with MakeMKV - one file per title, no VIDEO_TS anywhere. Every other rip folder in _stage is
+# derived FROM a staged disc and is catalogued through that parent; this one has no parent, it IS
+# the unit, and `file:` on a folder of loose MKVs enumerates nothing. The sweep then threw
+# "enumeration returned NO titles - is the disc still copying?", which is exactly the wrong
+# diagnosis: there is no disc and nothing is copying.
+#
+# The rest of this script does not care where the enumeration came from. Everything downstream
+# works off each title's `source` -> Get-ProbeFile -> ffprobe/ffmpeg, and a title MKV is its own
+# probe file - so filling the table from the files gives geometry, fingerprints, frames, head strips
+# and speech samples exactly as for a disc, with no second implementation of any of it.
+#
+# Deliberately narrow: only when there is NO BDMV, NO VIDEO_TS and NO iso, which today produces
+# nothing but that misleading throw.
+$mkvRip = @()
+if((Test-Path -LiteralPath $Disc -PathType Container) -and -not $isIso){
+  if(-not ((Test-Path -LiteralPath (Join-Path $Disc 'BDMV')) -or (Test-Path -LiteralPath (Join-Path $Disc 'VIDEO_TS')))){
+    $mkvRip = @(Get-ChildItem -LiteralPath $Disc -Filter *.mkv -File -ErrorAction SilentlyContinue | Sort-Object Name)
+  }
+}
+
+if($mkvRip.Count){
+  Write-Output ("cataloguing $discName (minlength=$MinLength) [MKV RIP - {0} title file(s), no disc structure] ..." -f $mkvRip.Count)
+  # No MakeMKV enumeration for a rip unit - the files ARE the titles. The table is filled further
+  # down, once Ensure-Title and New-StreamRecord exist; an empty $info makes the TINFO/SINFO parse
+  # below a no-op. (Filling it here read naturally and could not work: PowerShell defines functions
+  # as the script executes, so both helpers are still undefined at this point in the file.)
+  $info = @()
+} else {
+  Write-Output ("cataloguing $discName (minlength=$MinLength){0} ..." -f $(if($isIso){' [ISO]'}else{''}))
+  $info = & $MakeMkv -r --cache=1 --minlength=$MinLength info $source 2>&1
+}
 
 $byId = @{}
 # Every key is declared up front. An [ordered] record rejects assignment to a key that does not
@@ -185,6 +218,38 @@ foreach($line in $info){
     }
   }
 }
+# A RIP UNIT'S TITLES COME FROM THE FILES, filled here because this is the first point at which
+# Ensure-Title and New-StreamRecord exist. Everything downstream is untouched: each title's `source`
+# is its own .mkv, Get-ProbeFile returns it directly, and the probe/fingerprint/frame/speech pass
+# then runs exactly as it does for a disc - no second implementation of any of it.
+if($mkvRip.Count){
+  $idx = 0
+  foreach($m in $mkvRip){
+    # The id is the file's OWN tNN where it has one - MakeMKV names its output `<label>_tNN.mkv`
+    # and that NN is its output sequence. Position is the fallback, so a hand-named folder still works.
+    $id = if($m.Name -match '_t(\d+)\.mkv$'){ [int]$Matches[1] } else { $idx }
+    $idx++
+    Ensure-Title $id
+    $t = $byId[$id]
+    $t.source   = $m.FullName
+    $t.outName  = $m.Name
+    $t.sizeText = ('{0:N1} GB' -f ($m.Length / 1GB))
+    $d = 0.0
+    [void][double]::TryParse("$(& $fp -v error -show_entries format=duration -of csv=p=0 $m.FullName 2>$null)".Trim().TrimEnd(','), [ref]$d)
+    $t.duration = [TimeSpan]::FromSeconds([math]::Round($d)).ToString('h\:mm\:ss')
+    # Streams in the SAME shape MakeMKV's SINFO produces, so every consumer reads one format.
+    $sn = 0
+    foreach($line in @(& $fp -v error -show_entries stream=codec_name,codec_type,channels -of csv=p=0 $m.FullName 2>$null)){
+      $f = "$line" -split ','
+      while($t.streams.Count -le $sn){ $t.streams += ,(New-StreamRecord $t.streams.Count) }
+      $t.streams[$sn].codec = $f[0]
+      $t.streams[$sn].type  = $f[1]
+      if($f.Count -gt 2 -and $f[2]){ $t.streams[$sn].channels = $f[2] }
+      $sn++
+    }
+  }
+}
+
 if($byId.Count -eq 0){ throw "enumeration returned NO titles - is the disc still copying? (assert-staged-complete.ps1)" }
 
 # ---- 2. FIND A PROBE FILE PER TITLE, WITHOUT RIPPING --------------------------------------
@@ -199,6 +264,15 @@ function Get-ProbeFile($src){
   if(-not $src){ return $null }
   if($src -match '\.m2ts$'){
     $p = Join-Path $streamDir $src
+    if(Test-Path -LiteralPath $p){ return $p }
+    return $null
+  }
+  # A TITLE MKV IS ITS OWN PROBE FILE. For a rip unit (see the MKV-folder branch above) the
+  # "source" is the ripped file itself, already one title, already on the filesystem - so there is
+  # nothing to resolve through a stream or playlist directory.
+  if($src -match '\.mkv$'){
+    if(Test-Path -LiteralPath $src){ return $src }
+    $p = Join-Path $Disc $src
     if(Test-Path -LiteralPath $p){ return $p }
     return $null
   }
@@ -363,7 +437,16 @@ Remove-Item -LiteralPath $runScratch -Recurse -Force -ErrorAction SilentlyContin
 
 # ---- 5. WRITE THE ARTIFACT ----------------------------------------------------------------
 $cat = [ordered]@{
-  disc = $discName; discPath = $Disc; sourceVerified = $script:SourceVerified; minLength = $MinLength
+  # sourceVerified answers "was the copy COMPLETE when this swept", and its usual evidence is
+  # _fetch-one.ps1 byte-matching the source. sourceVerification says WHICH evidence, because a rip
+  # unit cannot have the usual kind: there is no disc listing to byte-match against - the disc it
+  # came from carries structural copy protection whose listing is a fabrication (see
+  # disc-backup/references/protected-discs.md). Its completeness rests on MakeMKV reporting all
+  # titles saved plus a per-title duration check against the enumeration. Recording only the boolean
+  # would let a future reader assume the byte-match happened.
+  disc = $discName; discPath = $Disc; sourceVerified = $script:SourceVerified
+  sourceVerification = $(if($mkvRip.Count){ 'content: MKV rip unit - MakeMKV reported all titles saved and each title''s duration matches its enumeration; NO byte-match against a disc listing is possible for this source' } else { 'byte-match: _fetch-one.ps1 matched file count and bytes against the source (presence in _fetch-done.txt)' })
+  minLength = $MinLength
   titleCount = $byId.Count
   titles = @($ids | ForEach-Object { $byId[$_] })
 }
