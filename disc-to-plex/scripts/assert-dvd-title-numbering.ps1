@@ -93,10 +93,38 @@ foreach ($t in @($cat.titles)) {
 }
 if ($byTitle.Count -lt 2) { Say "assert-dvd-title-numbering: catalogue for '$unit' carries no usable per-title durations - cannot judge"; exit 0 }
 
-# True when ANY duration this title can produce matches, within tolerance.
+# The rule itself lives in ONE place and is dot-sourced, never re-implemented here - the same
+# discipline that keeps transcode.ps1's two length guards agreeing with each other.
+if (-not (Get-Command Test-OutputDuration -ErrorAction SilentlyContinue)) {
+  . "$PSScriptRoot/lib-length-tolerance.ps1"
+}
+
+# True when ANY duration this title can produce matches.
+#
+# THE COMPARISON IS ASYMMETRIC, AND A FLAT +/-3 s WAS THE WRONG SHAPE AS WELL AS TOO TIGHT.
+# `expectSeconds` is what the encode EMITS; the catalogue records what the disc DECLARES, and the
+# emitted figure always runs a little over. Measured 2026-09-08: West Wing S1 D1 +1.4 to +2.2 s,
+# D4 +3.2 to +3.9 s, and the protected-disc MKVs +2.88 to +12.04 s. So D4 - a correct manifest,
+# every episode verified from its speech sample - was REFUSED for overshooting a symmetric 3 s
+# window, and the guard then proposed shifts ("title 3 matches, shift +2") that were pure
+# coincidence between four episodes spanning six seconds in total.
+#
+# lib-length-tolerance.ps1 already encodes the right rule and is the single source transcode.ps1
+# and backup-dvd-makemkv.ps1 both use: generous over, tight under. Using it here does NOT weaken
+# what this guard exists for. Re-read the header: Tales of the Unexpected shifted seven episodes
+# because title 1 was a 23-SECOND LEADER against ~1,400-second episodes. That mismatch is measured
+# in minutes; no tolerance in this range can hide it. What the flat window did hide is nothing -
+# it only produced false refusals on honest manifests.
+#
+# -ToleranceSec is kept as an override and still applies when it is set WIDER than the rule.
 function Test-TitleMatches([hashtable]$Map, [int]$Title, [double]$Expect, [double]$Tol) {
   if (-not $Map.ContainsKey($Title)) { return $false }
-  foreach ($s in @($Map[$Title])) { if ([math]::Abs([double]$s - $Expect) -le $Tol) { return $true } }
+  foreach ($s in @($Map[$Title])) {
+    $declared = [double]$s
+    if ([math]::Abs($declared - $Expect) -le $Tol) { return $true }
+    # The emitted duration ($Expect) against what the disc declared ($declared).
+    if ((Test-OutputDuration -GotSeconds $Expect -ExpectSeconds $declared).Ok) { return $true }
+  }
   return $false
 }
 
