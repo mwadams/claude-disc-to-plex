@@ -263,7 +263,13 @@ if (-not $Work.Count -and -not $All) {
         # roots differ in slash direction too. A prefix built without both matched nothing and the
         # listing said "NOT CHECKED" while 21 verdicts sat in the file - a check reporting itself
         # absent is indistinguishable from one that never ran.
-        $idRows = @(Import-Csv -LiteralPath $IdentityCsv | Where-Object { "$($_.Work)" -eq "$($p.Work)" })
+        # ONLY ROWS FOR FILES THAT STILL EXIST. A reclaimed work's verdicts stay in the CSV, so a
+        # later disc of the same work inherited the PREVIOUS disc's counts: The Power Game showed
+        # "4 unreadable" beside a list of 3 files, none of which those verdicts were about. The
+        # question being answered is "what do we know about the files you are being asked to
+        # confirm", and a verdict for a file that is gone answers a different one.
+        $idRows = @(Import-Csv -LiteralPath $IdentityCsv |
+                    Where-Object { "$($_.Work)" -eq "$($p.Work)" -and (Test-Path -LiteralPath $_.Path) })
       } catch { }
     }
     if ($idRows.Count) {

@@ -200,7 +200,23 @@ function Resolve-OcrOutcome {
       )
     }
   }
-  if ($OutputText -match 'not English text|non-English function words') {
+  # ONLY THE FUNCTION-WORD TEST MAY DECIDE "WRONG LANGUAGE".
+  #
+  # This used to match 'not English text' too - and the short-track DICTIONARY message ends with
+  # exactly those words ("...are in the English dictionary (9 words) - not English text"). Because
+  # this branch is tested BEFORE the dictionary branch below, every short-track vocabulary miss was
+  # filed as a language fault: terminal, no retries, "needs a re-encode", and no fallback attempted.
+  #
+  # Star Trek: The Motion Picture, 2026-09-09 - three deleted scenes held the entire work out of the
+  # library for 21 hours on that verdict. Re-rendering one produced six cues of plain English
+  # ("Viewer astern." / "Hold relative position here."); the words the dawg lacked were `astern` and
+  # `metres`. A vocabulary gap is not a language, and the wording of a message is not a diagnosis.
+  #
+  # The function-word test IS a test for the thing itself - Spanish/French/German/Dutch function
+  # words - and it is what actually caught Fantasia's Spanish-tagged-English extras. It keeps this
+  # branch; the dictionary percentage falls through to 'quality-near-miss' below, which is retried
+  # with the anti-alias-preserving renderer instead of being written off.
+  if ($OutputText -match 'non-English function words') {
     # Fantasia's extras carry SPANISH subtitles tagged `eng`. OCR worked perfectly; the disc lies.
     # Marking this exhausted would have published the featurette with a Spanish track labelled
     # English and called the pipeline clean. Needs a re-encode selecting the real English stream.

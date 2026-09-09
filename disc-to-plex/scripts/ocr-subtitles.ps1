@@ -930,6 +930,24 @@ foreach ($f in $targets) {
           if ($fPct -ge 25) {
             throw "short track: $fPct% of lines carry non-English function words - this is not an English track (the disc's language tag is wrong)"
           }
+          # THIS THRESHOLD IS RIGHT. Its CONSEQUENCE was what was wrong - see Resolve-OcrOutcome.
+          #
+          # Star Trek: The Motion Picture, 2026-09-09. Three deleted scenes were rejected here at
+          # 55.6%, 62.5% and 63.6% and the loop turned that into "WRONG-LANGUAGE SUBTITLE TRACK -
+          # needs a re-encode, no further OCR retries", which held the whole work out of the library
+          # for 21 hours. I first read the low percentages as the gate mis-firing on a small sample
+          # of unusual words and raised the bar to 40 tokens. That was wrong, and letting the files
+          # through proved it: they OCR'd as "a power tfeld of this magnitucle" and "Capt Ka,
+          # CSMHIMNAS / on cloud visual comact 3.7 mites". The gate was catching a REAL bad
+          # conversion; raising the bar only stopped it catching anything.
+          #
+          # What the same files produce through vobsub-render.py, which keeps the anti-alias as a
+          # real mid-tone: "a power field of this magnitude." / "Instruments fluctuating, Captain."
+          # / "Patterns unrecognisable." So a low score on a short track means RE-RENDER, not
+          # re-encode and not wrong-language - and Resolve-OcrOutcome now classifies it as
+          # 'quality-near-miss', which _ocr-loop.ps1 already retries through that renderer.
+          #
+          # Keep the sample floor at 3: two or three words are too few to mean anything either way.
           if ($tot -ge 3 -and $dictPct -lt 85) {
             throw "short track: only $dictPct% of lowercase words are in the English dictionary ($tot words) - not English text"
           }
