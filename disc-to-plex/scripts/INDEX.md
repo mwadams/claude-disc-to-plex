@@ -1,8 +1,8 @@
 # Script index - GENERATED, do not edit
 
-Generated 2026-09-09 13:45 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
+Generated 2026-09-09 18:51 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
 
-**136 scripts under `scripts/`, 46 loop scripts under `D:/video/`. 0 with NO usable header, 47 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
+**137 scripts under `scripts/`, 46 loop scripts under `D:/video/`. 0 with NO usable header, 47 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
 
 Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library` = dot-source, defines functions only; `tests` = a test suite, exit 0 = all passed.
 
@@ -98,6 +98,7 @@ Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library
 | `lib-subtitle-coverage.tests.ps1` | tests | Tests for lib-subtitle-coverage.ps1's SOURCE-DRIVE / OPTICAL branch. | when: This library decides, library-wide, what may be transcribed. It had NO tests. | - |
 | `lib-subtitles.ps1` | library | Shared subtitle-stream predicates and evidence-verdict helpers. Dot-source this; it defines functions and does nothing on its own. | when: A DECLARED bitmap subtitle track is not necessarily a POPULATED one. Camille (1921) is a silent film whose DVD declares a `dvd_subtitle` stream carrying ZERO packets. | - |
 | `lib-track-guard.ps1` | library | Refuse hand-invocation of a worker that a self-draining track already owns. | when: The batch runs as four independent tracks (encode / source / OCR / publish), and exactly ONE step in the whole pipeline is manual: authoring a manifest. Everything after `_queue` drains itself. | - |
+| `lock-movie-extra-titles.ps1` | command | Set each of a FILM's local extras' Plex titles from its filename and LOCK the field, so the agent cannot rename them. Report by default; `-Apply` to write. | when: `fix-plex-extras.ps1` and `lock-plex-titles.ps1` both do this for TELEVISION - they take -Show and -Season and walk a Season 00 folder. | `pwsh -File lock-movie-extra-titles.ps1 -Film 'Three Kings'` |
 | `lock-plex-titles.ps1` | command | Force Plex to display OUR filename-derived episode titles (locked), for a show/season. Optionally also set and lock episode SUMMARIES from a mapping file. | see: The Plex agent (tv.plex.agents.series) injects its OWN metadata by episode number. | `pwsh -File lock-plex-titles.ps1 -Show "Deep Space" -Season 0` |
 | `make-manifest.ps1` | command | Turn a compact, human-editable episode table into a transcode.ps1 manifest JSON, with correct Plex paths. | NO TRIGGER IN HEADER | `pwsh -File make-manifest.ps1 -Table eps.txt -ManifestOut items.json` |
 | `mint-scratch.ps1` | command | Mint a collision-proof per-job scratch directory and print its path. | see: Concurrent agents share ONE session scratchpad, and they independently choose the same obvious names for extracted evidence (dv1-700.wav, nas-e21-700.wav, t08-frames/). | `$job = & mint-scratch.ps1 -Root 'd:/temp/claude/D--video/<session>/scratchpad' -Label bl-s3d5-e17` |
