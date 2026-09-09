@@ -106,6 +106,8 @@ $held   = @()
 $moving = @()
 # Collected for the state file (see -StateFile): what the alarm can name without re-parsing prose.
 $needsValidation = @(); $briefsReady = @(); $reclaimFailed = @(); $reclaimFailedStale = @(); $reclaimStuck = @(); $manifestFailed = @(); $manifestFailedStale = @(); $dischargePendingNames = @()
+# The publish-stall verdict, lifted from audit-publish-freshness.ps1's anchored marker.
+$publishStalled = $false; $publishStallMin = 0; $publishStallFiles = 0
 # UNITS THAT HAVE NOT YET REACHED THE ENCODERS - the input to "encodersStarved" below. Incremented
 # once per unit that still needs dispositions or a manifest, whichever branch it lands in.
 $awaitingAuthoring = 0
@@ -578,7 +580,7 @@ if ($stalls.Count -eq 0 -and $Quiet) {
   # The -Quiet early exit skips the audits below, so the state file is written here with what is
   # known - a quiet, un-stalled board - rather than left stale from an earlier, louder run.
   if ($StateFile) {
-    try { ([ordered]@{ at = (Get-Date).ToString('s'); stalls = @(); moving = @($moving); held = @($held); busy = [bool]$busy; queued = [int]$queued; running = [int]$running; unitsStaged = [int]$units.Count; fullyStopped = $false; nothingStaged = [bool]($units.Count -eq 0 -and -not $busy); spaceBlocked = $false; awaitingAuthoring = 0; encodersStarved = $false; reclaimFailed = @(); reclaimFailedStale = @(); manifestFailed = @(); manifestFailedStale = @(); needsValidation = @(); briefsReady = @(); briefBatches = @(); dischargePending = @(); quietRun = $true } | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $StateFile -Encoding UTF8 } catch { }
+    try { ([ordered]@{ at = (Get-Date).ToString('s'); stalls = @(); moving = @($moving); held = @($held); busy = [bool]$busy; queued = [int]$queued; running = [int]$running; unitsStaged = [int]$units.Count; fullyStopped = $false; nothingStaged = [bool]($units.Count -eq 0 -and -not $busy); spaceBlocked = $false; awaitingAuthoring = 0; encodersStarved = $false; reclaimFailed = @(); reclaimFailedStale = @(); manifestFailed = @(); manifestFailedStale = @(); publishStalled = $false; publishStallMinutes = 0; publishStallFiles = 0; needsValidation = @(); briefsReady = @(); briefBatches = @(); dischargePending = @(); quietRun = $true } | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $StateFile -Encoding UTF8 } catch { }
   }
   return
 }
@@ -813,7 +815,25 @@ if (Test-Path -LiteralPath $rqRoot) {
 # script said "nothing waiting on the operator" while nothing had shipped for two hours. The user
 # found it by looking at Plex, which was the only place the outcome was visible.
 $freshaudit = 'D:/video/.claude/skills/disc-to-plex/scripts/audit-publish-freshness.ps1'
-if (Test-Path -LiteralPath $freshaudit) { & pwsh -NoProfile -File $freshaudit }
+if (Test-Path -LiteralPath $freshaudit) {
+  # CAPTURE, don't stream. The audit's prose still prints verbatim, but its anchored
+  # PUBLISH-STALL-STATE line is lifted out so this board can PUBLISH the verdict and
+  # _stall-alarm.ps1 can raise it. Star Trek The Motion Picture sat SIXTEEN HOURS behind a failed
+  # OCR on 2026-09-08 holding 12 finished files, with every alarm correctly silent because none of
+  # them covers a publish stall - the operator found it by asking.
+  #
+  # The marker is matched ANCHORED at line start, never as a substring: an unanchored phrase match
+  # once caught an agent's DENIAL of a verdict and closed four discs as shipping nothing.
+  foreach ($l in @(& pwsh -NoProfile -File $freshaudit 2>&1 | ForEach-Object { "$_" })) {
+    if ($l -match '^PUBLISH-STALL-STATE\s+stalled=([01])\s+minutes=(\d+)\s+waiting=(\d+)') {
+      $publishStalled    = ($Matches[1] -eq '1')
+      $publishStallMin   = [int]$Matches[2]
+      $publishStallFiles = [int]$Matches[3]
+      continue          # the marker is for the state file, not the reader
+    }
+    Write-Output $l
+  }
+}
 
 # AND RE-RIP OBLIGATIONS THAT PUBLISHED BUT DID NOT CLOSE. discharge-rerip.ps1 runs after every
 # completed publish and closes a register row only on NAS-verified evidence; a row that published
@@ -860,6 +880,9 @@ if ($StateFile) {
     reclaimFailedStale = @($reclaimFailedStale)
     manifestFailed = @($manifestFailed)
     manifestFailedStale = @($manifestFailedStale)
+    publishStalled = [bool]$publishStalled
+    publishStallMinutes = [int]$publishStallMin
+    publishStallFiles = [int]$publishStallFiles
     needsValidation = @($needsValidation)
     briefsReady    = @($briefsReady)
     briefBatches   = @($briefBatchDocs)

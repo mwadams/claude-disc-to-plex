@@ -137,11 +137,31 @@ if ($waiting.Count -eq 0) {
 }
 $worst = ($waiting | Measure-Object WaitedMin -Maximum).Maximum
 if ($worst -le $MaxWaitMin) {
+  # The healthy verdict is stated too. Absence of the marker then means the audit did not RUN -
+  # which is a different thing from "nothing is stalled" and must not read as reassurance.
+  Write-Output ("PUBLISH-STALL-STATE stalled=0 minutes={0} waiting={1}" -f $worst, $waiting.Count)
   if (-not $Quiet) {
     Write-Output ("publishing in progress - {0} file(s) waiting, longest {1} min (cap {2})" -f $waiting.Count, $worst, $MaxWaitMin)
   }
   exit 0
 }
+
+# MACHINE-READABLE FIRST, PROSE AFTER - so _stallwatch.ps1 can publish this and _stall-alarm.ps1
+# can raise it, instead of it existing only as a sentence nobody is watching.
+#
+# This line was printed and nothing else for months. On 2026-09-08 Star Trek The Motion Picture's
+# OCR failed a dictionary gate at 84.8% ("letters are being split"), publish correctly held the
+# whole work, and it sat for SIXTEEN HOURS holding 12 finished files - while every alarm stayed
+# correctly silent, because none of them covers this: `fullyStopped` needs `-not busy` and the
+# optical lane was ripping all night; `encodersStarved` needs work awaiting authoring and there was
+# none; `manifestFailed` was clean because the manifest succeeded and the OCR did not. The operator
+# found it by asking. That is the SAME defect already recorded against failed manifests in
+# _stallwatch.ps1 - "the line went into $stalls as prose, and the alarm raises only on the NAMED
+# lists" - fixed there and not asked of anything else in the same position.
+#
+# Anchored at line start and emitted even under -Quiet: a verdict is an assertion, not a mention,
+# and a caller that filters output must still be able to find it.
+Write-Output ("PUBLISH-STALL-STATE stalled=1 minutes={0} waiting={1}" -f $worst, $waiting.Count)
 
 if (-not $Quiet) {
   Write-Output ''
