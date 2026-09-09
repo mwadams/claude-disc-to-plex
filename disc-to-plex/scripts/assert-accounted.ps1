@@ -846,7 +846,16 @@ foreach($k in ($menuDisp.Keys | Sort-Object)){
   if($m.kind -notin @('feature','extra','episode')){ continue }
   $pages = $m.last - $m.first + 1
   $rel = ''
-  if("$($m.evidence)" -match '(?i)^\s*shipped\s*:\s*(.+?)\s*$'){ $rel = $Matches[1] }
+  # `shipped:` IS ONE SEGMENT OF THE EVIDENCE FIELD, NOT THE WHOLE OF IT.
+  #
+  # The first cut required the evidence to BE `shipped:<path>`, which forced a choice between the two
+  # things such a line needs to say: how we know what the pages ARE (`card:`, `menu:`, `user:`) and
+  # where the artefact went. Nosferatu, 2026-09-09: the agent had written proper card evidence
+  # ("PGC18 'F W Murnau (1888-1931)...', PGC25-27 headed FILMOGRAPHY"), so recording the shipped path
+  # produced `card:...|shipped:...` and the gate still said "nothing says this was ever built" - about
+  # a file sitting on disk. Dropping the card evidence to satisfy the gate would have been the wrong
+  # repair: the identity evidence is the half that cannot be rebuilt.
+  if("$($m.evidence)" -match '(?i)(?:^|\|)\s*shipped\s*:\s*([^|]+?)\s*(?:\||$)'){ $rel = $Matches[1] }
   if(-not $rel){
     $menuOpen += ("{0}  {1} page(s), '{2}' - no |shipped:<path> evidence: nothing says this was ever built" -f $k, $pages, $m.note)
     continue
