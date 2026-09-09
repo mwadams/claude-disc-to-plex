@@ -60,6 +60,9 @@ param(
   # Needed to ask whether a file is REALLY published before asking the operator to confirm it.
   # Read-only here: this script never writes to the NAS, it only tests for presence.
   [string]$NasRoot = '\\NASTEAMV\Multimedia',
+  # Verdicts written by verify-title-cards.ps1. Read-only, and its ABSENCE is reported as
+  # "not checked" rather than quietly treated as clean.
+  [string]$IdentityCsv = 'D:/video/_episode-identity.csv',
   [switch]$WhatIf,
   [switch]$SelfTest
 )
@@ -118,6 +121,21 @@ if (Test-Path -LiteralPath $reg) {
 # been reclaimed has nothing left to confirm, and listing it is worse than useless - the first run of
 # this script offered 67 works, nearly all of them done, which is the same wall of noise the operator
 # is trying to get away from. A work is still PENDING only while local files remain under D:/video.
+# WHICH OF A WORK'S LOCAL FILES ARE ALREADY ON THE NAS - ONE implementation, two callers.
+#
+# The listing (list mode) prints these as "CONFIRM THESE n file(s)", and the -Work path writes the
+# same set into the artefact's coversOutputs. Those two MUST agree: the artefact's whole purpose is
+# to authorise exactly what the operator was shown, and a second copy of this path arithmetic is
+# how they would quietly diverge. The library mirrors under both roots, so the NAS path is the local
+# one with the root swapped.
+function Get-FilesOnNas {
+  param([object[]]$Files, [string]$VideoRoot, [string]$NasRoot)
+  $prefix = (Join-Path $VideoRoot '')
+  return @($Files | Where-Object {
+    Test-Path -LiteralPath (Join-Path $NasRoot ($_.FullName.Substring($prefix.Length)))
+  })
+}
+
 $localWorks = @{}
 foreach ($area in 'Movies', 'Television Shows') {
   $root = Join-Path $VideoRoot $area
@@ -212,8 +230,8 @@ if (-not $Work.Count -and -not $All) {
       # The library mirrors under both roots - D:\video\<Kind>\<Work>\... and
       # \\NASTEAMV\Multimedia\<Kind>\<Work>\... - so the NAS path is the local one with the root
       # swapped. Built from the SAME string that produced $rel, so the two cannot drift apart.
-      $onNas = Join-Path $NasRoot ($f.FullName.Substring((Join-Path $VideoRoot '').Length))
-      if (Test-Path -LiteralPath $onNas) { $fl += [pscustomobject]@{ F = $f; Rel = $rel } }
+      $onNas = @(Get-FilesOnNas -Files @($f) -VideoRoot $VideoRoot -NasRoot $NasRoot).Count -gt 0
+      if ($onNas) { $fl += [pscustomobject]@{ F = $f; Rel = $rel } }
       else { $unpub += [pscustomobject]@{ F = $f; Rel = $rel } }
     }
     foreach ($x in ($fl | Sort-Object Rel)) { Write-Output ("        {0,8:N1} MB  {1}" -f ($x.F.Length / 1MB), $x.Rel) }
@@ -224,6 +242,42 @@ if (-not $Work.Count -and -not $All) {
       Write-Output ("        !! {0} further local file(s) of this work are NOT ON THE NAS - do NOT confirm them; they are waiting on PUBLISH, not on you:" -f $unpub.Count)
       foreach ($x in ($unpub | Sort-Object Rel)) { Write-Output ("           {0,8:N1} MB  {1}" -f ($x.F.Length / 1MB), $x.Rel) }
       Write-Output  '           Check the publish loop for this work - a plan gate holding it, or a tripped breaker.'
+    }
+
+    # ---- WHAT THE DISC ITSELF SAYS THESE EPISODES ARE ------------------------------------------
+    # The user is being asked "is this right in Plex?", and the honest thing to hand them alongside
+    # that question is anything WE already know to be wrong. Plex shows a filename's slot filled
+    # with the agent's title for that slot; it cannot tell you the file holds a different episode.
+    # The West Wing Season 3, 2026-09-09: eighteen episodes published one slot too high, every one
+    # displaying a plausible title beside a plausible runtime, and only the user's eye caught it.
+    #
+    # verify-title-cards.ps1 reads each episode's on-screen card and leaves its verdicts in
+    # _episode-identity.csv. This only READS that file - OCR takes minutes per season and must
+    # never run inside a listing someone is waiting on. "not checked" is reported as exactly that,
+    # never as a pass: an absent verdict is an absent check.
+    $idRows = @()
+    if (Test-Path -LiteralPath $IdentityCsv) {
+      try {
+        # Match on the CSV's own Work column, NOT on a path prefix built from $VideoRoot: the real
+        # paths carry a Kind segment ('Television Shows') between the root and the work, and the
+        # roots differ in slash direction too. A prefix built without both matched nothing and the
+        # listing said "NOT CHECKED" while 21 verdicts sat in the file - a check reporting itself
+        # absent is indistinguishable from one that never ran.
+        $idRows = @(Import-Csv -LiteralPath $IdentityCsv | Where-Object { "$($_.Work)" -eq "$($p.Work)" })
+      } catch { }
+    }
+    if ($idRows.Count) {
+      $mm = @($idRows | Where-Object { $_.Verdict -eq 'MISMATCH' })
+      $okc = @($idRows | Where-Object { $_.Verdict -eq 'OK' }).Count
+      $unr = @($idRows | Where-Object { $_.Verdict -eq 'UNREAD' }).Count
+      if ($mm.Count) {
+        Write-Output ("        !! IDENTITY: {0} file(s) contain a DIFFERENT episode than their name claims - do NOT confirm these:" -f $mm.Count)
+        foreach ($m in $mm) { Write-Output ("           {0}  claims '{1}'  but {2}" -f (Split-Path -Leaf $m.Path), $m.Expected, $m.Read) }
+      } else {
+        Write-Output ("        identity: {0} verified against their on-screen title card, {1} unreadable, 0 wrong." -f $okc, $unr)
+      }
+    } else {
+      Write-Output '        identity: NOT CHECKED against the discs'' title cards (verify-title-cards.ps1 -Show ''<show>'').'
     }
   }
   Write-Output ''
@@ -325,6 +379,42 @@ $doc = [ordered]@{
   works       = @($chosen)
   units       = @()
   deriveUnits = $true
+}
+
+# SCOPE THE CONFIRMATION TO THE FILES THAT WERE ACTUALLY SHOWN.
+#
+# `deriveUnits: true` authorises releasing the staging of any unit of these works whose every
+# output is delivered - evaluated WHEN THE ARTEFACT RUNS, not when it was written. An artefact that
+# returns RETRY stays queued and is re-evaluated every pass, so files that publish AFTERWARDS fall
+# inside a confirmation given before they existed.
+#
+# 2026-09-09, Out of the Unknown: the listing showed 11 files as confirmable and explicitly warned
+# "do NOT confirm" the other 11, which were not yet on the NAS. The operator confirmed the 11. The
+# artefact named the WORK with no scope, returned RETRY at 04:29, sat queued while publish delivered
+# the other 11, and completed at 06:56 - releasing all of it, staging included. The operator found
+# it in Plex and asked whether it had been cleaned up without their confirmation. It had.
+#
+# This script ALREADY knows the answer: Get-FilesOnNas returns the same list it prints under "CONFIRM
+# THESE n file(s)". Writing it into coversOutputs means the artefact can never authorise more than
+# was put in front of the operator, however long it sits in the queue. _reclaim-loop.ps1 requires
+# EVERY output of a unit to match, so a disc that delivered one confirmed episode and three
+# unconfirmed ones is not a confirmed disc - which is the property that was missing.
+#
+# Leafs are REGEX-ESCAPED and anchored: coversOutputs entries are matched with -match against the
+# output's leaf filename, so an unescaped "Come Buttercup, Come Daisy, Come...?.mkv" would match far
+# more than itself.
+if (-not $StagingOnly) {
+  $covers = @()
+  foreach ($w in $chosen) {
+    foreach ($f in @(Get-FilesOnNas -Files @($localWorks[$w]) -VideoRoot $VideoRoot -NasRoot $NasRoot)) {
+      $covers += ('^' + [regex]::Escape($f.Name) + '$')
+    }
+  }
+  if ($covers.Count) {
+    $doc.coversOutputs = @($covers | Sort-Object -Unique)
+    $doc.note = $doc.note + (" SCOPE: coversOutputs names the {0} file(s) shown as confirmable at that moment, " -f @($doc.coversOutputs).Count) +
+                "so staging is released only for units whose EVERY output is one of them - a later publish cannot widen this."
+  }
 }
 if ($StagingOnly) { $doc.works = @(); $doc.units = @(); $doc.deriveUnitsForWorks = @($chosen) }
 

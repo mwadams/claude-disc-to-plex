@@ -64,6 +64,34 @@ $dirs = @($ManifestRoot,
 $manifests = @(foreach ($d in $dirs) { Get-ChildItem -LiteralPath $d -Filter *.json -File -EA SilentlyContinue })
 Write-Host "scanning $($manifests.Count) manifest(s) under $ManifestRoot"
 
+# ---- A SUPERSEDED PATH CAN BE REOCCUPIED, AND THEN IT MUST NEVER BE RETIRED --------------------
+# `supersedes` records what a NEW output replaces, and it is written once, when the manifest is
+# authored. It says nothing about what lives at that path LATER - and a numbered episode path is
+# exactly the kind of address a subsequent publish reuses.
+#
+# The West Wing, 2026-09-09. Disc 1's manifest declares that `S00E15 - Isaac and Ishmael.mkv`
+# supersedes `Season 03\The West Wing S03E01.mkv`, which was correct: the legacy library file at
+# that path WAS Isaac and Ishmael, filed as episode 1 because it aired first. The same disc then
+# published Manchester (1) - the true episode 1 - to that very path. So the retire list named a
+# live, current, correct episode as safe to delete, and every check above passed while it did:
+# the replacement (S00E15) really is on the NAS, really is verified, really did supersede
+# something. Nothing in that chain asks whether the OLD address is still vacant.
+#
+# So collect every path any manifest currently declares as an output, and refuse to retire one.
+# Cheap, and it fails closed: a path we are actively publishing to is never a path to delete.
+$currentOutputs = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+foreach ($mf in $manifests) {
+  $its = $null
+  try { $its = Get-Content -LiteralPath $mf.FullName -Raw | ConvertFrom-Json } catch { continue }
+  foreach ($it in @($its)) {
+    $o = "$($it.out)"
+    if (-not $o) { continue }
+    $n = To-NasPath ($o -replace '/', '\')
+    if ($n) { [void]$currentOutputs.Add($n) }
+  }
+}
+Write-Host "$($currentOutputs.Count) path(s) are declared outputs of a live manifest - those can never be retired"
+
 foreach ($mf in $manifests) {
   $items = $null
   try { $items = Get-Content -LiteralPath $mf.FullName -Raw | ConvertFrom-Json } catch {
@@ -86,6 +114,11 @@ foreach ($mf in $manifests) {
       if (-not $nasNew)             { $rec.Reason = 'output is not under a known library root'; $held.Add($rec); continue }
       if (-not (Under-Nas $nasNew)) { $rec.Reason = 'replacement path is not on the NAS'; $held.Add($rec); continue }
       if ($o -eq $nasNew)           { $rec.Reason = 'REFUSED: superseded path equals the replacement'; $held.Add($rec); continue }
+      # The address was reused by a later publish - whatever is there now is OURS and CURRENT.
+      if ($currentOutputs.Contains($o)) {
+        $rec.Reason = 'REFUSED: that path is a CURRENT declared output - it was reoccupied after this supersedes was written'
+        $held.Add($rec); continue
+      }
 
       $newItem = Get-Item -LiteralPath $nasNew -EA SilentlyContinue
       if (-not $newItem)            { $rec.Reason = 'replacement not yet published to the NAS'; $held.Add($rec); continue }
