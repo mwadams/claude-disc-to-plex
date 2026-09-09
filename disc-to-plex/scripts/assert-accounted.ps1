@@ -36,6 +36,18 @@
   evidence is NOT machine-verified - by definition the catalogue holds nothing for these titles -
   so they are always echoed in full for a reader to check. See DECLARED VS CATALOGUED below.
 
+  A still set authored in the MENU domain has neither a catalogue row nor a declared dvdvideo title
+  - it is consecutive PGCs in VTSM_PGCI_UT, absent from TT_SRPT entirely - so it gets a THIRD key
+  space, `menu<VTS>p<PGC>` or `menu<VTS>p<FIRST>-<LAST>`:
+
+    menu1p78-161|extra|Storyboard Archive, 84 hand-drawn frames|shipped:Movies/Star Trek The Motion Picture/Other/Gallery - Storyboard Archive.mkv
+    menu1p76-77|exclude|the browser instruction card in English (76) and German (77)|card:both read "Storyboard Artist: Maurice Zuberano"
+
+  A content-kind menu line is an OBLIGATION and closes only on `|shipped:<library-relative path>`
+  naming a file that exists locally or on the NAS. Deciding to ship something is not shipping it,
+  and this key space exists because a written-down decision that no gate could read let the staging
+  go: see the MENU-DOMAIN block near the end.
+
   `exclude` REQUIRES a reason, and the reason must identify what the title IS. "too short",
   "duplicate" and "not needed" are rejected: every expensive loss in this project was a real extra
   dropped for looking like the wrong length or a duplicate.
@@ -92,6 +104,9 @@
 param(
   [Parameter(Mandatory)][string]$Disc,
   [string]$OutDir = 'D:\video\_catalogue',
+  # Read-only, and only ever tested for PRESENCE: a menu-domain obligation closes on its artefact
+  # existing, and an item that was published and then reclaimed lives only here.
+  [string]$NasRoot = '\\NASTEAMV\Multimedia',
   [switch]$RequireEvidence
 )
 $ErrorActionPreference = 'Stop'
@@ -138,6 +153,7 @@ if($cat.minLength -gt 10){
 
 $disp = @{}
 $dvDisp = @{}
+$menuDisp = @{}
 $badReason = @()
 $unresolved = @()
 if(Test-Path -LiteralPath $dispPath){
@@ -167,6 +183,42 @@ if(Test-Path -LiteralPath $dispPath){
       if($dvKind -eq 'exclude'){
         if(-not $dvNote -or $dvNote.Length -lt 8 -or $dvNote -match '^(too short|short|duplicate|dupe|not needed|n/?a|junk|skip)\.?$'){
           $badReason += ("dv{0}  exclude reason does not identify the title: '{1}'" -f $dvId, $dvNote)
+        }
+      }
+      continue
+    }
+    # MENU-DOMAIN CONTENT IS KEYED `menu<VTS>p<PGC>` or `menu<VTS>p<FIRST>-<LAST>`.
+    #
+    # A gallery is sometimes authored not as a title but as N still MENUS - consecutive PGCs in
+    # VTSM_PGCI_UT, one cell each, advanced by the remote. It is absent from TT_SRPT entirely, so it
+    # has neither a catalogue row (no tNN) NOR a declared dvdvideo title (no dvNN). Both key spaces
+    # this file already has are title-domain, so until now the decision had NOWHERE TO GO and went
+    # into a comment - prose again, exactly the failure the dvNN key space was added to end.
+    #
+    # Star Trek: The Motion Picture extras disc, 2026-09-09. The sweep found an 85-PGC Storyboard
+    # Archive, confirmed it by eye, wrote "reported as MISSING CONTENT for the orchestrator" in a
+    # comment - and this gate passed the disc clean, because every TITLE really was accounted for.
+    # The staging was released on that clean exit. Nothing was lost only because E: still held the
+    # source. Same shape as the Edge of Darkness 202 still pages below, one domain further out.
+    #
+    # Two more arrived within the hour (War and Peace Disks 4 and 5, PGC 15-59 and 15-74), so this
+    # is a recurring authoring shape on this collection, not a one-off.
+    if($p[0] -match '^menu(\d+)p(\d+)(?:-(\d+))?$'){
+      $mVts   = [int]$Matches[1]
+      $mFirst = [int]$Matches[2]
+      $mLast  = if($Matches[3]){ [int]$Matches[3] } else { $mFirst }
+      $mKey   = $p[0]
+      $mKind  = $p[1].Trim().ToLower()
+      $mNote  = if($p.Count -ge 3){ $p[2].Trim() } else { '' }
+      $mEvid  = if($p.Count -ge 4){ $p[3].Trim() } else { '' }
+      $menuDisp[$mKey] = @{ vts = $mVts; first = $mFirst; last = $mLast
+                            kind = $mKind; note = $mNote; evidence = $mEvid }
+      if($mKind -in @('?', 'unknown', 'tbd', 'todo', 'unidentified', '')){
+        $unresolved += ("{0}  disposition is '{1}' - that is not a decision: {2}" -f $mKey, $mKind, $mNote)
+      }
+      if($mKind -eq 'exclude'){
+        if(-not $mNote -or $mNote.Length -lt 8 -or $mNote -match '^(too short|short|duplicate|dupe|not needed|n/?a|junk|skip)\.?$'){
+          $badReason += ("{0}  exclude reason does not identify the content: '{1}'" -f $mKey, $mNote)
         }
       }
       continue
@@ -776,6 +828,60 @@ if($unresolved.Count -gt 0){
   Write-Warning "Identify them, or record an exclusion that says what the title IS."
   exit 2
 }
+# ---- MENU-DOMAIN CONTENT: AN OBLIGATION CLOSES ON THE ARTEFACT, NOT ON THE DECISION ------------
+#
+# A `menu<VTS>p<range>` line whose kind is feature/extra/episode says "this disc holds content we
+# intend to ship". Writing that down is NOT shipping it - and the whole reason this key space exists
+# is that a written-down intention sat unread while the staging was released. So a content-kind menu
+# line must name the artefact it produced, and that artefact must EXIST:
+#
+#   menu1p78-161|extra|Storyboard Archive, 84 hand-drawn frames|shipped:Movies/Star Trek The Motion Picture/Other/Gallery - Storyboard Archive.mkv
+#
+# The path is LIBRARY-RELATIVE and is looked for locally and on the NAS - either satisfies it,
+# because a published-then-reclaimed item is still shipped. Same discipline as
+# obligations-close-on-evidence-not-counts: the gate reads a fact, never a claim.
+$menuOpen = @()
+foreach($k in ($menuDisp.Keys | Sort-Object)){
+  $m = $menuDisp[$k]
+  if($m.kind -notin @('feature','extra','episode')){ continue }
+  $pages = $m.last - $m.first + 1
+  $rel = ''
+  if("$($m.evidence)" -match '(?i)^\s*shipped\s*:\s*(.+?)\s*$'){ $rel = $Matches[1] }
+  if(-not $rel){
+    $menuOpen += ("{0}  {1} page(s), '{2}' - no |shipped:<path> evidence: nothing says this was ever built" -f $k, $pages, $m.note)
+    continue
+  }
+  $relN = ($rel -replace '/', '\').TrimStart('\')
+  $local = Join-Path 'D:\video' $relN
+  $nas   = Join-Path $NasRoot  $relN
+  if(-not (Test-Path -LiteralPath $local) -and -not (Test-Path -LiteralPath $nas)){
+    $menuOpen += ("{0}  {1} page(s), '{2}' - claims shipped:{3} but that file is neither local nor on the NAS" -f $k, $pages, $m.note, $rel)
+  }
+}
+if($menuOpen.Count){
+  Write-Output ""
+  Write-Output ("*** {0} MENU-DOMAIN ITEM(S) DECLARED AS CONTENT AND NOT SHIPPED ***" -f $menuOpen.Count)
+  Write-Output ""
+  Write-Output "These live in VTSM_PGCI_UT, not in TT_SRPT: no catalogue row, no dvdvideo title, so"
+  Write-Output "'every title accounted for' is TRUE and says nothing about them. That is how an"
+  Write-Output "85-page Storyboard Archive was written down as missing and released anyway."
+  Write-Output ""
+  foreach($o in $menuOpen){ Write-Output ("  {0}" -f $o) }
+  Write-Output ""
+  Write-Output "Build it as ONE item (galleries ship as one), then record the artefact:"
+  Write-Output "  dvd-still-cells.py --menu <VIDEO_TS> <vts> <out> <pgc,pgc,...>"
+  Write-Output "  build-still-slideshow.py <cells> '<out>.mkv' --pgcs <first>-<last> --dwell 5.0"
+  Write-Output "  then in $dispPath :"
+  Write-Output "  menu<vts>p<first>-<last>|extra|<name>|shipped:<library-relative path>.mkv"
+  Write-Output ""
+  Write-Output "SAMPLE THE FIRST AND LAST PAGE BY EYE before fixing the range - a multi-language disc"
+  Write-Output "repeats its instruction card once per language, and PGC 77 of the Star Trek disc was"
+  Write-Output "the GERMAN one sitting inside a range confirmed by sampling 76, 78, 80..."
+  Write-Output ""
+  Write-Output "DO NOT release the raw staging."
+  exit 2
+}
+
 # THE DISC DECLARES TITLES THE CATALOGUE NEVER LISTED, AND NOBODY HAS WRITTEN A DECISION FOR THEM.
 #
 # Reported LAST, on purpose: close-ships-nothing.ps1 and close-shipped-outside-manifest.ps1 echo the
