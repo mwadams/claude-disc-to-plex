@@ -124,6 +124,49 @@ while ($true) {
     if (-not (Test-Path -LiteralPath $sidecar)) {
       $outcome = Resolve-OcrOutcome -OutputText ($out | Out-String) `
                                     -SourceExists (Test-Path -LiteralPath $f.FullName)
+      # A DICTIONARY NEAR-MISS GETS ONE SECOND ATTEMPT WITH A DIFFERENT RENDERER FIRST.
+      #
+      # 'quality-near-miss' means the text WAS read and scored below the floor - "letters are being
+      # split". That is a RENDERING fault, not a source fault, and it has a known fix. The default
+      # path (mkvextract -> seconv -> Tesseract) cannot apply it: seconv renders internally and
+      # isolates the fill colour, so our only lever is Repair-VobSubPalette rewriting the .idx
+      # palette - a DECISION (merge the anti-alias, or not) taken from a measured ratio against a
+      # threshold. Moulin Rouge measured 0.143 against a 0.15 floor, declined, and produced
+      # "FES OSE t ys" from 1,986 clean lines.
+      #
+      # ocr-paddle.ps1 + vobsub-render.py decode the SPU directly and render GREYSCALE BY LUMINANCE,
+      # keeping the anti-alias as a real mid-tone. There is no isolation decision to get wrong, so
+      # it cannot fail this particular way. It is not the default because it is materially slower
+      # (996 cues took 13.3 min on Star Trek The Motion Picture) and because the default is right on
+      # most discs - but as a SECOND attempt on a file the gate has already rejected, that cost is
+      # paid only where it is earned.
+      #
+      # WHY THIS MATTERS: 'blocked' means "stop retrying, KEEP publish blocked", and the whole WORK
+      # stops shipping behind it. Star Trek The Motion Picture sat sixteen hours holding 12 finished
+      # files on 2026-09-08; the same render fix cleared it in 13 minutes once tried by hand. The
+      # verdict's own text says "fix the source or OCR path" - this IS the other OCR path, so
+      # recording the block before trying it writes off a file we can still read.
+      #
+      # ONE attempt, and only for this Status. If the fallback also fails, the block is recorded as
+      # before with both attempts named, so it is a human's problem with an honest history - and the
+      # publish-stalled alarm now surfaces it rather than leaving it to be discovered.
+      if ($outcome.Status -eq 'quality-near-miss') {
+        $paddle = 'D:/video/.claude/skills/disc-to-plex/scripts/ocr-paddle.ps1'
+        if (Test-Path -LiteralPath $paddle) {
+          Write-Output "    dictionary gate rejected it - retrying ONCE with the direct renderer (anti-alias preserved) ..."
+          try {
+            & pwsh -NoProfile -File $paddle -Path $f.FullName 2>&1 | ForEach-Object { "      $_" }
+          } catch {
+            Write-Output "      fallback threw: $($_.Exception.Message)"
+          }
+          if (Test-Path -LiteralPath $sidecar) {
+            Write-Output "      RECOVERED by the direct renderer - no verdict recorded, publish is free"
+            $did = $true
+            continue        # nothing to classify: the sidecar exists
+          }
+          $outcome.BlockReason = $outcome.BlockReason + '; the direct-render fallback (ocr-paddle.ps1) also failed'
+        }
+      }
       switch ($outcome.Verdict) {
         'exhausted' { Set-BitmapSubsExhausted -Path $f.FullName }
         'blocked'   { Set-BitmapSubsBlocked   -Path $f.FullName -Reason $outcome.BlockReason }
