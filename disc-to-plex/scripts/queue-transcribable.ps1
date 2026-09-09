@@ -78,6 +78,7 @@ $ErrorActionPreference = 'Continue'
 
 $paths   = Get-Content 'D:\video\.transcode-tools\tool-paths.json' -Raw | ConvertFrom-Json
 $ffprobe = Join-Path (Split-Path $paths.ffmpeg) 'ffprobe.exe'
+$ffmpeg  = $paths.ffmpeg          # volumedetect needs ffmpeg, not ffprobe - see Test-AudioIsSilent
 if (-not (Test-Path -LiteralPath $Store)) { throw "identity register not found: $Store" }
 
 # ONE identity table for the WHOLE run, shared by both sources below (register outputs, then the
@@ -96,6 +97,34 @@ $seenPaths = @{}
 function Test-HasAudioStream([string]$Path) {
   $codecs = & $ffprobe -v error -select_streams a -show_entries stream=codec_name -of csv=p=0 -- $Path 2>$null
   return @($codecs | Where-Object { $_ }).Count -gt 0
+}
+
+# A SILENT AUDIO TRACK IS NOT AN AUDIO SOURCE, AND IT DOES NOT ANNOUNCE ITSELF.
+#
+# Test-HasAudioStream asks whether a stream EXISTS. Mute archival footage is routinely authored with
+# a real, encoded, silent track - so it answers yes, the file is queued, and whisper is handed ten
+# minutes of noise floor. Whisper does not return nothing on silence: it HALLUCINATES, emitting
+# repeated plausible phrases. The result is fabricated dialogue written as a subtitle sidecar onto
+# mute archival footage, which is strictly worse than no subtitle at all and looks completely
+# healthy afterwards.
+#
+# The Power Game (1965), 2026-09-09. The operator listed the disc's specials and flagged two as
+# "(mute)": `Man from Italy` and `35mm Title Footage`. Both carry TWO audio streams each, so both
+# passed the existence test and both were sitting in the transcribe queue. Measured:
+#
+#     Man from Italy         mean -75.4 dB   max -58.7 dB
+#     35mm Title Footage     mean -82.5 dB   max -66.8 dB
+#     Promotional Trailers   mean -32.7 dB   max -11.2 dB   <- control, from the same disc
+#
+# ~50 dB between the mute pair and an ordinary track from the same source is not a marginal call.
+# The threshold is set on MAX, not mean: a mean can be dragged down by a long quiet passage in a
+# file that does contain speech, whereas a max below -45 dB means nothing in the whole window ever
+# rose to the level of dialogue.
+function Test-AudioIsSilent([string]$Path, [double]$MaxDbFloor = -45.0, [int]$Seconds = 600) {
+  $out = & $ffmpeg -hide_banner -nostats -t $Seconds -i $Path -map 0:a:0 -af volumedetect -f null - 2>&1
+  $m = [regex]::Match(($out -join "`n"), 'max_volume:\s*(-?\d+(?:\.\d+)?) dB')
+  if (-not $m.Success) { return $false }   # unmeasurable is NOT silent - never exclude on a failed probe
+  return ([double]$m.Groups[1].Value -lt $MaxDbFloor)
 }
 
 $records = @(Get-ChildItem -LiteralPath $Store -Filter *.json -File |
@@ -139,14 +168,19 @@ foreach ($rf in $records) {
     $sec = 0.0; [double]::TryParse($d, [ref]$sec) | Out-Null
     if ($sec -lt $MinSeconds) { $stats.tooShort++; continue }
 
-    if (-not (Test-HasAudioStream $f.FullName)) {
+    # Absence of a stream, OR a stream carrying nothing but noise floor - both are terminal,
+    # and only the second one lies about itself. See Test-AudioIsSilent.
+    $noAudio = -not (Test-HasAudioStream $f.FullName)
+    $silent  = (-not $noAudio) -and (Test-AudioIsSilent $f.FullName)
+    if ($noAudio -or $silent) {
       $stats.noAudioStream++
       $naRows.Add([pscustomobject]@{
         Kind = $rec.kind; Work = $o.work; Path = $f.FullName
         Season = $o.season; Episode = $o.episode
         Minutes = [math]::Round($sec / 60, 1)
         DiscId = $rec.discId; DiscFolder = $rec.discFolder
-        Reason = 'no audio stream (video-only artefact) - cannot be transcribed'
+        Reason = $(if ($noAudio) { 'no audio stream (video-only artefact) - cannot be transcribed' }
+                  else { 'audio stream present but SILENT (max volume below -45 dB) - transcribing it would hallucinate dialogue onto mute footage' })
         Evidence = "disc titles $($srcTitles -join '+') enumerated with 0 subtitle streams"
         When = (Get-Date -Format s)
       })
@@ -197,14 +231,19 @@ if ($AuditSet) {
     $sec = 0.0; [double]::TryParse($d, [ref]$sec) | Out-Null
     if ($sec -lt $MinSeconds) { $stats.tooShort++; continue }
 
-    if (-not (Test-HasAudioStream $f.FullName)) {
+    # Absence of a stream, OR a stream carrying nothing but noise floor - both are terminal,
+    # and only the second one lies about itself. See Test-AudioIsSilent.
+    $noAudio = -not (Test-HasAudioStream $f.FullName)
+    $silent  = (-not $noAudio) -and (Test-AudioIsSilent $f.FullName)
+    if ($noAudio -or $silent) {
       $stats.noAudioStream++
       $naRows.Add([pscustomobject]@{
         Kind = $a.kind; Work = $a.work; Path = $f.FullName
         Season = ''; Episode = ''
         Minutes = [math]::Round($sec / 60, 1)
         DiscId = ''; DiscFolder = $a.disc
-        Reason = 'no audio stream (video-only artefact) - cannot be transcribed'
+        Reason = $(if ($noAudio) { 'no audio stream (video-only artefact) - cannot be transcribed' }
+                  else { 'audio stream present but SILENT (max volume below -45 dB) - transcribing it would hallucinate dialogue onto mute footage' })
         Evidence = "audit: no re-rip needed; disc '$($a.disc)' title t$($a.tid) has 0 subtitle streams"
         When = (Get-Date -Format s)
       })
