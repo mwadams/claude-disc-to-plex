@@ -38,7 +38,7 @@
   to survive those gates afterwards, and a nomination the gate then rejects is a wasted hour.
 
   THIS SCRIPT ONLY RANKS. It never writes a sidecar and never lowers a bar. The winner is handed
-  to ocr-subtitles.ps1 -Track, which applies the full quality gates to the whole track. If the
+  to ocr-subtitles.ps1 -StreamIndex, which applies the full quality gates to the whole track. If the
   winner fails them there, that is the correct outcome and this script was still right to nominate
   it - ranking a sample and judging a conversion are different questions.
 
@@ -65,7 +65,7 @@ param(
   [string]$Lang = 'eng',
   [int]$SampleSeconds = 720,
   [string]$ToolsDir = 'D:/video/.transcode-tools',
-  # Run ocr-subtitles.ps1 -Track <winner> on each file once the winner is known.
+  # Run ocr-subtitles.ps1 -StreamIndex <winner> on each file once the winner is known.
   [switch]$Apply,
   # A stream must clear this to be nominated. 15 is the same floor ocr-subtitles.ps1's function-word
   # gate uses for a full track; on a sample it is if anything generous, which is the right direction
@@ -255,11 +255,11 @@ foreach ($file in $targets) {
     Write-Host ''
     Write-Host ("  ENGLISH IS STREAM {0}  ({1}% english, {2}% foreign, {3} sample lines)" -f `
                 $winner.Index, $winner.EngPct, $winner.ForPct, $winner.Lines) -ForegroundColor Green
-    Write-Host ("     pwsh -NoProfile -File $PSScriptRoot/ocr-subtitles.ps1 -Path '{0}' -Track {1}" -f $file, $winner.Index)
+    Write-Host ("     pwsh -NoProfile -File $PSScriptRoot/ocr-subtitles.ps1 -Path '{0}' -StreamIndex {1}" -f $file, $winner.Index)
     $results += [pscustomobject]@{ File = $file; Winner = $winner.Index; Note = "$($winner.EngPct)% english" }
     if ($Apply) {
       Write-Host '  -Apply: running the real conversion on that stream'
-      & pwsh -NoProfile -File "$PSScriptRoot/ocr-subtitles.ps1" -Path $file -Track $winner.Index -Lang $Lang -Manual
+      & pwsh -NoProfile -File "$PSScriptRoot/ocr-subtitles.ps1" -Path $file -StreamIndex $winner.Index -Lang $Lang -Manual
     }
   }
 

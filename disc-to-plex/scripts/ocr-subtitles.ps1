@@ -104,11 +104,25 @@ param(
   # Spider-Man (2002) is the same shape with a different cause - four streams all tagged `eng`
   # (33 / 1,191 / 1,543 / 11,230 packets), and the 33-packet FORCED signs track is first.
   #
-  # An explicit -Track bypasses the language-tag filter as well as the ordering: the whole point is
+  # An explicit -StreamIndex bypasses the language-tag filter as well as the ordering: the whole point is
   # to reach a stream whose tag is absent or wrong. It is still checked for being a bitmap stream
   # that actually exists, because OCR of a text stream is meaningless and a bad index should say so
   # rather than silently fall back to the automatic choice.
-  [int]$Track = -1
+  #
+  # NOT NAMED -Track, THOUGH THAT IS THE OBVIOUS NAME. PowerShell variable names are
+  # CASE-INSENSITIVE, and this script has carried a local `$track = $cand[0]` (the CHOSEN STREAM, a
+  # PSCustomObject) since long before this parameter existed. `[int]$Track` and `$track` are ONE
+  # VARIABLE, so that assignment tried to put an object into an int and threw:
+  #     Cannot convert the "@{Index=3; Codec=hdmv_pgs_subtitle}" value ... to type "System.Int32"
+  # Every OCR failed from the moment the parameter was added (2026-09-10), including A Taste of
+  # Honey's feature - which held its whole work out of the library, which held the publish, which
+  # held the disk below the fetch floor. The loop reported "OCR PRODUCED NO SIDECAR AND GAVE NO
+  # REASON - will retry", correctly, three times, and the real message was in the line above it.
+  #
+  # This is the exact trap already recorded for `$all` vs `-All`. It is worth restating because the
+  # collision is INVISIBLE at the definition: nothing about `[int]$Track` hints that a local 400
+  # lines away owns the name. Before adding a parameter, grep for its name case-INsensitively.
+  [int]$StreamIndex = -1
 )
 
 # The guard must be IMPOSSIBLE to skip by failing to load. A dot-source of a bad path raises a
@@ -672,35 +686,35 @@ foreach ($f in $targets) {
   # Deliberately NOT auto-picking the largest: 11,230 packets for a 116-minute film is not a
   # dialogue track either, so "most packets" would swap one wrong guess for another.
   #
-  # THIS SCRIPT HAS NO -Track OVERRIDE, so there is nothing to tell the reader to pass - which is
+  # THIS SCRIPT HAS NO -StreamIndex OVERRIDE, so there is nothing to tell the reader to pass - which is
   # itself the finding. Choosing among several same-language tracks needs either a way to say which
   # one, or a rule better than "the first". Until then the honest thing is to make the choice
   # VISIBLE, so a near-empty result is read as "wrong track" rather than "bad disc".
   # No packet scan here: $readFrom is not set until the file has been staged, so probing at this
   # point silently returned nothing (measured - the first cut printed "Packets per stream:" with an
   # empty list). Counting over SMB before staging would also read the container twice. The stream
-  # indices are free and are what a human needs to pass -Track; the packet counts are already
+  # indices are free and are what a human needs to pass -StreamIndex; the packet counts are already
   # computed further down, on the LOCAL copy, on the path where the file is about to fail.
   if ($cand.Count -gt 1) {
     Write-Host ("  NOTE: {0} bitmap track(s) tagged '{1}' (streams {2}) - taking the first, stream {3}." -f `
                 $cand.Count, $Lang, (($cand | ForEach-Object { $_.Index }) -join ', '), $cand[0].Index)
     Write-Host  '        If the OCR comes back unreadable or near-empty, the wrong one was taken - a tiny'
     Write-Host  '        packet count is a FORCED/signs track, not dialogue.'
-    Write-Host ('        Pass -Track <index> to read a different one.')
+    Write-Host ('        Pass -StreamIndex <index> to read a different one.')
   }
 
   # THE OVERRIDE. Checked against the bitmap streams that actually exist rather than against $cand,
   # because reaching a stream the language filter EXCLUDED is the main reason to pass it.
   $track = $cand[0]
-  if ($Track -ge 0) {
-    $pick = @($allBitmap | Where-Object { $_.Index -eq $Track })
+  if ($StreamIndex -ge 0) {
+    $pick = @($allBitmap | Where-Object { $_.Index -eq $StreamIndex })
     if (-not $pick) {
       $have = ($allBitmap | ForEach-Object { $_.Index }) -join ', '
-      Write-Host ("  skip (-Track $Track is not a bitmap subtitle stream in this file; bitmap streams are: $have): $($f.Name)")
+      Write-Host ("  skip (-StreamIndex $StreamIndex is not a bitmap subtitle stream in this file; bitmap streams are: $have): $($f.Name)")
       $skipped++; continue
     }
     $track = $pick[0]
-    Write-Host ("  -Track {0}: reading stream {0} ({1}, tag '{2}') instead of the automatic choice {3}" -f `
+    Write-Host ("  -StreamIndex {0}: reading stream {0} ({1}, tag '{2}') instead of the automatic choice {3}" -f `
                 $track.Index, $track.Codec, $(if ($track.Lang) { $track.Lang } else { 'none' }), $cand[0].Index)
   }
   $ext   = if ($track.Codec -eq 'hdmv_pgs_subtitle') { 'sup' } else { 'idx' }

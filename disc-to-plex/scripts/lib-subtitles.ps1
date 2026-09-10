@@ -248,7 +248,7 @@ function Resolve-OcrOutcome {
           "*** WRONG-LANGUAGE TRACK, BUT $n OTHER BITMAP STREAM(S) WERE NEVER TRIED. The stream we"
           '    read is not English; the file may still hold an English one on another track (Monty'
           "    Python's Flying Circus carries 21, English at stream 17). This needs no re-rip -"
-          '    run sweep-subtitle-streams.ps1 on this file, then OCR with -Track <index>.'
+          '    run sweep-subtitle-streams.ps1 on this file, then OCR with -StreamIndex <index>.'
           '    Publishing stays blocked until then; re-OCR would re-read the same first stream.'
         )
       }
