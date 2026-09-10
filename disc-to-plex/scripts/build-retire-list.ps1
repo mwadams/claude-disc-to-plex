@@ -134,6 +134,27 @@ foreach ($mf in $manifests) {
       }
       if (-not (Test-Path -LiteralPath $o)) { $rec.Reason = 'already gone'; $held.Add($rec); continue }
 
+      # REOCCUPATION, PART TWO: A SIDECAR IS REWRITTEN IN PLACE AND IS NEVER A MANIFEST OUTPUT.
+      #
+      # The $currentOutputs check above catches a path a live manifest still declares - but it is
+      # built from manifest `out` values, and a `.eng.srt` is never one of those. It is produced
+      # DOWNSTREAM by the OCR lane, at the same path, minutes after the media publishes. So a
+      # supersedes naming the old sidecar sails past that guard and lists the NEW one for deletion.
+      #
+      # Measured 2026-09-10, and the operator caught it, not this script: Lavender Hill Mob's .mkv
+      # published 15:19 and the OCR lane wrote `Lavender Hill Mob.eng.srt` at 15:23 - 1,070 cues,
+      # correctly timed to the new master. `_nas-retire.txt` listed that live file, and this list is
+      # documented as safe to action as-is.
+      #
+      # The rule needs no knowledge of sidecars: a file that is NEWER than the thing that replaced it
+      # cannot be the thing that was replaced. Anything at the old address written after the
+      # replacement landed was put there afterwards, by us, on purpose.
+      $oldItem = Get-Item -LiteralPath $o -EA SilentlyContinue
+      if ($oldItem -and $oldItem.LastWriteTime -gt $newItem.LastWriteTime) {
+        $rec.Reason = ("REFUSED: reoccupied - the file at that path was written {0:yyyy-MM-dd HH:mm}, AFTER its replacement landed {1:yyyy-MM-dd HH:mm}, so it is not the superseded copy" -f $oldItem.LastWriteTime, $newItem.LastWriteTime)
+        $held.Add($rec); continue
+      }
+
       $rec.Reason = 'superseded; replacement verified on the NAS'
       $listed.Add($rec)
     }
