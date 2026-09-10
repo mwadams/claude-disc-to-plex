@@ -44,6 +44,9 @@
 #>
 param(
   [Parameter(Mandatory)][string]$Manifest,
+  # Read-only, and only ever with Test-Path: the guard asks whether the library ALREADY holds an
+  # output's path, because that is what makes a bare filename forced rather than sloppy.
+  [string]$NasRoot = '\\NASTEAMV\Multimedia',
   [switch]$Quiet
 )
 $ErrorActionPreference = 'Stop'
@@ -89,8 +92,34 @@ foreach ($it in $items) {
   # Measured against what actually ships: the 14 Blake's 7 Series 3 extras published 2026-09-06 are
   # all in the full form (`Blakes 7 - S00E21 - Nationwide - Look North, 31 July 1979.mkv`), so this
   # asks for nothing new - it stops the convention being quietly dropped.
+  # ...AND THE EXCUSE IS THE FACT, NOT THE FIELD.
+  #
+  # This asked only for a `supersedes` field, and _briefs/manifest.md rule 3 says in terms:
+  # "In-place overwrites carry no `supersedes`" - because `supersedes` feeds build-retire-list.ps1,
+  # and an overwrite at the SAME path retires nothing. So an author replacing a bare-named legacy
+  # extra at its own path had to choose between two written rules, and the correct manifest was
+  # INEXPRESSIBLE.
+  #
+  # 2026-09-10: Star Cops Disks 1-3 (10 extras) and The Feathered Serpent D1 (1) were all refused
+  # on this, all four units held for the operator, while every one of those outputs was a genuine
+  # in-place replacement of a file the NAS already holds - `Star Cops S00E01.mkv` and its nine
+  # siblings, right there, bare-named, exactly as the rule anticipates.
+  #
+  # So measure the thing itself. "Is this bare name forced?" is answered by whether the library
+  # already holds that exact path: if it does, renaming ships a duplicate beside the original
+  # instead of replacing it, which is the whole reason the exemption exists. A `supersedes` field
+  # still counts - a legacy file being replaced at a DIFFERENT path is the other shape of the same
+  # excuse - but it is no longer the only evidence accepted.
+  #
+  # Deliberately NOT weakened elsewhere: a bare name still needs `plexTitle` below, and a NEW extra
+  # at a path the library does not hold is still refused, which is the case this guard was built for.
   $sup = @($it.supersedes | Where-Object { "$_".Trim() })
+  $inPlace = $false
   if ($sup.Count -eq 0) {
+    $nasPath = ($out -replace '^(?i)D:/video/', ($NasRoot.TrimEnd('\') + '\') -replace '^(?i)D:\\video\\', ($NasRoot.TrimEnd('\') + '\')) -replace '/', '\'
+    if ($nasPath -ne ($out -replace '/', '\') -and (Test-Path -LiteralPath $nasPath -PathType Leaf)) { $inPlace = $true }
+  }
+  if ($sup.Count -eq 0 -and -not $inPlace) {
     $unnamed += $leaf
     continue
   }

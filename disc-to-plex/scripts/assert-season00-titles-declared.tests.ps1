@@ -27,7 +27,7 @@ function Run([object]$manifest) {
   $p = Join-Path $tmp ('m-' + [guid]::NewGuid().ToString('N') + '.json')
   if ($manifest -is [string]) { Set-Content -LiteralPath $p -Value $manifest -Encoding UTF8 }
   else { ($manifest | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $p -Encoding UTF8 }
-  $o = & pwsh -NoProfile -File $script -Manifest $p 2>&1 | ForEach-Object { "$_" }
+  $o = & pwsh -NoProfile -File $script -Manifest $p -NasRoot $fakeNas 2>&1 | ForEach-Object { "$_" }
   [pscustomobject]@{ Code = $LASTEXITCODE; Out = ($o -join "`n") }
 }
 function Item([string]$out, [string]$plexTitle = '', [string[]]$supersedes = @()) {
@@ -38,6 +38,13 @@ function Item([string]$out, [string]$plexTitle = '', [string[]]$supersedes = @()
 }
 
 $nas = 'D:/video/Television Shows/The League of Gentlemen (1999)/Season 00'
+
+# An isolated stand-in for the library. The guard now asks whether the library ALREADY HOLDS an
+# output's path - that is what makes a bare filename forced - so these cases must not be decided by
+# whatever \NASTEAMV happens to contain on the day.
+$fakeNas = Join-Path $tmp 'nas'
+$fakeS00 = Join-Path $fakeNas 'Television Shows\The League of Gentlemen (1999)\Season 00'
+New-Item -ItemType Directory -Force -Path $fakeS00 | Out-Null
 try {
   # THE CASE THIS EXISTS FOR. A quality re-rip of a legacy special must keep the legacy filename or
   # it ships a duplicate instead of a replacement - so the name is bare and the manifest is the only
@@ -59,6 +66,21 @@ try {
   $r = Run @( (Item "$nas/The League Of Gentlemen S00E27.mkv" 'Some New Featurette') )
   Check 'bare NEW extra (no supersedes) -> REFUSED even with plexTitle' $r.Code 2
   Check 'and it says the name is the problem' ($r.Out -like '*BARE filename*') 'True'
+
+  # ---- THE EXCUSE IS THE FACT, NOT THE FIELD -------------------------------------------------
+  # _briefs/manifest.md rule 3 says an in-place overwrite carries NO `supersedes` (it retires
+  # nothing), and this guard used to accept only a `supersedes` field as justification for a bare
+  # name - so the correct manifest for a re-rip of a bare-named legacy extra was inexpressible, and
+  # on 2026-09-10 that held four units (Star Cops Disks 1-3, The Feathered Serpent D1). The two
+  # cases below differ by ONE fact: whether the library already holds that exact path.
+  New-Item -ItemType File -Force -Path (Join-Path $fakeS00 'The League Of Gentlemen S00E31.mkv') | Out-Null
+  $r = Run @( (Item "$nas/The League Of Gentlemen S00E31.mkv" 'Series 1 Deleted Scene - The Job Centre') )
+  Check 'bare + ALREADY ON THE NAS + plexTitle -> passes (in-place, no supersedes)' $r.Code 0
+  $r = Run @( (Item "$nas/The League Of Gentlemen S00E32.mkv" 'Series 1 Deleted Scene - The Job Centre') )
+  Check 'bare + NOT on the NAS + plexTitle -> still REFUSED' $r.Code 2
+  # An in-place replacement is still only titleable through plexTitle, so that requirement stands.
+  $r = Run @( (Item "$nas/The League Of Gentlemen S00E31.mkv") )
+  Check 'bare + on the NAS but NO plexTitle -> REFUSED' $r.Code 2
   $r = Run @( (Item "$nas/The League of Gentlemen (1999) - S00E27 - Some New Featurette.mkv") )
   Check 'the properly-named new extra passes'    $r.Code 0
 
