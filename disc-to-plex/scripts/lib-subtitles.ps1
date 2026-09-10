@@ -219,14 +219,49 @@ function Resolve-OcrOutcome {
   if ($OutputText -match 'non-English function words') {
     # Fantasia's extras carry SPANISH subtitles tagged `eng`. OCR worked perfectly; the disc lies.
     # Marking this exhausted would have published the featurette with a Spanish track labelled
-    # English and called the pipeline clean. Needs a re-encode selecting the real English stream.
+    # English and called the pipeline clean.
+    #
+    # WHAT THIS VERDICT MAY AND MAY NOT CLAIM. It used to end "needs a re-encode selecting the real
+    # English stream", which asserts two things this evidence does not support: that an English
+    # stream exists, and that a re-encode is the way to reach it. Measured 2026-09-10 across the 177
+    # files carrying it, those two claims were wrong in opposite directions:
+    #
+    #   - 170 of the 177 published files carry EXACTLY ONE subtitle stream. There is nothing in the
+    #     file to re-select, so "re-encode selecting the real English stream" is not an instruction
+    #     anyone can follow - it needs the SOURCE DISC, and for 136 of those files (Deep Space Nine,
+    #     The Italian Job, In the Line of Fire, Angel, Superman Returns) the library predates this
+    #     pipeline: no manifest, no catalogue, no disc-identity record, no disc.
+    #   - The other 7 - Monty Python's Flying Circus - carry TWENTY-ONE bitmap streams each, all
+    #     untagged and all full of real packets, and stream 17 is plain English. Those needed no
+    #     re-encode at all; they needed us to read a different track of the file we already had.
+    #
+    # So the verdict SPLITS on evidence ocr-subtitles.ps1 now prints: how many other bitmap streams
+    # were in the file and never tried. Both halves stay 'blocked' - retrying would re-read the same
+    # first stream and reach the same answer - but they name different remedies, and the multi-stream
+    # half is clearable by sweep-subtitle-streams.ps1 without touching the media.
+    if ($OutputText -match 'OTHER BITMAP STREAMS UNTRIED: (\d+)') {
+      $n = $Matches[1]
+      return [pscustomobject]@{
+        Status = 'wrong-language-untried-streams'; Verdict = 'blocked'
+        BlockReason = "read a non-English bitmap track, but $n other bitmap stream(s) in this file were never tried - run sweep-subtitle-streams.ps1 to find the English one; no re-rip needed"
+        Lines = @(
+          "*** WRONG-LANGUAGE TRACK, BUT $n OTHER BITMAP STREAM(S) WERE NEVER TRIED. The stream we"
+          '    read is not English; the file may still hold an English one on another track (Monty'
+          "    Python's Flying Circus carries 21, English at stream 17). This needs no re-rip -"
+          '    run sweep-subtitle-streams.ps1 on this file, then OCR with -Track <index>.'
+          '    Publishing stays blocked until then; re-OCR would re-read the same first stream.'
+        )
+      }
+    }
     return [pscustomobject]@{
       Status = 'wrong-language'; Verdict = 'blocked'
-      BlockReason = 'wrong-language subtitle track - disc mislabels it; needs a re-encode selecting the real English stream'
+      BlockReason = 'the only bitmap subtitle track in this file is not English - the published file cannot supply English subtitles; needs the SOURCE DISC re-ripped selecting an English stream, if the disc offers one at all'
       Lines = @(
-        '*** WRONG-LANGUAGE SUBTITLE TRACK - the disc mislabels it. Needs a re-encode selecting'
-        '    the real English stream. Publishing stays blocked on purpose; no further OCR retries'
-        '    until the file is rewritten.'
+        '*** WRONG-LANGUAGE SUBTITLE TRACK, AND IT IS THE ONLY ONE IN THE FILE. The published file'
+        '    cannot supply English subtitles by any re-mux. Remedy needs the SOURCE DISC: re-rip'
+        '    selecting an English stream if the disc offers one, otherwise this release has no'
+        '    English subtitles and the file belongs on the transcribe route instead.'
+        '    Publishing stays blocked on purpose; no further OCR retries until the file is rewritten.'
       )
     }
   }
