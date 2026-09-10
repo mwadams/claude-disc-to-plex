@@ -402,6 +402,31 @@ while ($MaxPasses -le 0 -or $pass -lt $MaxPasses) {
           # would have dropped all ELEVEN rows still genuinely pending, while looking safe because
           # 60 of the 72 were merely stale. -Append adds and never removes, which is the only
           # behaviour safe to run unattended on every pass.
+          # ...AND KEEP THE AUDIT SET IT READS UP TO DATE, WHICH WAS THE HALF STILL MISSING.
+          #
+          # The wiring above was real and the file it depends on was frozen. `-AuditSet` points at
+          # _audit-transcribable-combined.json; nothing ever rebuilt it, so it sat at its
+          # 2026-09-06 10:54 contents for four days - 24 Clayhanger rows and nothing published
+          # since. That is the whole of why Clayhanger was transcribed and Redcap was not: Redcap's
+          # thirteen manifest rows all declare subTrack=none, and not one of them was in the file.
+          # The other route in (the identity register's own `outputs`) is closed for almost
+          # everything - 21 of 411 records carry any output, because `disc-identity.ps1 -Action
+          # Record` has no automated caller either.
+          #
+          # -OnlyWorks $w.Name, NEVER a bare -FromManifests. Deriving the whole back catalogue at
+          # once turns an ~88-row queue into roughly 1,200 and the transcribe lane is GPU work
+          # measured in hours per hour of video; the operator's rule (2026-09-06) is that the queue
+          # holds "items we have *confirmed missing* from the drives we have processed", and that a
+          # sweep of that size is theirs to make and not a side effect of a publish. The work we
+          # just published IS a drive we have processed, and it is one show - so this adds that
+          # show and nothing else. The audit set is grow-only (see its -Merge default), and
+          # queue-transcribable re-checks every candidate anyway, so a stale row is filtered rather
+          # than transcribed.
+          try {
+            & pwsh -NoProfile -File 'D:/video/.claude/skills/disc-to-plex/scripts/build-transcribable-audit.ps1' `
+                   -FromManifests -OnlyWorks $w.Name 2>&1 | ForEach-Object { Write-Output "    [audit-set] $_" }
+          } catch { Write-Output "    build-transcribable-audit.ps1 threw: $($_.Exception.Message)" }
+
           try {
             $audit = 'D:/video/_audit-transcribable-combined.json'
             $qArgs = @('-NoProfile', '-File', 'D:/video/.claude/skills/disc-to-plex/scripts/queue-transcribable.ps1', '-Append')

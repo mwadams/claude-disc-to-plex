@@ -47,8 +47,13 @@ function New-Case([string]$name, [string[]]$dispLines) {
     Set-Content -LiteralPath (Join-Path $out "$name.dispositions.txt") -Encoding UTF8
   return $out
 }
+# -ManifestRoots points at a scratch directory in EVERY case. Left at its default these tests would
+# read the live D:/video/_manifests, so a test disc that happened to share a name with a real one
+# would close its obligations against a real artefact - a passing suite proving nothing.
+$mroot = Join-Path $root 'manifests'
+New-Item -ItemType Directory -Path $mroot -Force | Out-Null
 function Run([string]$name, [string]$out) {
-  & pwsh -NoProfile -File $Script -Disc $name -OutDir $out -NasRoot (Join-Path $root 'nas') *> $null
+  & pwsh -NoProfile -File $Script -Disc $name -OutDir $out -NasRoot (Join-Path $root 'nas') -ManifestRoots $mroot *> $null
   return $LASTEXITCODE
 }
 
@@ -90,6 +95,133 @@ Check 'placeholder kind refuses' 2 (Run $n $o) ''
 #    refused every disc without one would be routed around within a day.
 $n='caseG'; $o = New-Case $n @()
 Check 'a disc with no menu-domain line passes' 0 (Run $n $o) 'this rule must not tax ordinary discs'
+
+# ---- PHASE ----------------------------------------------------------------------------------
+# The same file is asked two different questions. `release` (the default, cases 1-7 above) asks "may
+# I delete the source?" and an unbuilt gallery must refuse. `decision` asks "is this disc decided?"
+# and is called by _dispositions-loop.ps1 the moment the agent finishes, when NOTHING is built yet -
+# so requiring an artefact there makes the correct disposition inexpressible. Reilly Ace of Spies
+# Disks 1-4 all escalated on this, 2026-09-10.
+function RunPhase([string]$name, [string]$out, [string]$phase) {
+  & pwsh -NoProfile -File $Script -Disc $name -OutDir $out -NasRoot (Join-Path $root 'nas') -ManifestRoots $mroot -Phase $phase *> $null
+  return $LASTEXITCODE
+}
+
+# 8. THE REGRESSION ITSELF: the case that refused for all four Reilly disks must pass at decision.
+$n='caseH'; $o = New-Case $n @('menu1p78-161|extra|Sam Neill Biography, 13 pages|user:confirmed by eye')
+Check 'unbuilt gallery PASSES at decision phase' 0 (RunPhase $n $o 'decision') 'nothing is built when the decision is made'
+
+# 9. ...and the SAME dispositions file must still refuse at release. If this ever passes, the phase
+#    split has stopped protecting the staging and has merely disabled the rule.
+Check 'the same unbuilt gallery still REFUSES at release' 2 (RunPhase $n $o 'release') 'the delete gate is the one that binds'
+
+# 10. Release is the DEFAULT. A caller that says nothing must get the strict answer, or every
+#     existing call site silently loosens the day this parameter was added.
+Check 'omitting -Phase defaults to release' 2 (Run $n $o) 'fail safe, not fail open'
+
+# 11. A false `shipped:` path refuses in decision phase TOO. This is the load-bearing half of the
+#     split: if a claim that names no file were tolerated anywhere, an agent could satisfy the
+#     release gate by inventing a path, and the unbuilt gallery would walk straight through.
+$n='caseI'; $o = New-Case $n @('menu1p78-161|extra|Storyboard Archive|shipped:Movies/Nope/Gallery - Absent.mkv')
+Check 'a shipped: path naming no file refuses at decision too' 2 (RunPhase $n $o 'decision') 'a false claim is worse than none'
+
+# 12. Identity evidence is still required under -RequireEvidence in decision phase. `shipped:` says
+#     where the artefact went, never what it is, and identity is the half that cannot be rebuilt
+#     once the staging is gone - so a shipped-only line must not buy its way past the citation rule.
+$n='caseJ'
+$rel2 = 'Movies\Phase Test\Other\Gallery - Built.mkv'
+$nasFile2 = Join-Path (Join-Path $root 'nas') $rel2
+New-Item -ItemType Directory -Path (Split-Path -Parent $nasFile2) -Force | Out-Null
+Set-Content -LiteralPath $nasFile2 -Value 'x' -Encoding UTF8
+$o = New-Case $n @('menu1p78-161|extra|Built Gallery|shipped:Movies/Phase Test/Other/Gallery - Built.mkv')
+& pwsh -NoProfile -File $Script -Disc $n -OutDir $o -NasRoot (Join-Path $root 'nas') -ManifestRoots $mroot -Phase decision -RequireEvidence *> $null
+Check 'shipped: alone is not identity evidence under -RequireEvidence' 2 $LASTEXITCODE 'a path says where, not what'
+
+# 13. ...and with identity evidence beside it, the same line passes. Nosferatu, 2026-09-09: dropping
+#     the card evidence to satisfy the gate was the wrong repair, so both must be expressible at once.
+$n='caseK'; $o = New-Case $n @('menu1p78-161|extra|Built Gallery|mymovies|shipped:Movies/Phase Test/Other/Gallery - Built.mkv')
+& pwsh -NoProfile -File $Script -Disc $n -OutDir $o -NasRoot (Join-Path $root 'nas') -ManifestRoots $mroot -Phase decision -RequireEvidence *> $null
+Check 'identity evidence AND shipped: together pass' 0 $LASTEXITCODE 'both halves must fit in one line'
+
+# 14. An unbuilt gallery WITH identity evidence passes decision under -RequireEvidence - this is
+#     precisely the shape all four Reilly agents wrote, run with the flag the loop actually uses.
+$n='caseL'; $o = New-Case $n @('menu1p78-161|extra|Sam Neill Biography, 13 pages|mymovies')
+& pwsh -NoProfile -File $Script -Disc $n -OutDir $o -NasRoot (Join-Path $root 'nas') -ManifestRoots $mroot -Phase decision -RequireEvidence *> $null
+Check 'the Reilly shape passes decision + -RequireEvidence' 0 $LASTEXITCODE 'this is the exact escalated case'
+
+# 15. ...but an unbuilt gallery with NO evidence of any kind still refuses. "I saw some pages" is
+#     not a decision, and the phase split must not become a way to record one.
+$n='caseM'; $o = New-Case $n @('menu1p78-161|extra|Some Gallery')
+& pwsh -NoProfile -File $Script -Disc $n -OutDir $o -NasRoot (Join-Path $root 'nas') -ManifestRoots $mroot -Phase decision -RequireEvidence *> $null
+Check 'unbuilt AND unevidenced still refuses at decision' 2 $LASTEXITCODE 'the phase relaxes the artefact, never the identity'
+
+# ---- MANIFEST-DERIVED CLOSURE ----------------------------------------------------------------
+# A still set built by the pipeline must close its own obligation. `shipped:` was hand-stamped for
+# the five galleries the orchestrator carved by hand; now that transcode.ps1 builds them from a
+# kind:"STILLS" row, requiring the stamp would reintroduce as a manual step the very thing this key
+# space exists to stop being manual.
+function New-StillsManifest([string]$file, [string]$unit, [int]$vts, [string]$pgcs, [string]$domain, [string]$outPath) {
+  @{ outputs = @(@{ kind = 'STILLS'; domain = $domain; vts = $vts; pgcs = $pgcs
+                    src = "D:/video/_stage/$unit"; expectPages = 3; out = $outPath }) } |
+    ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $mroot $file) -Encoding UTF8
+}
+# The artefact the rows below point at. Under the fake NAS root, which also proves a
+# published-then-reclaimed gallery still closes.
+$relG = 'Television Shows\Reilly\Season 00\Reilly - S00E01 - Sam Neill Biography.mkv'
+$nasG = Join-Path (Join-Path $root 'nas') $relG
+New-Item -ItemType Directory -Path (Split-Path -Parent $nasG) -Force | Out-Null
+Set-Content -LiteralPath $nasG -Value 'x' -Encoding UTF8
+$outG = 'D:/video/Television Shows/Reilly/Season 00/Reilly - S00E01 - Sam Neill Biography.mkv'
+
+# 16. THE POINT OF THE WHOLE MECHANISM: a built STILLS row closes an unstamped obligation at
+#     RELEASE - the phase that guards the delete. No hand-editing of the dispositions.
+$n='caseN'; $o = New-Case $n @('menu1p12-14|extra|Sam Neill Biography, 3 pages|mymovies')
+New-StillsManifest 'reilly-n.json' $n 1 '12-14' 'menu' $outG
+Check 'a built STILLS row closes the obligation at release' 0 (RunPhase $n $o 'release') 'the pipeline records what it built'
+
+# 17. COVERAGE, not equality: one artefact may span a wider range than the key names (Reilly Disk 4
+#     ships the cast grid at PGC14 alongside the six actor pages). Every named page is inside a file
+#     that exists, which is the whole of what the obligation asserts.
+$n='caseO'; $o = New-Case $n @('menu1p12-14|extra|Sam Neill Biography, 3 pages|mymovies')
+New-StillsManifest 'reilly-o.json' $n 1 '11-20' 'menu' $outG
+Check 'a row covering a WIDER range closes it' 0 (RunPhase $n $o 'release') 'galleries ship as one item'
+
+# 18. PARTIAL coverage must NOT close. This is the containment direction that matters: a row holding
+#     12-13 leaves page 14 unbuilt, and closing on it would lose a page while reporting success.
+$n='caseP'; $o = New-Case $n @('menu1p12-14|extra|Sam Neill Biography, 3 pages|mymovies')
+New-StillsManifest 'reilly-p.json' $n 1 '12-13' 'menu' $outG
+Check 'a row covering only PART of the range does not close it' 2 (RunPhase $n $o 'release') 'a missing page is lost content'
+
+# 19. Wrong VTS must not close. The two domains and the VTS index are separate sector spaces; a
+#     match on pages alone would close against plausible garbage from elsewhere on the disc.
+$n='caseQ'; $o = New-Case $n @('menu1p12-14|extra|Sam Neill Biography, 3 pages|mymovies')
+New-StillsManifest 'reilly-q.json' $n 6 '12-14' 'menu' $outG
+Check 'a row for a different VTS does not close it' 2 (RunPhase $n $o 'release') 'VTS indexes are separate sector spaces'
+
+# 20. A TITLE-domain row must not close a MENU-domain obligation, for the same reason
+#     dvd-still-cells.py refuses to guess between them.
+$n='caseR'; $o = New-Case $n @('menu1p12-14|extra|Sam Neill Biography, 3 pages|mymovies')
+New-StillsManifest 'reilly-r.json' $n 1 '12-14' 'title' $outG
+Check 'a title-domain row does not close a menu obligation' 2 (RunPhase $n $o 'release') 'the domains never substitute'
+
+# 21. A row for a DIFFERENT DISC must not close it. Sibling discs in one set carry near-identical
+#     menu structures - Reilly Disks 1, 2 and 3 all author a 3-page Sam Neill Biography at VTS 1 -
+#     so matching on vts+pages without the disc would let Disk 1's artefact close Disk 3's.
+$n='caseS'; $o = New-Case $n @('menu1p12-14|extra|Sam Neill Biography, 3 pages|mymovies')
+New-StillsManifest 'reilly-s.json' 'Some Other Disk' 1 '12-14' 'menu' $outG
+Check 'a row from another disc does not close it' 2 (RunPhase $n $o 'release') 'sibling discs share menu structure'
+
+# 22. A matching row whose OUTPUT DOES NOT EXIST must not close it. The row is a plan; the file is
+#     the fact. A manifest that was written and never ran is the ordinary case here.
+$n='caseT'; $o = New-Case $n @('menu1p12-14|extra|Sam Neill Biography, 3 pages|mymovies')
+New-StillsManifest 'reilly-t.json' $n 1 '12-14' 'menu' 'D:/video/Television Shows/Reilly/Season 00/Never Built.mkv'
+Check 'a matching row whose output is absent does not close it' 2 (RunPhase $n $o 'release') 'a row is a plan, the file is the fact'
+
+# 23. Comma-separated singletons are the shape dvd-still-cells.py actually consumes (it splits on
+#     comma and int()s each part), so the closure must read them identically to the builder.
+$n='caseU'; $o = New-Case $n @('menu1p12-14|extra|Sam Neill Biography, 3 pages|mymovies')
+New-StillsManifest 'reilly-u.json' $n 1 '12,13,14' 'menu' $outG
+Check 'a comma-separated pgcs spec closes it' 0 (RunPhase $n $o 'release') 'same parse as build-still-slideshow.py'
 
 Write-Output ''
 Write-Output ("{0} passed, {1} failed" -f $pass, $fail)

@@ -42,7 +42,23 @@
 param(
   [string]$QueueDone = 'D:/video/_queue/done',
   [string]$Out       = 'D:/video/_audit-transcribable-combined.json',
-  [string[]]$Merge   = @('D:/video/_audit-transcribable-media2.json', 'D:/video/_audit-transcribable-manual.json'),
+  # THE OUTPUT IS MERGED INTO ITSELF, SO THIS SET ONLY EVER GROWS.
+  #
+  # Measured 2026-09-10: with the old default the combined set rebuilt from 269 rows to 258 - it
+  # silently DROPPED all 24 Clayhanger rows, because 20 of them were manifest-derived by a
+  # `-FromManifests` run and 4 came from `_audit-transcribable-clayhanger.json`, and neither was a
+  # merge source. `_audit-transcribable-manual.json` has never existed. So the one file that
+  # accumulates the evidence was the one file not carried forward, and every rebuild quietly
+  # narrowed it.
+  #
+  # Grow-only is safe here precisely because this script decides what to OFFER, never what to
+  # transcribe: queue-transcribable.ps1 re-checks every candidate itself (no sidecar, no subtitle
+  # stream, a real audio stream, long enough), so a row that has since gained subtitles is filtered
+  # downstream rather than acted on. Rows are keyed on kind+rel, so re-merging is idempotent.
+  [string[]]$Merge   = @('D:/video/_audit-transcribable-combined.json',
+                         'D:/video/_audit-transcribable-media2.json',
+                         'D:/video/_audit-transcribable-clayhanger.json',
+                         'D:/video/_audit-transcribable-manual.json'),
   # MANIFEST DERIVATION IS OPT-IN, and deliberately not the default.
   #
   # The standing rule (user, 2026-09-06): "the queue is only supposed to contain items we have

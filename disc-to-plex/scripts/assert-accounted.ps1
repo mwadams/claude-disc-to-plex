@@ -107,6 +107,32 @@ param(
   # Read-only, and only ever tested for PRESENCE: a menu-domain obligation closes on its artefact
   # existing, and an item that was published and then reclaimed lives only here.
   [string]$NasRoot = '\\NASTEAMV\Multimedia',
+  # WHICH QUESTION IS BEING ASKED. This script is called at two different moments in a disc's life
+  # and they want different answers about menu-domain content:
+  #
+  #   release  (DEFAULT) "is it safe to delete the source?" - an unbuilt gallery must REFUSE, because
+  #            the staging may be the only place it can ever be built from. This is the Star Trek
+  #            TMP failure the menu key space exists to prevent.
+  #   decision "is this disc's accounting complete?" - asked by _dispositions-loop.ps1 the moment the
+  #            agent finishes deciding, when NOTHING has been built yet. Requiring a `shipped:` path
+  #            here makes the correct disposition inexpressible: the agent must either lie about an
+  #            artefact that does not exist or omit the item it just found. Reilly Ace of Spies
+  #            Disks 1-4, 2026-09-10: four agents wrote the right menu lines, all four were refused,
+  #            and Disk 4's agent diagnosed it exactly - "an unbuilt gallery must be written without
+  #            `shipped:` and the resulting refusal is the correct held-open state, not a defect".
+  #
+  # The obligation is not weakened by this, it is COMPOSED: decision phase reports the item as OPEN
+  # and still refuses a `shipped:` path that does not exist (a false claim is worse than none), and
+  # the release-phase call - _release-completed.ps1, close-ships-nothing.ps1,
+  # close-shipped-outside-manifest.ps1 - is the one that guards the delete. Default is `release` so
+  # a caller that says nothing gets the strict answer.
+  [ValidateSet('decision','release')][string]$Phase = 'release',
+  # Where a built still set is looked for. Both stores, because a manifest lives in _queue while it
+  # runs and in _manifests once archived, and a disc is at its most vulnerable in between - which is
+  # exactly when the release gate is asked. A parameter so the tests can point it at a scratch
+  # directory: a gate that can only read the live library is a gate whose closure rule cannot be
+  # tested, and an untested closure rule is one that quietly closes the wrong thing.
+  [string[]]$ManifestRoots = @('D:\video\_manifests', 'D:\video\_queue\done', 'D:\video\_queue\pending', 'D:\video\_queue\running'),
   [switch]$RequireEvidence
 )
 $ErrorActionPreference = 'Stop'
@@ -840,11 +866,98 @@ if($unresolved.Count -gt 0){
 # The path is LIBRARY-RELATIVE and is looked for locally and on the NAS - either satisfies it,
 # because a published-then-reclaimed item is still shipped. Same discipline as
 # obligations-close-on-evidence-not-counts: the gate reads a fact, never a claim.
-$menuOpen = @()
+#
+# TWO DIFFERENT FAULTS LIVE HERE AND ONLY ONE OF THEM IS PHASE-DEPENDENT:
+#
+#   UNBUILT  no `shipped:` segment at all. At RELEASE this is the whole point of the block. At
+#            DECISION it is the correct and expected state of a gallery nobody has built yet, so it
+#            is reported as an open obligation and the disc is allowed to proceed to its manifest.
+#   BROKEN   a `shipped:` path that names no file. That is a FALSE CLAIM about an artefact, and a
+#            false claim is worse than none in every phase - it is the one thing that would let an
+#            unbuilt gallery walk past the release gate too. Always refuses.
+# A BUILT GALLERY CLOSES ITS OWN OBLIGATION - NOBODY SHOULD HAVE TO STAMP `shipped:` BY HAND.
+#
+# `shipped:` was written by hand for Star Trek, War & Peace, Murder Rooms, Three Kings and Nosferatu
+# because the orchestrator had carved those galleries by hand too. That is no longer the route: the
+# manifest brief now says a still set is a `kind:"STILLS"` row with `domain:"menu"`, and
+# transcode.ps1 carves, assembles and page-checks it natively. So the pipeline itself already
+# records everything this obligation needs - and requiring a human to then copy the output path into
+# the dispositions would reintroduce, as a manual step, exactly the thing this key space exists to
+# stop being manual.
+#
+# The join is exact and needs no convention: a STILLS row names `src` (measured as
+# `D:/video/_stage/<unit>` on all 671 rows in _manifests), `vts`, `domain` and `pgcs`. A row whose
+# src is THIS disc, whose domain is menu, whose vts matches and whose pages COVER the key's range
+# closes it - provided its `out` actually exists. Every one of those is a fact, not a claim.
+#
+# `pgcs` is parsed exactly as build-still-slideshow.py's parse_pgcs does (comma-separated
+# singletons and inclusive a-b ranges). A second parser that disagreed with the builder would close
+# obligations against pages the builder never wrote.
+function Expand-PgcSpec([string]$spec){
+  $out = New-Object System.Collections.Generic.List[int]
+  foreach($part in ("$spec" -split ',')){
+    $part = $part.Trim()
+    if(-not $part){ continue }
+    if($part -match '^(\d+)\s*-\s*(\d+)$'){
+      $a = [int]$Matches[1]; $b = [int]$Matches[2]
+      if($b -lt $a){ continue }   # 0..-1 counts DOWN in PowerShell; a reversed spec must yield nothing
+      for($i = $a; $i -le $b; $i++){ $out.Add($i) }
+    } elseif($part -match '^\d+$'){ $out.Add([int]$part) }
+  }
+  return ,$out.ToArray()
+}
+# Scanned LAZILY and once. Most discs have no menu-domain content at all, and this gate runs on
+# every one of them - reading 135+ manifests to answer a question nobody asked would make the
+# common path pay for the rare one. `$null` means "not looked yet", an empty array means "looked,
+# found none"; the two must stay distinguishable or the scan repeats per key.
+$script:menuStillRows = $null
+function Get-MenuStillRows([string]$unit){
+  if($null -ne $script:menuStillRows){ return $script:menuStillRows }
+  $rowsOut = @()
+  foreach($dir in $ManifestRoots){
+    if(-not (Test-Path -LiteralPath $dir)){ continue }
+    foreach($mf in @(Get-ChildItem -LiteralPath $dir -Filter '*.json' -File -ErrorAction SilentlyContinue)){
+      try { $mj = Get-Content -LiteralPath $mf.FullName -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop } catch { continue }
+      $rows = @()
+      if($mj -is [System.Array]){ $rows = @($mj) }
+      elseif($mj.PSObject.Properties.Name -contains 'outputs'){ $rows = @($mj.outputs) }
+      foreach($r in $rows){
+        if("$($r.kind)" -ne 'STILLS'){ continue }
+        if("$($r.domain)".ToLowerInvariant() -ne 'menu'){ continue }
+        $rsrc = "$($r.src)"
+        if(-not $rsrc){ continue }
+        if((Split-Path ($rsrc -replace '/', '\') -Leaf) -ne $unit){ continue }
+        $rowsOut += [pscustomobject]@{
+          Vts      = [int]("$($r.vts)")
+          Pages    = (Expand-PgcSpec "$($r.pgcs)")
+          Out      = "$($r.out)"
+          Manifest = $mf.Name
+        }
+      }
+    }
+  }
+  $script:menuStillRows = @($rowsOut)
+  return $script:menuStillRows
+}
+$menuOpen   = @()
+$menuBroken = @()
+# NOT $evMissing: that list is reported and exits ~50 lines ABOVE this block, so anything appended
+# here would accumulate into a variable nobody reads again - a check that silently does nothing.
+$menuNoEv   = @()
 foreach($k in ($menuDisp.Keys | Sort-Object)){
   $m = $menuDisp[$k]
   if($m.kind -notin @('feature','extra','episode')){ continue }
   $pages = $m.last - $m.first + 1
+  # A menu line's IDENTITY evidence is the half that cannot be rebuilt once the staging is gone -
+  # `shipped:` says where it went, never what it is. Menu lines were exempt from -RequireEvidence
+  # only because the key space post-dates that check, not by intent.
+  if($RequireEvidence){
+    $idClasses = @($m.evidence -split '\|' | ForEach-Object { $_.Trim() } |
+                   Where-Object { $_ -match '^(?i)(speech|card|frame|menu|mymovies|duration|plex|tmdb|user)\b' })
+    if($idClasses.Count -eq 0){
+      $menuNoEv += ("{0}  {1} page(s), '{2}' - no identity evidence: say how you know what these pages ARE (card:/menu:/mymovies:...), not only where the artefact went" -f $k, $pages, $m.note)
+    }
+  }
   $rel = ''
   # `shipped:` IS ONE SEGMENT OF THE EVIDENCE FIELD, NOT THE WHOLE OF IT.
   #
@@ -857,6 +970,24 @@ foreach($k in ($menuDisp.Keys | Sort-Object)){
   # repair: the identity evidence is the half that cannot be rebuilt.
   if("$($m.evidence)" -match '(?i)(?:^|\|)\s*shipped\s*:\s*([^|]+?)\s*(?:\||$)'){ $rel = $Matches[1] }
   if(-not $rel){
+    # Before calling it unbuilt, ask the pipeline whether it built it. A row that COVERS the key's
+    # pages closes it; coverage rather than exact equality because one artefact may legitimately
+    # carry a wider range (Reilly Disk 4's Filmographies row spans the cast grid at PGC14 as well as
+    # the six actor pages), and galleries ship as ONE item. Every page the disposition named is then
+    # inside a file that exists, which is the whole of what this obligation asserts.
+    $covered = $null
+    foreach($r in (Get-MenuStillRows $discName)){
+      if($r.Vts -ne $m.vts){ continue }
+      $want = @($m.first..$m.last)
+      if(@($want | Where-Object { $_ -notin $r.Pages }).Count -gt 0){ continue }
+      $roN = ($r.Out -replace '/', '\')
+      $rRel = if($roN -imatch '^[A-Z]:\\video\\(.+)$'){ $Matches[1] } else { $roN.TrimStart('\') }
+      if((Test-Path -LiteralPath $roN) -or (Test-Path -LiteralPath (Join-Path $NasRoot $rRel))){ $covered = $r; break }
+    }
+    if($covered){
+      Write-Output ("  {0}  closed by manifest {1}: STILLS domain=menu vts={2} covering these pages -> {3}" -f $k, $covered.Manifest, $covered.Vts, (Split-Path $covered.Out -Leaf))
+      continue
+    }
     $menuOpen += ("{0}  {1} page(s), '{2}' - no |shipped:<path> evidence: nothing says this was ever built" -f $k, $pages, $m.note)
     continue
   }
@@ -864,8 +995,44 @@ foreach($k in ($menuDisp.Keys | Sort-Object)){
   $local = Join-Path 'D:\video' $relN
   $nas   = Join-Path $NasRoot  $relN
   if(-not (Test-Path -LiteralPath $local) -and -not (Test-Path -LiteralPath $nas)){
-    $menuOpen += ("{0}  {1} page(s), '{2}' - claims shipped:{3} but that file is neither local nor on the NAS" -f $k, $pages, $m.note, $rel)
+    $menuBroken += ("{0}  {1} page(s), '{2}' - claims shipped:{3} but that file is neither local nor on the NAS" -f $k, $pages, $m.note, $rel)
   }
+}
+if($menuNoEv.Count){
+  Write-Output ""
+  Write-Output ("*** {0} MENU-DOMAIN ITEM(S) NAMED WITH NO IDENTITY EVIDENCE (-RequireEvidence) ***" -f $menuNoEv.Count)
+  Write-Output ""
+  foreach($o in $menuNoEv){ Write-Output ("  {0}" -f $o) }
+  Write-Output ""
+  Write-Output "Cite it the same way a title is cited: |card:<what the page says> |menu:<note> |mymovies"
+  Write-Output 'A `shipped:` path is NOT identity evidence - it says where the artefact went, never what'
+  Write-Output "it is, and once the staging is released the identity is the half that cannot be rebuilt."
+  exit 2
+}
+if($menuBroken.Count){
+  Write-Output ""
+  Write-Output ("*** {0} MENU-DOMAIN ITEM(S) CLAIM AN ARTEFACT THAT DOES NOT EXIST ***" -f $menuBroken.Count)
+  Write-Output ""
+  Write-Output 'This refuses in EVERY phase. A `shipped:` path that names no file is a false claim, and'
+  Write-Output "it is the one thing that would carry an unbuilt gallery straight through the release gate."
+  Write-Output ""
+  foreach($o in $menuBroken){ Write-Output ("  {0}" -f $o) }
+  Write-Output ""
+  Write-Output 'Either build it and correct the path, or drop the `shipped:` segment so the item is'
+  Write-Output "carried openly as an obligation instead of falsely as a delivery."
+  Write-Output "DO NOT release the raw staging."
+  exit 2
+}
+# AN UNBUILT GALLERY IS THE EXPECTED STATE AT DECISION TIME - report it, do not refuse it.
+if($menuOpen.Count -and $Phase -eq 'decision'){
+  Write-Output ""
+  Write-Output ("{0} MENU-DOMAIN ITEM(S) DECIDED AND NOT YET BUILT - carried as open obligations:" -f $menuOpen.Count)
+  foreach($o in $menuOpen){ Write-Output ("  {0}" -f $o) }
+  Write-Output ""
+  Write-Output "These are NOT a refusal at this phase: the disc has just been decided and nothing has"
+  Write-Output "been built yet. They WILL refuse the release-phase call, which is what protects them -"
+  Write-Output "the staging cannot be deleted until each one names an artefact that exists."
+  $menuOpen = @()
 }
 if($menuOpen.Count){
   Write-Output ""
