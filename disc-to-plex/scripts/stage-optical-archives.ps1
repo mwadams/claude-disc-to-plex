@@ -183,6 +183,16 @@ foreach ($d in @(Get-ChildItem -LiteralPath $ArchiveRoot -Directory -Force -Erro
   # nothing, the post-move check compared 0 against 0 and PASSED, and only `@($null).Count -ne 0`
   # stopped the gate - the disc would be staged and then sit there ungated for ever, which reads on
   # the board as "nothing is briefing it" rather than "the handover does not know this shape".
+  # THREE SHAPES NOW, NOT TWO. A Blu-ray archive (backup-bd-makemkv.ps1) is a 1:1 BDMV tree
+  # verified BY BYTES against the disc's own listing, so it says `verifiedBy: bytes` like a DVD
+  # folder does - and would therefore have taken the DVD branch below, which measures VIDEO_TS.
+  # Measured on TOPSY_TURVY (2026-09-10): no VIDEO_TS, so `$now` is 0 against a `$need` of 47.3 GB,
+  # and `$j.ifoBup.different` does not exist on a BD sidecar so `@($null).Count` is 1 - two
+  # independent ways to fail. The disc would be MOVED to D: and then never written to
+  # _fetch-done.txt, which reads on the board as "nothing is briefing it" rather than "the handover
+  # does not know this shape" - the identical trap the protected path fell into and the reason that
+  # comment above exists.
+  $bd = ("$($j.discType)" -eq 'BD')
   $content = ("$($j.verifiedBy)" -eq 'content')
   $need = if ($content) { [long](@($j.titles | ForEach-Object { [long]$_.Bytes } | Measure-Object -Sum).Sum) } else { [long]$j.bytes }
   $free = [IO.DriveInfo]::new([IO.Path]::GetPathRoot((Resolve-Path $Stage).Path)).AvailableFreeSpace
@@ -209,6 +219,18 @@ foreach ($d in @(Get-ChildItem -LiteralPath $ArchiveRoot -Directory -Force -Erro
     $chk = Test-MakeMkvBackupSidecar -Sidecar $j -Folder $dest
     if (-not $chk.Ok) {
       Say ("  !! {0} STAGED BUT NOT GATED - the content-verified titles do not survive the move: {1}. Not written to _fetch-done.txt." -f $d.Name, $chk.Reason)
+      $failed++; continue
+    }
+  } elseif ($bd) {
+    # Re-verify against the sidecar's OWN listing, which records every BDMV file and its length at
+    # the moment the rip was byte-verified against the disc. The disc is long gone by now, so the
+    # sidecar is the only honest thing left to compare against - and because it was written only
+    # after Test-BdBackup passed against the real disc, "matches the sidecar" still means "matches
+    # the disc". Same function the optical loop and the ripper use, so the three cannot disagree
+    # about what a complete Blu-ray is.
+    $chk = Test-BdBackup -Listing $j.listing -Folder $dest
+    if (-not $chk.Ok) {
+      Say ("  !! {0} STAGED BUT NOT GATED - the BDMV tree does not survive the move: {1}. Not written to _fetch-done.txt." -f $d.Name, $chk.Reason)
       $failed++; continue
     }
   } else {

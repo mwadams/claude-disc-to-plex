@@ -73,6 +73,12 @@ param(
   # is what keeps Porridge Series 1 and the media2 audit in the queue.
   [switch]$FromManifests,
   [string[]]$OnlyWorks = @(),
+  # ONLY to correct a set that was widened in error - the same vocabulary queue-transcribable.ps1
+  # uses for the same hazard. 2026-09-10: a bare -FromManifests took this set 318 -> 2,019 rows,
+  # which is the whole pipeline's history rather than the media2/media3 campaign that was asked for.
+  # Narrowing it back is legitimate; doing so SILENTLY is not, so this says what it drops and keeps
+  # a copy of what it replaced.
+  [switch]$Force,
   [switch]$WhatIf
 )
 $ErrorActionPreference = 'Stop'
@@ -173,9 +179,16 @@ $before = 0
 if (Test-Path -LiteralPath $Out -PathType Leaf) {
   try { $before = @(Get-Content -LiteralPath $Out -Raw | ConvertFrom-Json).Count } catch { $before = 0 }
 }
-if ($before -gt $rows.Count) {
+if ($before -gt $rows.Count -and -not $Force) {
   Write-Output ("REFUSING to shrink {0}: it holds {1} row(s) and this run produced {2}. Nothing written." -f $Out, $before, $rows.Count)
+  Write-Output '  Pass -Force only to CORRECT a set that was widened in error, and say what the new scope is.'
+  Write-Output '  A rebuild is only as wide as the sources it was given, so this is normally a mistake.'
   exit 2
+}
+if ($before -gt $rows.Count) {
+  Write-Output ("*** -Force: NARROWING {0} from {1} to {2} row(s). Every dropped row is a file the" -f $Out, $before, $rows.Count)
+  Write-Output '    transcribe lane can no longer see through this route. The previous set is saved beside it.'
+  Copy-Item -LiteralPath $Out -Destination ($Out -replace '\.json$', ('.superseded-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.json')) -Force
 }
 ($rows | ConvertTo-Json -Depth 5) | Set-Content -LiteralPath $Out -Encoding UTF8
 Write-Output ("written: {0} ({1} -> {2} rows)" -f $Out, $before, $rows.Count)
