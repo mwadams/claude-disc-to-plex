@@ -814,6 +814,49 @@ if (Test-Path -LiteralPath $rqRoot) {
 # NAS. On 2026-09-01 manifests gated, encodes completed, nine loops held their mutexes and this
 # script said "nothing waiting on the operator" while nothing had shipped for two hours. The user
 # found it by looking at Plex, which was the only place the outcome was visible.
+# THE OCR QUEUE: UNATTEMPTED ROWS, AND THE FAILURES ONCE THERE ARE NONE.
+#
+# `ocrqueue` is a DRAINER, not a perpetual loop - it exits when every row has been attempted, so
+# _loops.ps1 can never tell you whether there is work left. Only the queue can. It was authorised to
+# drain unattended on 2026-09-10 with one obligation attached: review the `failed` rows AT THE END,
+# not row by row. That obligation is discharged HERE rather than by anyone remembering it - the
+# whole reason this board exists is that a thing nobody is shown is a thing nobody does.
+$ocrQ = 'D:/video/_ocr-queue.csv'
+$ocrP = 'D:/video/_ocr-queue-progress.csv'
+if (Test-Path -LiteralPath $ocrQ) {
+  try {
+    $qRows = @(Import-Csv -LiteralPath $ocrQ)
+    $seen  = @{}
+    $fails = 0
+    if (Test-Path -LiteralPath $ocrP) {
+      foreach ($r in @(Import-Csv -LiteralPath $ocrP)) {
+        $seen["$($r.Path)"] = $true
+        if ("$($r.Result)" -eq 'failed') { $fails++ }
+      }
+    }
+    # LEGACY .mp4 ROWS ARE EXCLUDED BY DEFAULT BY THE LOOP ITSELF, so they must be excluded from
+    # this count too, or the board reports work that running the track cannot do. Measured within
+    # minutes of writing this check: it said "251 of 1721 not yet attempted - run
+    # _bounce-track.ps1", the track was started, and it printed "queue drained (251 legacy .mp4
+    # row(s) excluded by default)" and exited in one second. A board that sends you to restart a
+    # track that immediately exits is worse than no line at all. The filter here is the loop's own
+    # (_ocr-queue-loop.ps1 ~line 253) - two guards on one quantity must agree.
+    $pending = @($qRows | Where-Object { -not $seen.ContainsKey("$($_.Path)") })
+    $todo    = @($pending | Where-Object { [IO.Path]::GetExtension("$($_.Path)") -ne '.mp4' }).Count
+    $mp4Left = @($pending).Count - $todo
+    $mp4Note = if ($mp4Left -gt 0) { "  ({0} legacy .mp4 row(s) excluded by default - -IncludeLegacyMp4 to take them)" -f $mp4Left } else { '' }
+    if ($todo -gt 0) {
+      Write-Output ("OCR QUEUE: {0} of {1} row(s) not yet attempted - run  _bounce-track.ps1 -Track ocrqueue{2}" -f $todo, $qRows.Count, $mp4Note)
+    } elseif ($fails -gt 0) {
+      Write-Output ("OCR QUEUE DRAINED - every eligible row attempted{0}. {1} FAILED row(s) are now owed a review:" -f $mp4Note, $fails)
+      Write-Output "   Import-Csv D:/video/_ocr-queue-progress.csv | Where-Object Result -eq 'failed' | Group-Object Reason"
+      Write-Output "   (a large shared Reason is one defect, not that many; fix the cause, then reset-ocr-verdicts.ps1 and re-run)"
+    } else {
+      Write-Output ("OCR QUEUE DRAINED - every eligible row attempted, no failures owed.{0}" -f $mp4Note)
+    }
+  } catch { }
+}
+
 $freshaudit = 'D:/video/.claude/skills/disc-to-plex/scripts/audit-publish-freshness.ps1'
 if (Test-Path -LiteralPath $freshaudit) {
   # CAPTURE, don't stream. The audit's prose still prints verbatim, but its anchored
