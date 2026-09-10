@@ -160,6 +160,29 @@ if (Test-Path -LiteralPath $extrasGuard) {
   }
 }
 
+# EIGHTH FAULT: an in-place supersede that replaces the VIDEO and inherits the OLD SUBTITLES.
+#
+# The filename is kept on purpose - a new name ships a duplicate rather than a replacement - and the
+# `.eng.srt` keeps its name too. Usually harmless: the new local encode has no sidecar, OCR converts
+# this disc's own stream, and publish (-Overwrite, once it sees the size mismatch) replaces both
+# files. The hole is a source with NO subtitle stream: nothing is produced to overwrite with, the old
+# sidecar survives against the new video, and _ocr-loop.ps1's eligibility test is "does a sidecar
+# exist" - so it is never revisited.
+#
+# Which is exactly the shape of a REMASTER, and remasters are most of what in-place supersedes are
+# for. The Box of Delights 40th Anniversary Blu-ray (2026-09-10) replaces a DVD publication whose ten
+# files all carry DVD-timed sidecars; a restoration is a different transfer and those timings do not
+# carry over. The risk was written into that unit's operator notes first - and a note is read once,
+# by one agent, only if the brief reaches it.
+$sidecarGuard = 'D:/video/.claude/skills/disc-to-plex/scripts/assert-superseded-sidecars.ps1'
+if (Test-Path -LiteralPath $sidecarGuard) {
+  & pwsh -NoProfile -File $sidecarGuard -Manifest $Manifest
+  if ($LASTEXITCODE -ne 0) {
+    Write-Output ("gate REFUSED: {0} - a replacement would leave the PREVIOUS source's subtitle sidecar beside the new video, and nothing would ever revisit it. Not queued." -f (Split-Path $Manifest -Leaf))
+    exit 2
+  }
+}
+
 # THE LEDGER. Record WHICH manifest passed and WHAT IT CONTAINED when it did.
 #
 # The hash matters, not just the name: without it, gating an empty placeholder and then writing the

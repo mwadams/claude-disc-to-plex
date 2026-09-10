@@ -1,8 +1,8 @@
 # Script index - GENERATED, do not edit
 
-Generated 2026-09-10 19:43 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
+Generated 2026-09-10 21:01 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
 
-**140 scripts under `scripts/`, 47 loop scripts under `D:/video/`. 0 with NO usable header, 49 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
+**142 scripts under `scripts/`, 47 loop scripts under `D:/video/`. 0 with NO usable header, 51 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
 
 Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library` = dot-source, defines functions only; `tests` = a test suite, exit 0 = all passed.
 
@@ -30,6 +30,8 @@ Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library
 | `assert-stills-pgcs-dispositioned.tests.ps1` | tests | Tests for assert-stills-pgcs-dispositioned.ps1. | NO TRIGGER IN HEADER | `pwsh -File assert-stills-pgcs-dispositioned.tests.ps1` |
 | `assert-stream-packets.ps1` | command | COUNT THE PACKETS. Durations, sizes and stream declarations can all be right while the media is wrong; a packet count is the thing that cannot be faked. | when: Five defects found on 2026-08-28 alone were invisible to every structural check and every one of them was caught by counting packets: | - |
 | `assert-suites-for-changed.ps1` | command | Given files you have changed, name EVERY test suite that exercises them - and run them. | when: On 2026-09-06 `Resolve-BackupFolderName` in lib-optical.ps1 was changed so an archive folder name carries the disc fingerprint. | `pwsh -NoProfile -File assert-suites-for-changed.ps1 -Changed lib-optical.ps1` |
+| `assert-superseded-sidecars.ps1` | command | Refuse a manifest that would replace a published .mkv IN PLACE while leaving the old subtitle sidecar standing beside it. | NO TRIGGER IN HEADER | `pwsh -NoProfile -File assert-superseded-sidecars.ps1 -Manifest D:/video/_pending/foo.json` |
+| `assert-superseded-sidecars.tests.ps1` | tests | Tests for assert-superseded-sidecars.ps1. | NO TRIGGER IN HEADER | - |
 | `assert-tracks-analysed.ps1` | command | Refuse a manifest whose AUDIO decisions are not backed by measured evidence. | when: Audio selection was authored from expectation and corrected later. | `pwsh -File assert-tracks-analysed.ps1 -Manifest D:\video\_manifests\x.json` |
 | `audio-dup-check.ps1` | command | Is a second audio track a REAL commentary, or a duplicate of the programme audio? | when: identify-audio.py transcribes a track, which CANNOT answer this question. | `python audio-envelope-correlate.py a0.wav aN.wav --max-lag 10` |
 | `audio-envelope-correlate.py` | python | Phase-insensitive log-energy envelope cross-correlation between two audio windows. | when: you have to say whether a published NAS file was encoded from THIS disc title (same cut, no shift) rather than merely being the same length. | `python audio-envelope-correlate.py <a.wav> <b.wav> [--max-lag 10] [--json]` |
