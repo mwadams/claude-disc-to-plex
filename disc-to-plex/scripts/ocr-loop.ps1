@@ -150,22 +150,12 @@ while ($true) {
       # ONE attempt, and only for this Status. If the fallback also fails, the block is recorded as
       # before with both attempts named, so it is a human's problem with an honest history - and the
       # publish-stalled alarm now surfaces it rather than leaving it to be discovered.
-      if ($outcome.Status -eq 'quality-near-miss') {
-        $paddle = 'D:/video/.claude/skills/disc-to-plex/scripts/ocr-paddle.ps1'
-        if (Test-Path -LiteralPath $paddle) {
-          Write-Output "    dictionary gate rejected it - retrying ONCE with the direct renderer (anti-alias preserved) ..."
-          try {
-            & pwsh -NoProfile -File $paddle -Path $f.FullName 2>&1 | ForEach-Object { "      $_" }
-          } catch {
-            Write-Output "      fallback threw: $($_.Exception.Message)"
-          }
-          if (Test-Path -LiteralPath $sidecar) {
-            Write-Output "      RECOVERED by the direct renderer - no verdict recorded, publish is free"
-            $did = $true
-            continue        # nothing to classify: the sidecar exists
-          }
-          $outcome.BlockReason = $outcome.BlockReason + '; the direct-render fallback (ocr-paddle.ps1) also failed'
-        }
+      # SHARED with _ocr-queue-loop.ps1 (lib-subtitles.ps1). This was inline here and absent there,
+      # so the same file got a second attempt locally and was written off on the NAS. The loop
+      # control stays here - only the attempt is shared.
+      if (Invoke-OcrDirectRenderFallback -Path $f.FullName -Sidecar $sidecar -Outcome $outcome) {
+        $did = $true
+        continue          # nothing to classify: the sidecar exists
       }
       switch ($outcome.Verdict) {
         'exhausted' { Set-BitmapSubsExhausted -Path $f.FullName }

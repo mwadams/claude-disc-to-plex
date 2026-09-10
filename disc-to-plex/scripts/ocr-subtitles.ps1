@@ -87,7 +87,28 @@ param(
   # instead. D: sat at ~99 GB against a 120 GB pipeline fetch floor on the day this was written, so
   # the fall-back is the direct read (the old behaviour), never a refusal - a queue that stalls on
   # disk space is worse than one that reads over the network for a while.
-  [long]$StageReserveBytes = 10GB
+  [long]$StageReserveBytes = 10GB,
+  # WHICH SUBTITLE STREAM TO READ, by ffprobe stream index (the number in `Stream #0:17`), when
+  # "the first candidate" is the wrong answer. -1 = choose automatically, as before.
+  #
+  # THIS EXISTS BECAUSE THE FILE OFTEN ALREADY HOLDS THE ENGLISH TRACK. Measured 2026-09-10 on the
+  # 177 files carrying the terminal 'wrong-language' verdict: seven Monty Python's Flying Circus
+  # episodes each carry TWENTY-ONE untagged `dvd_subtitle` streams, every one of them full of real
+  # packets. Rendering a cue from each showed French, German, Portuguese, Arabic, Croatian, Czech,
+  # Danish, Dutch, Finnish, Greek, Hindi, Icelandic, Norwegian, Romanian, Slovene, Swedish, Turkish,
+  # Italian, Spanish - and ENGLISH at s:17 ("I'm terribly sorry to interrupt, but my tooth's
+  # hurting") and again at s:18. Selection takes $cand[0] = stream 2 = French, the language gate
+  # correctly says "not English", and the verdict then said the DISC was at fault and stopped.
+  # Nothing was wrong with the disc, the rip, or the OCR: we read track 1 of 21.
+  #
+  # Spider-Man (2002) is the same shape with a different cause - four streams all tagged `eng`
+  # (33 / 1,191 / 1,543 / 11,230 packets), and the 33-packet FORCED signs track is first.
+  #
+  # An explicit -Track bypasses the language-tag filter as well as the ordering: the whole point is
+  # to reach a stream whose tag is absent or wrong. It is still checked for being a bitmap stream
+  # that actually exists, because OCR of a text stream is meaningless and a bad index should say so
+  # rather than silently fall back to the automatic choice.
+  [int]$Track = -1
 )
 
 # The guard must be IMPOSSIBLE to skip by failing to load. A dot-source of a bad path raises a
@@ -581,6 +602,18 @@ foreach ($f in $targets) {
     $skipped++; continue
   }
 
+  # EVERY bitmap stream in the file, before the language filter. The filtered list ($cand) is what
+  # selection uses; this one is what the FAILURE REPORT needs, because "there were twenty other
+  # bitmap tracks we never looked at" is the single most useful thing to know about a wrong-language
+  # result, and it is unrecoverable once the run is over.
+  $allBitmap = @()
+  foreach ($line in $info) {
+    $p = $line -split ','
+    if ($p.Count -lt 2) { continue }
+    if ($bitmapCodecs -notcontains $p[1]) { continue }
+    $allBitmap += [pscustomobject]@{ Index = [int]$p[0]; Codec = $p[1]; Lang = $(if ($p.Count -ge 3) { $p[2] } else { '' }) }
+  }
+
   $cand = @()
   foreach ($line in $info) {
     $p = $line -split ','
@@ -624,7 +657,52 @@ foreach ($f in $targets) {
   $hasText = $info | Where-Object { $bitmapCodecs -notcontains ($_ -split ',')[1] }
   if ($hasText) { Write-Host "  skip (already has text subs): $($f.Name)"; $skipped++; continue }
 
+  # MORE THAN ONE CANDIDATE IN THE SAME LANGUAGE IS A CHOICE, AND IT MUST NOT BE MADE SILENTLY.
+  #
+  # Taking $cand[0] is fine when there is one. When a disc carries several same-language bitmap
+  # tracks it is usually main subtitles + SDH + commentary + a tiny FORCED signs track, in whatever
+  # order the author muxed them - and the forced track is frequently first.
+  #
+  # Spider-Man (2002), measured 2026-09-10: four `dvd_subtitle` streams all tagged `eng`, carrying
+  # 33 / 1,191 / 1,543 / 11,230 packets. This line picked the 33-packet one, OCR read almost
+  # nothing, and the run was recorded as "OCR could not read the bitmaps at all - usually the wrong
+  # track was selected". That verdict was RIGHT, and nobody could act on it because the log never
+  # said which tracks were on offer or which had been taken.
+  #
+  # Deliberately NOT auto-picking the largest: 11,230 packets for a 116-minute film is not a
+  # dialogue track either, so "most packets" would swap one wrong guess for another.
+  #
+  # THIS SCRIPT HAS NO -Track OVERRIDE, so there is nothing to tell the reader to pass - which is
+  # itself the finding. Choosing among several same-language tracks needs either a way to say which
+  # one, or a rule better than "the first". Until then the honest thing is to make the choice
+  # VISIBLE, so a near-empty result is read as "wrong track" rather than "bad disc".
+  # No packet scan here: $readFrom is not set until the file has been staged, so probing at this
+  # point silently returned nothing (measured - the first cut printed "Packets per stream:" with an
+  # empty list). Counting over SMB before staging would also read the container twice. The stream
+  # indices are free and are what a human needs to pass -Track; the packet counts are already
+  # computed further down, on the LOCAL copy, on the path where the file is about to fail.
+  if ($cand.Count -gt 1) {
+    Write-Host ("  NOTE: {0} bitmap track(s) tagged '{1}' (streams {2}) - taking the first, stream {3}." -f `
+                $cand.Count, $Lang, (($cand | ForEach-Object { $_.Index }) -join ', '), $cand[0].Index)
+    Write-Host  '        If the OCR comes back unreadable or near-empty, the wrong one was taken - a tiny'
+    Write-Host  '        packet count is a FORCED/signs track, not dialogue.'
+    Write-Host ('        Pass -Track <index> to read a different one.')
+  }
+
+  # THE OVERRIDE. Checked against the bitmap streams that actually exist rather than against $cand,
+  # because reaching a stream the language filter EXCLUDED is the main reason to pass it.
   $track = $cand[0]
+  if ($Track -ge 0) {
+    $pick = @($allBitmap | Where-Object { $_.Index -eq $Track })
+    if (-not $pick) {
+      $have = ($allBitmap | ForEach-Object { $_.Index }) -join ', '
+      Write-Host ("  skip (-Track $Track is not a bitmap subtitle stream in this file; bitmap streams are: $have): $($f.Name)")
+      $skipped++; continue
+    }
+    $track = $pick[0]
+    Write-Host ("  -Track {0}: reading stream {0} ({1}, tag '{2}') instead of the automatic choice {3}" -f `
+                $track.Index, $track.Codec, $(if ($track.Lang) { $track.Lang } else { 'none' }), $cand[0].Index)
+  }
   $ext   = if ($track.Codec -eq 'hdmv_pgs_subtitle') { 'sup' } else { 'idx' }
   $stem  = Join-Path $work ([IO.Path]::GetRandomFileName())
   $bmp   = "$stem.$ext"
@@ -782,7 +860,27 @@ foreach ($f in $targets) {
     # unreadable cues and passed. Scale both ways - about one cue per 15 s for short clips (so a
     # 22-second deleted scene needs only one), and for anything over 5 minutes require a rate a
     # real dialogue track easily clears (a feature runs 600-1500 cues, so duration/4 is generous).
-    $durSec = [double]("$(& $ffprobe -v error -show_entries format=duration -of csv=p=0 $readFrom 2>$null)".Trim() -replace '^$','0')
+    # ffprobe RETURNS THE STRING 'N/A', NOT AN EMPTY ONE, when the container header carries no
+    # duration - and `[double]'N/A'` throws, which killed the whole run for that file. Timeslip
+    # (1970) S01E03 failed this way three times and was recorded as "unresolved after 3
+    # unexplained attempts": the register said the OCR was inconclusive when in fact this script
+    # had crashed before OCR was judged at all. An empty string was already guarded; 'N/A' was not.
+    #
+    # Fall back to the VIDEO STREAM's duration rather than to 0. A missing container duration is
+    # common in remuxed MKVs and says nothing about the file; defaulting to 0 would silently drop
+    # the cue floor to its minimum and let a sparse or failed OCR through as if it had been judged.
+    function Get-ProbeSeconds([string]$expr, [string]$file) {
+      $raw = "$(& $ffprobe -v error -show_entries $expr -of csv=p=0 $file 2>$null)".Trim()
+      $val = 0.0
+      if ([double]::TryParse($raw, [ref]$val)) { return $val }
+      return -1
+    }
+    $durSec = Get-ProbeSeconds 'format=duration' $readFrom
+    if ($durSec -lt 0) { $durSec = Get-ProbeSeconds 'stream=duration' $readFrom }
+    if ($durSec -lt 0) {
+      Write-Output "      no duration in the container OR the video stream - cue floor falls back to 1"
+      $durSec = 0
+    }
     $durMin = $durSec / 60
     $minCues = if ($durMin -gt 5) { [int][math]::Floor($durMin / 4) }
                else { [math]::Max(1, [math]::Min(5, [int][math]::Floor($durSec / 15))) }
@@ -851,7 +949,33 @@ foreach ($f in $targets) {
       # short track anyway, because it judges whether the words are English words rather than
       # whether the sentence happens to use a function word. The short-track dictionary check sits
       # in the block below, keyed off $shortTrack.
-      $shortTrack = ($judgeable.Count -lt 10)
+      # A SHORT TRACK MEANS A SHORT SOURCE, NOT A SHORT OCR RESULT.
+      #
+      # This was `$judgeable.Count -lt 10` alone, and $judgeable strips bracketed sound cues - so a
+      # MUSICAL, whose subtitles are mostly sung lyrics marked with a note glyph, ends up with a
+      # handful of "judgeable" lines no matter how long it is. A two-hour film was then judged by
+      # the short-track function-word rule, which fires at 25% of lines and is calibrated for a
+      # 4-line deleted scene. One line containing `de`/`la`/`el` is 25% of four.
+      #
+      # Measured 2026-09-10, by rendering the actual cues: of nine works carrying the
+      # 'wrong-language' verdict, seven were genuinely foreign (Danish, French, Dutch, Spanish) and
+      # TWO were plain English - Moulin Rouge ("TOULOUSE-LAUTREC SINGS: A little shy") and The Tales
+      # of Hoffmann (". We want some beer, we want some wine!"). Both are musicals. Both were
+      # recorded as terminal 'blocked: the disc mislabels it', which stops retries AND holds the
+      # whole work out of the library.
+      #
+      # The author already knew the rule must not reach a feature - "Restricted to short tracks: on
+      # a feature, a few subtitled foreign-dialogue lines are normal and this would reject a
+      # perfectly good conversion" - and guarded it by the wrong measure. Guard it by RUNTIME, which
+      # is what "short" actually means, and use the same 5-minute boundary the cue floor above uses.
+      #
+      # Unknown runtime resolves to NOT short, deliberately: that only abstains from a test, whereas
+      # the other way round invents a terminal language verdict from a few lines.
+      $sourceIsShort = ($durMin -gt 0 -and $durMin -le 5)
+      $shortTrack = ($judgeable.Count -lt 10) -and $sourceIsShort
+      if (($judgeable.Count -lt 10) -and -not $sourceIsShort) {
+        Write-Output ("      only $($judgeable.Count) judgeable line(s) but the source runs {0:N1} min - NOT a short track; the function-word rule does not apply to a feature" -f $durMin)
+      }
       if ($shortTrack) {
         $why = if ($cuePct -ge 50) { "$cuePct% of lines are bracketed sound descriptions" } else { 'too few lines for a percentage to mean anything' }
         Write-Output "      only $($judgeable.Count) dialogue line(s) to judge ($why) - function-word gate abstains, dictionary gate decides"
@@ -1008,6 +1132,18 @@ foreach ($f in $targets) {
   }
   catch {
     Write-Warning ("  FAILED {0}: {1}" -f $f.Name, $_.Exception.Message)
+    # A LANGUAGE VERDICT IS ABOUT THE STREAM WE READ, NOT ABOUT THE FILE. Say what else was on
+    # offer, in a line the classifier can read, so "this track is not English" cannot be recorded
+    # as "this disc has no English" while twenty untried bitmap tracks sit in the same file.
+    if ("$($_.Exception.Message)" -match 'non-English function words') {
+      $untried = @($allBitmap | Where-Object { $_.Index -ne $track.Index })
+      if ($untried.Count -gt 0) {
+        Write-Host ("  OTHER BITMAP STREAMS UNTRIED: {0} (of {1} in the file) - streams {2}" -f `
+                    $untried.Count, $allBitmap.Count, (($untried | ForEach-Object { $_.Index }) -join ', '))
+      } else {
+        Write-Host "  ONLY BITMAP STREAM IN THE FILE - nothing else here to read"
+      }
+    }
     $failed++
   }
   finally {

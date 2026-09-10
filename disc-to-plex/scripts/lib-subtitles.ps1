@@ -320,6 +320,60 @@ function Resolve-OcrOutcome {
 }
 
 # ---------------------------------------------------------------------------------------------
+# THE SECOND-ATTEMPT RENDERER, SHARED BY BOTH OCR TRACKS.
+#
+# WHY THIS IS A FUNCTION AND NOT A BLOCK IN A LOOP. It used to live inline in _ocr-loop.ps1 only,
+# and _ocr-queue-loop.ps1 never had it - so the SAME file got a second attempt under D:\video and
+# was written off on the NAS. Both loops already share the worker (ocr-subtitles.ps1) and the
+# classifier (Resolve-OcrOutcome); this was the one behaviour that had drifted, and it drifted
+# precisely because it was copied into one caller instead of shared by both. Operator asked the
+# right question on 2026-09-10: "are they consistent and sharing code?"
+#
+# WHAT IT IS FOR. 'quality-near-miss' means the text WAS read and scored below the floor - "letters
+# are being split". That is a RENDERING fault with a known fix: the default path (seconv +
+# Tesseract) isolates the fill colour, and its only lever is a palette DECISION taken from a
+# measured ratio (Moulin Rouge measured 0.143 against a 0.15 floor, declined, and turned 1,986
+# clean lines into "FES OSE t ys"). ocr-paddle.ps1 + vobsub-render.py decode the SPU directly and
+# render GREYSCALE BY LUMINANCE, so there is no isolation decision to get wrong and it cannot fail
+# that particular way. Slower, so it is a SECOND attempt only - the cost is paid where it is earned.
+#
+# 'blocked' means "stop retrying AND keep publish blocked", so recording it before trying this
+# writes off a file we can still read: Star Trek The Motion Picture sat sixteen hours holding 12
+# finished files, and the same render cleared it in 13 minutes once tried by hand.
+#
+# Returns $true if a sidecar now exists (the caller should treat the file as converted and record
+# NO verdict). Returns $false otherwise, having appended to $Outcome.BlockReason so the recorded
+# block carries an honest history of both attempts.
+function Invoke-OcrDirectRenderFallback {
+  param(
+    [Parameter(Mandatory)][string]$Path,
+    [Parameter(Mandatory)][string]$Sidecar,
+    [Parameter(Mandatory)][AllowNull()]$Outcome,
+    [string]$PaddleScript = 'D:/video/.claude/skills/disc-to-plex/scripts/ocr-paddle.ps1',
+    [scriptblock]$Say = $null
+  )
+  function Emit([string]$m) { if ($Say) { & $Say $m } else { Write-Output $m } }
+
+  if ($null -eq $Outcome -or "$($Outcome.Status)" -ne 'quality-near-miss') { return $false }
+  if (-not (Test-Path -LiteralPath $PaddleScript)) {
+    Emit '    direct-render fallback not present (ocr-paddle.ps1) - recording the block as-is'
+    return $false
+  }
+  Emit '    dictionary gate rejected it - retrying ONCE with the direct renderer (anti-alias preserved) ...'
+  try {
+    & pwsh -NoProfile -File $PaddleScript -Path $Path 2>&1 | ForEach-Object { Emit ("      " + $_) }
+  } catch {
+    Emit ("      fallback threw: " + $_.Exception.Message)
+  }
+  if (Test-Path -LiteralPath $Sidecar) {
+    Emit '      RECOVERED by the direct renderer - no verdict recorded, publish is free'
+    return $true
+  }
+  $Outcome.BlockReason = "$($Outcome.BlockReason); the direct-render fallback (ocr-paddle.ps1) also failed"
+  return $false
+}
+
+# ---------------------------------------------------------------------------------------------
 # THE SHARED CLASSIFIER for transcribe-wav.py output (speech samples in the catalogues).
 #
 # transcribe-wav.py emits a POSITIVE marker for every outcome: text, '[no-speech]' when it ran
