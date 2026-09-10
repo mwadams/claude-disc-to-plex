@@ -113,12 +113,26 @@ foreach ($m in $Merge) {
 # Named works only, when the answer is "yes, but just this one": Clayhanger packet-counted ZERO
 # subpicture streams disc-wide across all six of its discs, so no future rip can produce any.
 $nFromManifests = 0
+$unspecified = @()
 foreach ($f in @(Get-ChildItem -LiteralPath $QueueDone -File -Filter '*.json' -ErrorAction SilentlyContinue)) {
   if (-not $FromManifests) { break }
   $items = $null
   try { $items = @(Get-Content -LiteralPath $f.FullName -Raw | ConvertFrom-Json) } catch { continue }
   if ($items.Count -eq 1 -and $items[0].PSObject.Properties.Name -contains 'items') { $items = @($items[0].items) }
   foreach ($it in $items) {
+    # A row with NO `subTrack` at all is unspecified, not absent, so it is correctly ignored - but
+    # it is then invisible to BOTH eligibility routes, and silence is the problem. Measured
+    # 2026-09-10: 3 such rows out of 3,122 in `_queue/done`, and one of them (Babylon 5's "Babcom
+    # Incoming Message") is in no register anywhere - not the queue, not not-applicable, not
+    # deferred. Three is nothing; three that nobody can see is how it becomes three hundred.
+    # STILLS are exempt and must NOT be reported: a gallery is a silent slideshow, so it has no
+    # subTrack by construction and no dialogue to transcribe - the header's own "a video-only file
+    # is not 'not yet eligible', it is permanently DONE". Including them buried the 3 real rows
+    # under 24 galleries, and a note that is mostly noise is a note people learn to skip.
+    if ("$($it.kind)" -ne 'STILLS' -and $it.PSObject.Properties.Name -notcontains 'subTrack') {
+      $unspecified += ("{0}  <- {1}" -f (Split-Path "$($it.out)" -Leaf), $f.Name)
+      continue
+    }
     if ("$($it.subTrack)".Trim().ToLowerInvariant() -ne 'none') { continue }
     # NOT `$out`: PowerShell variable names are CASE-INSENSITIVE, so `$out` IS the `$Out` parameter.
     # The first cut used it here and the parameter was silently overwritten with a media path, so
@@ -142,6 +156,14 @@ foreach ($f in @(Get-ChildItem -LiteralPath $QueueDone -File -Filter '*.json' -E
 }
 
 Write-Output ("transcribable audit set: {0} row(s) - {1} carried from existing set(s), {2} from manifests declaring subTrack=none" -f $rows.Count, $carried, $nFromManifests)
+if ($unspecified.Count) {
+  Write-Output ("  NOTE: {0} manifest row(s) declare NO subTrack at all - unspecified, so neither eligibility" -f $unspecified.Count)
+  Write-Output '  route can see them. Not a fault in itself; a row whose title genuinely has subtitles belongs'
+  Write-Output '  nowhere near this queue. But check each has subtitles on the NAS, or is in the deferred /'
+  Write-Output '  not-applicable register, because nothing else will ever mention it again:'
+  foreach ($u in ($unspecified | Select-Object -First 12)) { Write-Output "    $u" }
+  if ($unspecified.Count -gt 12) { Write-Output ("    ... and {0} more" -f ($unspecified.Count - 12)) }
+}
 if ($WhatIf) { Write-Output '  WhatIf: nothing written'; exit 0 }
 
 # NEVER SHRINK SILENTLY. Same reasoning as queue-transcribable's own anti-shrink guard: a rebuild is

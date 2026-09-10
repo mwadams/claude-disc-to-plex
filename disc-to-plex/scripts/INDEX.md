@@ -1,8 +1,8 @@
 # Script index - GENERATED, do not edit
 
-Generated 2026-09-10 01:28 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
+Generated 2026-09-10 08:02 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
 
-**137 scripts under `scripts/`, 46 loop scripts under `D:/video/`. 0 with NO usable header, 47 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
+**139 scripts under `scripts/`, 46 loop scripts under `D:/video/`. 0 with NO usable header, 48 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
 
 Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library` = dot-source, defines functions only; `tests` = a test suite, exit 0 = all passed.
 
@@ -26,6 +26,8 @@ Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library
 | `assert-season00-titles-declared.ps1` | command | REFUSE a manifest that ships a BARE-NAMED Season 00 item without declaring its `plexTitle`. | when: Plex's TV agent titles an episode it does not recognise BY INDEX - "Episode 16", or worse, a real title belonging to a different item. | - |
 | `assert-season00-titles-declared.tests.ps1` | tests | Tests for assert-season00-titles-declared.ps1 - the gate that stops a bare-named Season 00 item publishing with no title Plex could get right. | NO TRIGGER IN HEADER | - |
 | `assert-staged-complete.ps1` | command | Refuse to enumerate or rip a staging folder that is still being copied. | when: MakeMKV enumerates whatever stream files are PRESENT. Run it against a half-copied folder and it returns a SHORTER, entirely plausible title list - no error, no warning - and that list becomes the... | - |
+| `assert-stills-pgcs-dispositioned.ps1` | command | REFUSE a manifest whose menu-domain STILLS row carves PGCs that its OWN disc's dispositions never named - the sibling-disc page numbers that build a gallery out of the wrong pages. | when: A menu-domain `pgcs` list is only meaningful for the ONE disc named in that row's `src`. | `pwsh -NoProfile -File assert-stills-pgcs-dispositioned.ps1 -Manifest D:/video/_queue/pending/x.json` |
+| `assert-stills-pgcs-dispositioned.tests.ps1` | tests | Tests for assert-stills-pgcs-dispositioned.ps1. | NO TRIGGER IN HEADER | `pwsh -File assert-stills-pgcs-dispositioned.tests.ps1` |
 | `assert-stream-packets.ps1` | command | COUNT THE PACKETS. Durations, sizes and stream declarations can all be right while the media is wrong; a packet count is the thing that cannot be faked. | when: Five defects found on 2026-08-28 alone were invisible to every structural check and every one of them was caught by counting packets: | - |
 | `assert-suites-for-changed.ps1` | command | Given files you have changed, name EVERY test suite that exercises them - and run them. | when: On 2026-09-06 `Resolve-BackupFolderName` in lib-optical.ps1 was changed so an archive folder name carries the disc fingerprint. | `pwsh -NoProfile -File assert-suites-for-changed.ps1 -Changed lib-optical.ps1` |
 | `assert-tracks-analysed.ps1` | command | Refuse a manifest whose AUDIO decisions are not backed by measured evidence. | when: Audio selection was authored from expectation and corrected later. | `pwsh -File assert-tracks-analysed.ps1 -Manifest D:\video\_manifests\x.json` |

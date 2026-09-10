@@ -918,9 +918,15 @@ function Get-MenuStillRows([string]$unit){
     if(-not (Test-Path -LiteralPath $dir)){ continue }
     foreach($mf in @(Get-ChildItem -LiteralPath $dir -Filter '*.json' -File -ErrorAction SilentlyContinue)){
       try { $mj = Get-Content -LiteralPath $mf.FullName -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop } catch { continue }
+      # ConvertFrom-Json UNWRAPS a single-element array, so a manifest holding exactly one row comes
+      # back as a bare object and an `-is [System.Array]` test reads zero rows out of it. A disc
+      # whose only STILLS row was its whole manifest would then never close its obligation, and the
+      # refusal would look like "nobody built it". Ask about `outputs` first, then wrap what is left.
       $rows = @()
-      if($mj -is [System.Array]){ $rows = @($mj) }
-      elseif($mj.PSObject.Properties.Name -contains 'outputs'){ $rows = @($mj.outputs) }
+      if($null -ne $mj){
+        if($mj -isnot [System.Array] -and $mj.PSObject.Properties.Name -contains 'outputs'){ $rows = @($mj.outputs) }
+        else { $rows = @($mj) }
+      }
       foreach($r in $rows){
         if("$($r.kind)" -ne 'STILLS'){ continue }
         if("$($r.domain)".ToLowerInvariant() -ne 'menu'){ continue }
@@ -988,7 +994,12 @@ foreach($k in ($menuDisp.Keys | Sort-Object)){
       Write-Output ("  {0}  closed by manifest {1}: STILLS domain=menu vts={2} covering these pages -> {3}" -f $k, $covered.Manifest, $covered.Vts, (Split-Path $covered.Out -Leaf))
       continue
     }
-    $menuOpen += ("{0}  {1} page(s), '{2}' - no |shipped:<path> evidence: nothing says this was ever built" -f $k, $pages, $m.note)
+    # NOT "nothing says this was ever built" - that phrasing cost an hour on 2026-09-10. Reilly
+    # Disks 2 and 3 refused here while the content WAS in the library: their manifests deliberately
+    # shipped Disk 1's verbatim-identical copy, pointing those rows' `src` at Disk 1, so no row for
+    # THIS disc covered the pages and the message read as "unbuilt". Say what is actually unknown -
+    # no artefact is recorded for these pages - and name both ways that ends.
+    $menuOpen += ("{0}  {1} page(s), '{2}' - no |shipped:<path> evidence: no artefact is recorded for these pages" -f $k, $pages, $m.note)
     continue
   }
   $relN = ($rel -replace '/', '\').TrimStart('\')
@@ -1049,6 +1060,17 @@ if($menuOpen.Count){
   Write-Output "  build-still-slideshow.py <cells> '<out>.mkv' --pgcs <first>-<last> --dwell 5.0"
   Write-Output "  then in $dispPath :"
   Write-Output "  menu<vts>p<first>-<last>|extra|<name>|shipped:<library-relative path>.mkv"
+  Write-Output ""
+  Write-Output "OR: THE SIBLING DISC MAY ALREADY HAVE SHIPPED IT. Box-set discs repeat their extras"
+  Write-Output "verbatim, and a manifest may deliberately ship one copy - Reilly Disks 2 and 3 point"
+  Write-Output "those rows' `src` at Disk 1. Then nothing is unbuilt and nothing needs rebuilding: PROVE"
+  Write-Output "the duplication and record the sibling's path here. Carve this disc's own pages and"
+  Write-Output "compare them against the shipped file, rather than trusting that they look the same:"
+  Write-Output "  dvd-still-cells.py --menu <VIDEO_TS> <vts> <out> <first,..,last>"
+  Write-Output "  ffmpeg -i <this page>.png -i <shipped page>.png -lavfi ssim -f null -"
+  Write-Output "Identical pages score All:1.000000; on Reilly a DIFFERENT item scored 0.680 and an"
+  Write-Output "ADJACENT page 0.712, so the two outcomes are not close together. Then write:"
+  Write-Output "  menu<vts>p<first>-<last>|extra|<name>|<evidence>|shipped:<the sibling's artefact>"
   Write-Output ""
   Write-Output "SAMPLE THE FIRST AND LAST PAGE BY EYE before fixing the range - a multi-language disc"
   Write-Output "repeats its instruction card once per language, and PGC 77 of the Star Trek disc was"

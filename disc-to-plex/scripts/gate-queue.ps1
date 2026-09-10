@@ -127,7 +127,25 @@ if (Test-Path -LiteralPath $expectGuard) {
   }
 }
 
-# SIXTH FAULT, and the operator found this one rather than any check: an extra filed into a movie
+# SIXTH FAULT, same family as the third: a menu-domain STILLS row asking for the WRONG PAGES.
+# `pgcs` is only meaningful for the one disc in that row's `src`, and sibling discs in a set carry
+# the same extras at different PGC numbers - Reilly Ace of Spies Disks 1 and 2 are offset by one,
+# so Disk 2's PGC 14 is a cast grid exactly where Disk 1's PGC 14 is a biography page. A row copied
+# between manifests without its `src` corrected therefore builds a plausible gallery out of real
+# pages of the wrong thing, and nothing downstream can see it: N named PGCs really do yield N
+# pages, so `expectPages` is satisfied and no duration or count test applies to a slideshow.
+# (Reilly measured the offset; its manifests were authored correctly, pointing `src` at Disk 1 for
+# the duplicated extras. This guards the near-miss variant.)
+$stillsGuard = 'D:/video/.claude/skills/disc-to-plex/scripts/assert-stills-pgcs-dispositioned.ps1'
+if (Test-Path -LiteralPath $stillsGuard) {
+  & pwsh -NoProfile -File $stillsGuard -Manifest $Manifest
+  if ($LASTEXITCODE -ne 0) {
+    Write-Output ("gate REFUSED: {0} - a still set would be carved from pages its own disc never declared. Not queued." -f (Split-Path $Manifest -Leaf))
+    exit 2
+  }
+}
+
+# SEVENTH FAULT, and the operator found this one rather than any check: an extra filed into a movie
 # subfolder Plex does not recognise is not an extra at all - the scanner indexes it as a FILM.
 # Moulin Rouge's four stills galleries went to "Still Galleries\" on 2026-09-07 and turned up in
 # the Films library as titles ("Costume Gallery", "The Little Red Book", and one mis-matched to an
