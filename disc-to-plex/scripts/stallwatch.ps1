@@ -841,12 +841,31 @@ if (Test-Path -LiteralPath $ocrQ) {
     # row(s) excluded by default)" and exited in one second. A board that sends you to restart a
     # track that immediately exits is worse than no line at all. The filter here is the loop's own
     # (_ocr-queue-loop.ps1 ~line 253) - two guards on one quantity must agree.
-    $pending = @($qRows | Where-Object { -not $seen.ContainsKey("$($_.Path)") })
-    $todo    = @($pending | Where-Object { [IO.Path]::GetExtension("$($_.Path)") -ne '.mp4' }).Count
-    $mp4Left = @($pending).Count - $todo
+    # COMPUTED ONCE. The first cut derived the COUNT here and re-derived the LIST at the print site,
+    # and the two disagreed: the board said "1 of 1708 not yet attempted" and then listed nothing -
+    # a claim you cannot check from the outside, about a track that exits immediately when asked to
+    # act on it. Two expressions for one quantity is precisely the defect this board reports in
+    # other tracks. Keep the ROWS; let .Count come off them.
+    $pending  = @($qRows | Where-Object { -not $seen.ContainsKey("$($_.Path)") })
+    $todoRows = @($pending | Where-Object {
+      $pth = "$($_.Path)".Trim()
+      if (-not $pth) { return $false }                       # a row with no path is not work
+      $ext = ''
+      try { $ext = [IO.Path]::GetExtension($pth) } catch { }  # an unparseable path is not an .mp4
+      $ext -ne '.mp4'
+    })
+    $todo    = $todoRows.Count
+    $mp4Left = $pending.Count - $todo
     $mp4Note = if ($mp4Left -gt 0) { "  ({0} legacy .mp4 row(s) excluded by default - -IncludeLegacyMp4 to take them)" -f $mp4Left } else { '' }
     if ($todo -gt 0) {
+      # NAME THEM. A bare count invites exactly the loop this line already caused once: it said "1
+      # not yet attempted", the track was started, it exited having done nothing, and the count was
+      # unchanged - with no way to tell which row it meant. A count you cannot act on is a count
+      # that trains you to ignore the line.
       Write-Output ("OCR QUEUE: {0} of {1} row(s) not yet attempted - run  _bounce-track.ps1 -Track ocrqueue{2}" -f $todo, $qRows.Count, $mp4Note)
+      foreach ($t in @($todoRows | Select-Object -First 5)) {
+        Write-Output ("     {0}" -f $t.Path)
+      }
     } elseif ($fails -gt 0) {
       Write-Output ("OCR QUEUE DRAINED - every eligible row attempted{0}. {1} FAILED row(s) are now owed a review:" -f $mp4Note, $fails)
       Write-Output "   Import-Csv D:/video/_ocr-queue-progress.csv | Where-Object Result -eq 'failed' | Group-Object Reason"
