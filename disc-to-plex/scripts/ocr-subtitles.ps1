@@ -652,7 +652,26 @@ foreach ($f in $targets) {
     # noise across the queue.
     $streamLang = if ($p.Count -ge 3) { $p[2] } else { '' }
     if ($bitmapCodecs -notcontains $codec) { continue }
-    if ($streamLang -and $streamLang -ne $Lang -and $streamLang -ne 'und') { continue }
+    # 'en' IS ENGLISH. So is 'eng', 'en-GB' and 'en_US'.
+    #
+    # This compared the tag to $Lang ('eng') as a plain string, so a stream tagged with the TWO-letter
+    # ISO 639-1 code was rejected as a foreign language and the file was recorded, permanently, as
+    # "no bitmap subtitle stream in the requested language - the only bitmap track(s) present are
+    # tagged a different language". Which was false: the track was English and right there.
+    #
+    # Measured 2026-09-11 across the OCR queue's 234 failures: 45 carried that verdict, and 44 of
+    # them are tagged `en` - Studio 60 (22), Testament of Youth (5), SR 2011 (3), Father Brown
+    # (1954), The Year of the Sex Olympics. Exactly ONE was genuine: To Serve Them All My Days,
+    # tagged `dut`. A single character of ISO pedantry hid 44 files behind a verdict that reads like
+    # a fact about the disc.
+    #
+    # Normalise both sides instead of comparing raw text: lowercase, drop any region suffix
+    # (`en-GB` -> `en`), then accept a match when one code is a prefix of the other and at least two
+    # characters long. That pairs en/eng, fr/fra, nl/nld, sv/swe... It does NOT pair the bibliographic
+    # aliases (`ger` vs `de`, `fre` vs `fr`), which is why the explicit alias table exists for the
+    # ones this library actually meets. Anything unrecognised still falls through to "not a match",
+    # so the filter stays closed in the dangerous direction.
+    if ($streamLang -and $streamLang -ne 'und' -and -not (Test-LangTagMatches -Tag $streamLang -Want $Lang)) { continue }
     $cand += [pscustomobject]@{ Index = $idx; Codec = $codec }
   }
   if (-not $cand) {

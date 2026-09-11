@@ -438,6 +438,48 @@ function Resolve-TranscribeOutput {
   return [pscustomobject]@{ Status = 'ok'; Text = $joined; Detail = '' }
 }
 
+function Test-LangTagMatches {
+  <#
+    .SYNOPSIS
+      Does a stream's language TAG name the language we are asking for? 'en' and 'eng' both do.
+
+    .WHY
+      Discs tag subtitle streams with ISO 639-1 ('en'), ISO 639-2/T ('eng'), ISO 639-2/B ('ger' for
+      German), or a region-qualified form ('en-GB', 'pt_BR') - and a plain string comparison against
+      'eng' rejects most of them. ocr-subtitles.ps1 did exactly that, and recorded the result as
+      "no bitmap subtitle stream in the requested language", a verdict that reads like a fact about
+      the disc. Measured 2026-09-11: 44 of the 45 files carrying it were tagged `en` and were
+      English all along - Studio 60's 22 episodes among them.
+
+    .HOW
+      Lowercase, drop the region suffix, then match if either code prefixes the other at >= 2 chars
+      (en/eng, fr/fra, nl/nld). The bibliographic aliases do not share a prefix with their 639-1
+      code, so those are listed explicitly. Unknown pairs do NOT match: the caller uses this to
+      decide whether to OCR a stream as English, and a wrong yes ships a foreign track labelled eng.
+  #>
+  param(
+    [Parameter(Mandatory)][AllowEmptyString()][string]$Tag,
+    [Parameter(Mandatory)][AllowEmptyString()][string]$Want
+  )
+  function Normalise([string]$s) { (("$s".Trim().ToLowerInvariant()) -split '[-_]')[0] }
+  $t = Normalise $Tag; $w = Normalise $Want
+  if (-not $t -or -not $w) { return $false }
+  if ($t -eq $w) { return $true }
+  # ISO 639-2/B (bibliographic) forms that do NOT share a prefix with their 639-1 code.
+  $alias = @{
+    'ger' = 'de'; 'fre' = 'fr'; 'dut' = 'nl'; 'gre' = 'el'; 'chi' = 'zh'; 'cze' = 'cs'
+    'ice' = 'is'; 'mac' = 'mk'; 'mao' = 'mi'; 'may' = 'ms'; 'per' = 'fa'; 'rum' = 'ro'
+    'slo' = 'sk'; 'tib' = 'bo'; 'wel' = 'cy'; 'arm' = 'hy'; 'baq' = 'eu'; 'bur' = 'my'; 'geo' = 'ka'
+  }
+  if ($alias.ContainsKey($t)) { $t = $alias[$t] }
+  if ($alias.ContainsKey($w)) { $w = $alias[$w] }
+  if ($t -eq $w) { return $true }
+  if ($t.Length -ge 2 -and $w.Length -ge 2) {
+    if ($t.StartsWith($w) -or $w.StartsWith($t)) { return $true }
+  }
+  return $false
+}
+
 function Repair-OcrGlyphs {
   # Repair the two systematic Tesseract glyph errors on disc subtitles, in ONE definition used by
   # both the live OCR pass (ocr-subtitles.ps1) and the retroactive sweep (fix-srt-glyphs.ps1).

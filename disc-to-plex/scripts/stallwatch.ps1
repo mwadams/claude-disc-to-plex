@@ -957,6 +957,34 @@ if (Test-Path -LiteralPath $reripDrive) {
 # guard in approve-confirmed.ps1 was wrongly suppressing the entry. Hence BOTH fields: what is
 # confirmable, and what has been SUPPRESSED as not-confirmable-yet. A suppression is a question
 # somebody decided not to ask, and that decision deserves to be visible rather than silent.
+# FAILURES A LANE RECORDED AND NOBODY HAS READ.
+#
+# Both draining lanes write a per-file result register and then move on. The OCR queue at least
+# prints its owed-review count on this board; the TRANSCRIBE lane's failures appeared NOWHERE - not
+# on the board, not in the alarm - so 17 of them sat unexamined and were found only because the
+# operator asked (2026-09-11: "Why did nothing trigger you to do that?").
+#
+# A failure nobody reads is a file that quietly never gets subtitles, which is the same
+# crowding-out shape this project has hit before. Counted here so the alarm can raise it; the
+# COUNT is the trigger, never the contents - reading them is the review, and that is a human or
+# agent job.
+$failuresOwed = @()
+try {
+  $tp = 'D:/video/_transcribe-progress.csv'
+  if (Test-Path -LiteralPath $tp) {
+    $tf = @(Import-Csv -LiteralPath $tp | Where-Object { "$($_.Result)" -eq 'failed' })
+    # Distinct PATHS, not rows: a file retried three times is one failure owing one review.
+    $tfu = @($tf | ForEach-Object { "$($_.Path)" } | Sort-Object -Unique)
+    if ($tfu.Count) { $failuresOwed += ("transcribe: {0} file(s) failed and unreviewed" -f $tfu.Count) }
+  }
+  $op = 'D:/video/_ocr-queue-progress.csv'
+  if (Test-Path -LiteralPath $op) {
+    $of = @(Import-Csv -LiteralPath $op | Where-Object { "$($_.Result)" -eq 'failed' })
+    $ofu = @($of | ForEach-Object { "$($_.Path)" } | Sort-Object -Unique)
+    if ($ofu.Count) { $failuresOwed += ("ocr-queue: {0} file(s) failed and unreviewed" -f $ofu.Count) }
+  }
+} catch { }
+
 $awaitingConfirmation = @(); $confirmSuppressed = @()
 try {
   $acScript = 'D:/video/.claude/skills/disc-to-plex/scripts/approve-confirmed.ps1'
@@ -1010,6 +1038,7 @@ if ($StateFile) {
     publishStallMinutes = [int]$publishStallMin
     publishStallFiles = [int]$publishStallFiles
     needsValidation = @($needsValidation)
+    failuresOwed   = @($failuresOwed)
     awaitingConfirmation = @($awaitingConfirmation)
     confirmSuppressed    = @($confirmSuppressed)
     briefsReady    = @($briefsReady)
@@ -1018,5 +1047,6 @@ if ($StateFile) {
   }
   try { ($stateDoc | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $StateFile -Encoding UTF8 } catch { }
 }
+
 
 
