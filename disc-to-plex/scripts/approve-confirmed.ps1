@@ -129,10 +129,25 @@ if (Test-Path -LiteralPath $reg) {
 # how they would quietly diverge. The library mirrors under both roots, so the NAS path is the local
 # one with the root swapped.
 function Get-FilesOnNas {
+  # PRESENT IS NOT THE SAME FILE. This tested only that SOMETHING exists at the NAS path, which is
+  # false whenever the local copy is a REPLACEMENT still waiting to publish: an in-place supersede
+  # keeps the filename, so the old published copy sits at exactly that path and the test passes.
+  #
+  # 2026-09-11, The Box of Delights: the 40th-anniversary Blu-ray re-encode of s01e01 (1,249.8 MB)
+  # was listed as "PUBLISHED AND AWAITING YOUR PLEX CONFIRMATION" while the NAS still held the 2026-
+  # 09-05 DVD version (612 MB) at that path. The operator would have been confirming, in Plex, a file
+  # that is still on this machine - the third question in one day that could not be answered. (The
+  # reclaim's own gate compares sizes and would have refused, so nothing was at risk of deletion;
+  # asking a false question still spends the one gate a human holds.)
+  #
+  # So compare the SIZE too. Same basis lib-publish-state.ps1's Get-WorkOutstanding uses to decide a
+  # work is published, so the two cannot disagree about what "on the NAS" means.
   param([object[]]$Files, [string]$VideoRoot, [string]$NasRoot)
   $prefix = (Join-Path $VideoRoot '')
   return @($Files | Where-Object {
-    Test-Path -LiteralPath (Join-Path $NasRoot ($_.FullName.Substring($prefix.Length)))
+    $nas = Join-Path $NasRoot ($_.FullName.Substring($prefix.Length))
+    $ni = Get-Item -LiteralPath $nas -ErrorAction SilentlyContinue
+    $ni -and $ni.Length -eq $_.Length
   })
 }
 

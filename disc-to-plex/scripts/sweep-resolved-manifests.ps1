@@ -46,6 +46,8 @@
 param(
   [string]$Queue     = 'D:/video/_queue',
   [string]$StateFile = 'D:/video/_stallwatch-state.json',
+  # Read-only, and only with Test-Path: the delivery test asks whether each output actually landed.
+  [string]$NasRoot   = '\\NASTEAMV\Multimedia',
   [switch]$Apply
 )
 $ErrorActionPreference = 'Stop'
@@ -77,6 +79,44 @@ if ($null -ne $age -and $age -gt 30) {
   Say ("board state is {0:N0} min old - re-run _stallwatch.ps1 so this acts on a CURRENT answer" -f $age)
   exit 0
 }
+# SECOND, INDEPENDENT TEST: EVERY OUTPUT IS ON THE NAS.
+#
+# The board's `manifestFailedStale` asks "did a LATER manifest for the same UNIT reach done?" - which
+# correctly handles the deliberate .retry/.named/.playlist renames, and still misses the commonest
+# resolution of all: the work was DELIVERED by some other route, so no completed manifest for that
+# unit exists to be found. Measured 2026-09-11 against the 11 manifests then sitting in failed/,
+# some for days: FIVE had every one of their outputs on the NAS - dvdvolume-38d2ed75 (7/7) and both
+# Definitive Sherlock Holmes discs with their .retry twins (6/6 each) - while the board still
+# reported them open. The operator's expectation, and it is the right one: "I thought those were all
+# addressed at the time, and you were supposed to have cleaned up when resolved."
+#
+# This does NOT replace the board's answer, it is unioned with it. Delivery is a fact about the
+# library, not about bookkeeping, so it cannot drift the way a second implementation of the
+# same-unit test would - and it is the thing "resolved" actually means. A manifest with no output
+# rows, or any output missing, is left alone: this only ever archives on a positive finding.
+$delivered = @()
+foreach ($f in @(Get-ChildItem (Join-Path $Queue 'failed/*.json') -ErrorAction SilentlyContinue)) {
+  if ($stale -contains $f.Name) { continue }
+  $rows = @()
+  try {
+    $j = Get-Content -LiteralPath $f.FullName -Raw | ConvertFrom-Json
+    $rows = @(if ($j -isnot [System.Array] -and $j.PSObject.Properties.Name -contains 'outputs') { $j.outputs } else { $j })
+  } catch { continue }
+  $outs = @($rows | ForEach-Object { "$($_.out)" } | Where-Object { $_ })
+  if (-not $outs.Count) { continue }
+  $missing = 0
+  foreach ($o in $outs) {
+    $nas = ($o -replace '^(?i)D:/video/', ($NasRoot.TrimEnd('\') + '\')) -replace '/', '\'
+    if (-not (Test-Path -LiteralPath $nas -PathType Leaf)) { $missing++; break }
+  }
+  if ($missing -eq 0) { $delivered += $f.Name }
+}
+if ($delivered.Count) {
+  Say ("{0} further failure(s) resolved by DELIVERY - every output is on the NAS:" -f $delivered.Count)
+  $delivered | ForEach-Object { Say "    $_" }
+  $stale = @($stale + $delivered | Sort-Object -Unique)
+}
+
 if (-not $stale.Count) { Say 'no resolved failures to archive'; exit 0 }
 
 $dest = Join-Path $Queue 'failed/_resolved'
