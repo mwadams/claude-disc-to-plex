@@ -174,6 +174,28 @@ if (Test-Path -LiteralPath $extrasGuard) {
 # files all carry DVD-timed sidecars; a restoration is a different transfer and those timings do not
 # carry over. The risk was written into that unit's operator notes first - and a note is read once,
 # by one agent, only if the brief reaches it.
+# NINTH FAULT: expectSeconds/expectFrames that agree with EACH OTHER and disagree with the SOURCE.
+#
+# The fifth fault above checks the two figures against one another and asks whether the ratio is a
+# real frame rate. It cannot see both being wrong by the same factor - they then agree perfectly and
+# imply an ordinary 29.97. The Rubber-Keyed Wonder Disc 2, 2026-09-11: every one of 18 rows was
+# exactly 1.000 s and 30 frames high, because the author took MakeMKV's duration string - which
+# ROUNDS UP to the whole second (0:17:46 for a 1065.130 s title) - and re-attached the true
+# fraction. Internally consistent, so the chain passed it; then every correct encode came back 30
+# frames "short", was quarantined as .wrong-length, and the manifest failed. 35 GB of good encodes
+# rejected and ~146 GB of staging held on a disk already under its fetch floor.
+#
+# One header probe per row against the source file settles it. It is last in the chain because it
+# is the only guard here that touches the disc.
+$sourceGuard = 'D:/video/.claude/skills/disc-to-plex/scripts/assert-expectations-match-source.ps1'
+if (Test-Path -LiteralPath $sourceGuard) {
+  & pwsh -NoProfile -File $sourceGuard -Manifest $Manifest
+  if ($LASTEXITCODE -ne 0) {
+    Write-Output ("gate REFUSED: {0} - a row's expectSeconds does not match the source it names, so transcode.ps1 would quarantine a CORRECT encode as .wrong-length. Not queued." -f (Split-Path $Manifest -Leaf))
+    exit 2
+  }
+}
+
 $sidecarGuard = 'D:/video/.claude/skills/disc-to-plex/scripts/assert-superseded-sidecars.ps1'
 if (Test-Path -LiteralPath $sidecarGuard) {
   & pwsh -NoProfile -File $sidecarGuard -Manifest $Manifest

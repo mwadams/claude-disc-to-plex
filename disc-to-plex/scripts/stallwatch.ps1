@@ -417,10 +417,25 @@ foreach ($u in $units) {
 
     # AND THE MIRROR CASE: a Blu-ray DISC whose manifest reads its RIP, not the disc. `M` reported
     # "needs MANIFEST" while `m.json` sat in _manifests pointing at `_stage/m-rip` - the disc is
-    # not waiting on anyone, the rip is carrying it. The rip folder is the unit name with every
-    # non-alphanumeric character dropped, which is how _rip-loop.ps1 names it (and how
-    # _release-completed.ps1 finds it again).
-    $slug = ($name -replace '[^A-Za-z0-9]', '').ToLowerInvariant()
+    # not waiting on anyone, the rip is carrying it.
+    #
+    # THE COMMENT HERE USED TO SAY the rip folder is "the unit name with every non-alphanumeric
+    # character dropped, which is how _rip-loop.ps1 names it". That was asserted, never checked, and
+    # WRONG. _rip-loop.ps1 line 124 builds it as `$disc.ToLower().Replace(' ', '') + '-rip'` -
+    # spaces only, hyphens KEPT. Every optical unit carries a hyphen (the fingerprint is appended as
+    # `<label>-<8 hex>`), so for those the derived name never matched anything:
+    #     real folder : atasteofhoney-e56427db-rip
+    #     looked for  : atasteofhoneye56427db-rip
+    # which is how this board came to print "redundant rip - no manifest reads it" about rips that
+    # were carrying their disc's manifest. The same defect in _dispositions-loop.ps1 re-briefed an
+    # already-gated unit and escalated it (2026-09-11, The Rubber Keyed Wonder D2).
+    #
+    # ConvertTo-RipSlug (lib-disk.ps1, already dot-sourced at the top of this file) is THE authority,
+    # written 2026-09-02 for this exact defect after 13 Danger Man rip folders were stranded by a
+    # hand-rolled copy of it. Its own header says: "ONE function, used everywhere a rip-slug is
+    # computed, makes that class of drift structurally impossible instead of merely documented."
+    # This line re-derived it by hand twelve lines below the dot-source, and drifted anyway.
+    $slug = ConvertTo-RipSlug -Name $name
     $viaRip = @(Get-ChildItem $manifestDirs -ErrorAction SilentlyContinue | Where-Object {
       $raw = Get-Content -LiteralPath $_.FullName -Raw
       foreach ($sfx in @('-rip', '-x', '-main', '-mkv')) {
@@ -911,6 +926,22 @@ if ($DischargePending -and (Test-Path -LiteralPath $DischargePending -PathType L
       $dischargePendingNames += $p.Name
     }
   } catch { Write-Output "   re-rip discharge report unreadable ($DischargePending): $($_.Exception.Message)" }
+}
+
+# DOES A DRIVE IN REACH CARRY A DISC THE RE-RIP REGISTER IS STILL WAITING FOR?
+#
+# The register knows WHICH discs owe the library a re-rip; it does not know which drive they are on.
+# Deep Space Nine's 21 OPEN rows are the case: batch 1 (2026-08-11/13) predates the disc-identity
+# register and the media sweeps, and its brief never recorded the drive label - so the answer only
+# arrives when the right drive is plugged in, and whoever plugs it in has no reason to think of DS9.
+#
+# The operator, 2026-09-11: "we need to check the DS9 case with each new drive that is attached."
+# On the board is where that rule survives; anywhere else it is a thing somebody has to remember.
+# -Quiet means it prints ONLY on a hit, so a drive with nothing owed adds no line.
+$reripDrive = 'D:/video/find-rerip-discs-on-drive.ps1'
+if (Test-Path -LiteralPath $reripDrive) {
+  try { & pwsh -NoProfile -File $reripDrive -Quiet 2>&1 | ForEach-Object { Write-Output "$_" } }
+  catch { Write-Output "   re-rip drive check failed: $($_.Exception.Message)" }
 }
 
 # THE STATE FILE - last, so it carries every verdict above. See the -StateFile parameter.

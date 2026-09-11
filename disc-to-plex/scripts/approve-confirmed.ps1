@@ -234,6 +234,38 @@ if (-not $Work.Count -and -not $All) {
       if ($onNas) { $fl += [pscustomobject]@{ F = $f; Rel = $rel } }
       else { $unpub += [pscustomobject]@{ F = $f; Rel = $rel } }
     }
+    # A FILM WITH NO FEATURE ON THE NAS CANNOT BE IN PLEX, WHATEVER ITS EXTRAS ARE DOING.
+    #
+    # Plex indexes a movie by its FEATURE file; everything in Interviews/, Featurettes/, Behind The
+    # Scenes/ is a LOCAL EXTRA that attaches to that film. Publish 18 extras and no feature and the
+    # film does not exist in the library at all - there is nothing for the operator to look at, and
+    # nothing their nod could mean.
+    #
+    # 2026-09-11, The Rubber-Keyed Wonder (2024). Disc 2's manifest shipped its 18 interviews and
+    # completed; disc 1 carries the feature and was still encoding. This list printed all 18 under
+    # "PUBLISHED AND AWAITING YOUR PLEX CONFIRMATION". The operator looked, found no such film among
+    # the library's 400, and said so. The publish loop KNEW - it was logging "REFUSING - HOLDING the
+    # whole work: its plan declares 27 output(s) ... 7 awaiting OCR" on every pass - but this script
+    # asks a per-FILE question and never asked whether the work was viewable at all.
+    #
+    # Same defect as the Tales of the Unexpected case recorded above, one level up: a claim about
+    # files outrunning the reality of the WORK. Asking a question that cannot be answered spends the
+    # single gate a human holds and teaches them the list is not to be trusted.
+    #
+    # Television is deliberately NOT covered: a series appears in Plex as soon as ONE episode lands,
+    # so a partially-published show is genuinely confirmable for the episodes that are there.
+    $isMovie = $false
+    if ($localFiles.Count) { $isMovie = ("$($localFiles[0].FullName)" -match '(?i)[\\/]Movies[\\/]') }
+    $featureOnNas = @($fl | Where-Object { ($_.Rel -split '\\').Count -le 2 }).Count -gt 0
+    if ($isMovie -and -not $featureOnNas) {
+      $why = if ($unpub.Count) { "$($unpub.Count) file(s) of it are still local, including the feature" } else { 'its feature is not on the NAS' }
+      Write-Output ("        NOT CONFIRMABLE YET - this is a FILM and its feature file is not on the NAS ({0})." -f $why)
+      Write-Output  '        Plex indexes a movie by its feature; extras in Interviews/ or Featurettes/ attach to'
+      Write-Output  '        that film and cannot appear without it. Nothing to look at yet - this is waiting on'
+      Write-Output  '        PUBLISH, not on you. (_publish-loop.ps1 holds a work until every output has its'
+      Write-Output  '        sidecar, so an OCR still running is the usual reason.)'
+      continue
+    }
     foreach ($x in ($fl | Sort-Object Rel)) { Write-Output ("        {0,8:N1} MB  {1}" -f ($x.F.Length / 1MB), $x.Rel) }
     if ($fl.Count) {
       Write-Output ("        ^ CONFIRM THESE {0} file(s) in Plex - not the work as a whole. They are what the reclaim releases." -f $fl.Count)
