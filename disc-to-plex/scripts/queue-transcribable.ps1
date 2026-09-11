@@ -76,6 +76,22 @@ $ErrorActionPreference = 'Continue'
 
 . (Join-Path $PSScriptRoot 'lib-queue-guard.ps1')
 
+# THE GOVERNOR IS NOT OPTIONAL FOR ANYTHING THAT READS THE NAS.
+#
+# This script reads whole media files off the NAS (see Test-AudioIsSilent) and did so with no slot,
+# no ceiling and - worst - no kill switch, so `_nas-hold.ps1 -On` could not stop it. Verified on
+# load rather than dot-sourced and hoped for: a bad path raises a NON-TERMINATING error, the
+# functions would simply be undefined, and the probe would silently fall back to the ungoverned read
+# that caused the incident.
+$govLib = Join-Path $PSScriptRoot 'lib-nas-governor.ps1'
+if (-not (Test-Path -LiteralPath $govLib)) { throw "nas governor missing: $govLib" }
+. $govLib
+foreach ($fn in @('Invoke-NasRead', 'Wait-NasHold', 'Test-NasPath')) {
+  if (-not (Get-Command $fn -ErrorAction SilentlyContinue)) {
+    throw "lib-nas-governor.ps1 failed to load - $fn undefined; refusing to read the NAS ungoverned"
+  }
+}
+
 $paths   = Get-Content 'D:\video\.transcode-tools\tool-paths.json' -Raw | ConvertFrom-Json
 $ffprobe = Join-Path (Split-Path $paths.ffmpeg) 'ffprobe.exe'
 $ffmpeg  = $paths.ffmpeg          # volumedetect needs ffmpeg, not ffprobe - see Test-AudioIsSilent
@@ -120,11 +136,60 @@ function Test-HasAudioStream([string]$Path) {
 # The threshold is set on MAX, not mean: a mean can be dragged down by a long quiet passage in a
 # file that does contain speech, whereas a max below -45 dB means nothing in the whole window ever
 # rose to the level of dialogue.
+# THIS PROBE CRIPPLED THE MACHINE ON 2026-09-11. Three faults, all in these five lines.
+#
+# 1. UNGOVERNED. It shells straight to ffmpeg on a UNC path, so it never touches
+#    lib-nas-governor.ps1: no read slot, no throughput ceiling, and - the one that mattered - it
+#    does not see the kill switch. The operator ran `_nas-hold.ps1 -On`, then every one of the 16
+#    tracks was stopped, and the Wi-Fi link was STILL carrying 518 Mbps inbound, because this was
+#    an orphan of a dead publish loop still working through its candidate list.
+# 2. IT READS THE CONTAINER, NOT THE AUDIO. `-map 0:a:0` picks the audio for OUTPUT; ffmpeg still
+#    demuxes 600 s of interleaved file to get it, dragging the video bytes across the wire. On a
+#    1.2 GB episode that is most of the file, per candidate, back to back, at link speed.
+# 3. NOTHING REMEMBERED THE ANSWER. `-Append` is what the rip and publish tracks call, so this ran
+#    again and again and re-probed files it had already measured.
+#
+# The fix keeps the MEASUREMENT identical - max_volume over the same window, same -45 dB floor, same
+# "unmeasurable is not silent" stance - and changes only how the bytes are fetched:
+#   * Wait-NasHold before each probe, so the kill switch works.
+#   * Invoke-NasRead around it, so it takes a slot and is paced like every other reader.
+#   * a verdict cache keyed on path+size+mtime, so a repeat run costs nothing.
+# Local paths skip all of it, exactly as the other governed readers do.
+$script:SilenceCacheDir = Join-Path $env:LOCALAPPDATA 'disc-to-plex\silencecache'
 function Test-AudioIsSilent([string]$Path, [double]$MaxDbFloor = -45.0, [int]$Seconds = 600) {
-  $out = & $ffmpeg -hide_banner -nostats -t $Seconds -i $Path -map 0:a:0 -af volumedetect -f null - 2>&1
+  $cache = $null
+  try {
+    $it = Get-Item -LiteralPath $Path -ErrorAction Stop
+    $key = '{0}|{1}|{2}|{3}' -f $it.FullName, $it.Length, $it.LastWriteTimeUtc.Ticks, $Seconds
+    $md5 = [Security.Cryptography.MD5]::Create()
+    $h = [BitConverter]::ToString($md5.ComputeHash([Text.Encoding]::UTF8.GetBytes($key))).Replace('-', '')
+    $md5.Dispose()
+    $cache = Join-Path $script:SilenceCacheDir "$h.txt"
+    if (Test-Path -LiteralPath $cache) {
+      $v = (Get-Content -LiteralPath $cache -Raw).Trim()
+      if ($v -eq 'silent') { return $true }
+      if ($v -eq 'audible') { return $false }
+    }
+  } catch { $cache = $null }
+
+  $probe = {
+    & $ffmpeg -hide_banner -nostats -t $Seconds -i $Path -map 0:a:0 -af volumedetect -f null - 2>&1
+  }
+  $out = if ((Get-Command Invoke-NasRead -ErrorAction SilentlyContinue) -and (Get-Command Test-NasPath -ErrorAction SilentlyContinue) -and (Test-NasPath $Path)) {
+    [void](Wait-NasHold -Say { param($m) Write-Host "  [governor] $m" } -Who 'queue-transcribable')
+    Invoke-NasRead -Path $Path -Label ("silence probe " + (Split-Path $Path -Leaf)) -Say { param($m) Write-Host "  [governor] $m" } -Do $probe
+  } else { & $probe }
+
   $m = [regex]::Match(($out -join "`n"), 'max_volume:\s*(-?\d+(?:\.\d+)?) dB')
   if (-not $m.Success) { return $false }   # unmeasurable is NOT silent - never exclude on a failed probe
-  return ([double]$m.Groups[1].Value -lt $MaxDbFloor)
+  $silent = ([double]$m.Groups[1].Value -lt $MaxDbFloor)
+  if ($cache) {
+    try {
+      New-Item -ItemType Directory -Path $script:SilenceCacheDir -Force | Out-Null
+      Set-Content -LiteralPath $cache -Value $(if ($silent) { 'silent' } else { 'audible' })
+    } catch { }
+  }
+  return $silent
 }
 
 $records = @(Get-ChildItem -LiteralPath $Store -Filter *.json -File |
