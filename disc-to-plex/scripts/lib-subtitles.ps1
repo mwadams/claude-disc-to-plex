@@ -66,7 +66,56 @@ function Get-BitmapSubsVerdict {
 
   # Counting packets means a full pass over the file, so the answer is cached: it can only change
   # if the media file itself is rewritten, which is why the cache key includes size and mtime.
-  $n = @(& $Ffprobe -v error -select_streams s -show_entries packet=pts_time -of csv=p=0 $Path 2>$null).Count
+  #
+  # AND ON A NAS FILE THAT FULL PASS MUST BE GOVERNED. This ran bare, so it pulled an entire
+  # multi-gigabyte container across the link at whatever speed SMB would give it - no read slot, no
+  # ceiling, and no kill switch. 2026-09-11: starting the ocrqueue track took the Wi-Fi link from
+  # idle to 483 Mbps in fifteen seconds, on this one line, while a properly governed transcribe read
+  # sat beside it paced at `-readrate 16.532`. It is the same defect that had already been found in
+  # queue-transcribable.ps1's loudness probe earlier the same evening: the governor is only as good
+  # as the callers that go through it, and a cache does not help the FIRST time each file is seen -
+  # which, across a 1,708-row library sweep, is every file.
+  #
+  # -readrate paces ffprobe itself, so the read is stretched rather than buffered: the governor's own
+  # measured ceiling divided by this file's bitrate, exactly as transcribe-subtitles.py does it.
+  # Falls back to the bare call only when the governor library is not loaded (a local path, or a
+  # caller that never dot-sourced it) - never silently on a NAS path.
+  # THE SLOT IS NOT THE THROTTLE. Invoke-NasRead takes a read slot and paces AFTERWARDS, measuring
+  # what the item cost and sleeping to bring the average down. That is right for a short read, and
+  # useless for a whole-file scan: the read itself still bursts at link speed, then sleeps. Measured
+  # 2026-09-11 with the slot in place and nothing else changed: 480, 498, 454, 488 Mbps in
+  # consecutive 15 s samples, then 83, then 239 - a sawtooth, exactly as designed, and exactly what
+  # crippled the machine.
+  #
+  # `-readrate` is the part that paces ffprobe ITSELF, and Get-NasReadRateArgs (lib-nas-governor.ps1)
+  # already computes it from this file's own bitrate against the configured ceiling - the same
+  # helper transcribe-subtitles.py uses, which is why that reader sat at a well-behaved 16.532x
+  # beside this one at 500 Mbps. It returns EMPTY for a local path or when size/duration cannot be
+  # established, so an ungoverned read remains the failure mode rather than a refusal.
+  $rateArgs = @()
+  if (Get-Command Get-NasReadRateArgs -ErrorAction SilentlyContinue) {
+    try { $rateArgs = @(Get-NasReadRateArgs -Path $Path -Ffprobe $Ffprobe) } catch { $rateArgs = @() }
+  }
+  $probeArgs = @('-v','error') + $rateArgs + @('-select_streams','s','-show_entries','packet=pts_time','-of','csv=p=0',$Path)
+  # UNC is detected HERE, not via Test-NasPath, so the detection cannot depend on the very library
+  # whose absence is the hazard. A caller that forgot to dot-source the governor then gets a loud
+  # warning instead of a silent full-speed pull - which is exactly how this went unnoticed twice.
+  $isUnc = "$Path".StartsWith('\\')
+  $govReady = [bool](Get-Command Invoke-NasRead -ErrorAction SilentlyContinue) -and
+              [bool](Get-Command Wait-NasHold -ErrorAction SilentlyContinue)
+  if ($isUnc -and -not $govReady) {
+    Write-Warning ("Get-BitmapSubsVerdict: counting packets on a NAS path with NO governor loaded - this will read the whole file at link speed. Dot-source lib-nas-governor.ps1 in the caller. Path: {0}" -f $Path)
+  }
+  $isNas = $isUnc -and $govReady
+  if ($isNas) {
+    [void](Wait-NasHold -Say { param($m) Write-Host "  [governor] $m" } -Who 'bitmap-subs-verdict')
+    $lines = Invoke-NasRead -Path $Path -Label ("packet count " + (Split-Path $Path -Leaf)) -Say { param($m) Write-Host "  [governor] $m" } -Do {
+      & $Ffprobe @probeArgs 2>$null
+    }
+    $n = @($lines).Count
+  } else {
+    $n = @(& $Ffprobe @probeArgs 2>$null).Count
+  }
   $verdict = if ($n -gt 0) { 'populated' } else { 'empty' }
   New-Item -ItemType Directory -Path $CacheDir -Force | Out-Null
   Set-Content -LiteralPath $cache -Value $verdict
