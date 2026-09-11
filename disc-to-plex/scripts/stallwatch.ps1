@@ -521,6 +521,27 @@ foreach ($u in $units) {
     $newestFail = ($mentioned | Where-Object { $failed -contains $_.Name } |
                    Sort-Object LastWriteTime -Descending | Select-Object -First 1).LastWriteTime
     $laterDone  = @($mentioned | Where-Object { $inDone -contains $_.Name -and $_.LastWriteTime -ge $newestFail })
+    # ...AND A RE-GATED MANIFEST THAT IS IN FLIGHT RIGHT NOW IS EVEN LESS "waiting on the operator"
+    # than one that already finished.
+    #
+    # This asked only whether a later manifest reached done\. A unit whose failure has been FIXED and
+    # re-queued is sitting in _queue or _queue\running - not done\ - so it still read as FAILED, the
+    # board still listed it under PIPELINE WAITING ON THE OPERATOR, and _stall-alarm.ps1 kept the
+    # toast and _LINE-STOPPED.txt entry open for it.
+    #
+    # 2026-09-11: BBCBD0610_D2 and DOCTOR_WHO-fdc8e9fb were both diagnosed, corrected and re-gated;
+    # D2 was actively ENCODING while the alarm still named it as a failure needing a human. An alarm
+    # that keeps firing about work already in hand is the cry-wolf failure this very block was
+    # written to prevent - the comment above it says so about the retry-rename case, and this is the
+    # same defect reached from the other side.
+    $laterLive  = @($mentioned | Where-Object { $live -contains $_.Name -and $_.LastWriteTime -ge $newestFail })
+    if ($laterDone.Count -eq 0 -and $laterLive.Count -gt 0) {
+      $moving += "{0,-28} a manifest FAILED ({1}) but a LATER one is IN FLIGHT ({2}) - already fixed and re-queued; nothing to do" -f `
+                 $name, ($failed -join ', '), (($laterLive | ForEach-Object { $_.Name }) -join ', ')
+      # NOT added to manifestFailedStale: the failed/ copy must stay until the retry SUCCEEDS, or a
+      # sweep would archive the evidence of a failure that might be about to happen again.
+      continue
+    }
     if ($laterDone.Count -gt 0) {
       $moving += "{0,-28} a manifest FAILED ({1}) but a LATER one completed ({2}) - the failed/ copy is stale history; nothing to do" -f `
                  $name, ($failed -join ', '), (($laterDone | ForEach-Object { $_.Name }) -join ', ')
