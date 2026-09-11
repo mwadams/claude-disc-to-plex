@@ -269,9 +269,23 @@ if (-not $Work.Count -and -not $All) {
     #
     # Television is deliberately NOT covered: a series appears in Plex as soon as ONE episode lands,
     # so a partially-published show is genuinely confirmable for the episodes that are there.
+    # ASK THE NAS, NOT THE LOCAL SET. The first cut looked for a feature among the local files that
+    # are also on the NAS - which is empty for any work whose feature was published and RECLAIMED
+    # long ago, leaving only late extras local. The Song Remains The Same, 2026-09-11: its feature
+    # has been on the NAS since 09-08 at 14,266 MB, four re-encoded extras were freshly published
+    # beside it, and this refused to offer them with "its feature is not on the NAS". The check
+    # meant to stop one false question started asking a different one.
+    #
+    # The question is about the LIBRARY's state, so read the library: is there a top-level media
+    # file in the work's NAS folder?
     $isMovie = $false
     if ($localFiles.Count) { $isMovie = ("$($localFiles[0].FullName)" -match '(?i)[\\/]Movies[\\/]') }
-    $featureOnNas = @($fl | Where-Object { ($_.Rel -split '\\').Count -le 2 }).Count -gt 0
+    $featureOnNas = $false
+    if ($isMovie) {
+      $nasWorkDir = Join-Path (Join-Path $NasRoot 'Movies') $p.Work
+      $featureOnNas = @(Get-ChildItem -LiteralPath $nasWorkDir -File -ErrorAction SilentlyContinue |
+                        Where-Object { $_.Extension -in '.mkv', '.mp4', '.m4v', '.avi' }).Count -gt 0
+    }
     if ($isMovie -and -not $featureOnNas) {
       $why = if ($unpub.Count) { "$($unpub.Count) file(s) of it are still local, including the feature" } else { 'its feature is not on the NAS' }
       Write-Output ("        NOT CONFIRMABLE YET - this is a FILM and its feature file is not on the NAS ({0})." -f $why)

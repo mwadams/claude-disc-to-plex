@@ -944,6 +944,39 @@ if (Test-Path -LiteralPath $reripDrive) {
   catch { Write-Output "   re-rip drive check failed: $($_.Exception.Message)" }
 }
 
+# WHAT IS AWAITING THE OPERATOR'S PLEX CONFIRMATION - carried into the state file so the ALARM can
+# raise it.
+#
+# Confirmation is the only gate a human holds and everything queues behind it, yet it reached the
+# operator only two ways: this board when someone ran it, and audit-space-block.ps1's block - which
+# by construction appears ONLY when the disk is already space-blocked. With space healthy, a work
+# could sit confirmable indefinitely and nothing would say so.
+#
+# 2026-09-11: four re-encoded Song Remains The Same extras published and waited 2.5 hours; the
+# session-bound watcher meant to catch it had exited, and would have stayed silent anyway because a
+# guard in approve-confirmed.ps1 was wrongly suppressing the entry. Hence BOTH fields: what is
+# confirmable, and what has been SUPPRESSED as not-confirmable-yet. A suppression is a question
+# somebody decided not to ask, and that decision deserves to be visible rather than silent.
+$awaitingConfirmation = @(); $confirmSuppressed = @()
+try {
+  $acScript = 'D:/video/.claude/skills/disc-to-plex/scripts/approve-confirmed.ps1'
+  if (Test-Path -LiteralPath $acScript) {
+    $acOut = @(& pwsh -NoProfile -File $acScript 2>&1 | ForEach-Object { "$_" })
+    $currentWork = ''
+    foreach ($l in $acOut) {
+      if ($l -match '^\s{3}(\S.*?)\s{2,}published ') { $currentWork = $Matches[1].Trim(); continue }
+      if ($l -match 'CONFIRM THESE \d+ file' -and $currentWork) { $awaitingConfirmation += $currentWork; $currentWork = '' }
+      elseif ($l -match 'NOT CONFIRMABLE YET' -and $currentWork) { $confirmSuppressed += $currentWork; $currentWork = '' }
+    }
+    $awaitingConfirmation = @($awaitingConfirmation | Sort-Object -Unique)
+    $confirmSuppressed    = @($confirmSuppressed | Sort-Object -Unique)
+  }
+} catch { }
+if ($awaitingConfirmation.Count) {
+  Write-Output ("AWAITING YOUR PLEX CONFIRMATION - {0} work(s): {1}" -f $awaitingConfirmation.Count, ($awaitingConfirmation -join '; '))
+  Write-Output  '   pwsh -File D:/video/.claude/skills/disc-to-plex/scripts/approve-confirmed.ps1 -Work ''<name>'' -Note ''<their words>'''
+}
+
 # THE STATE FILE - last, so it carries every verdict above. See the -StateFile parameter.
 if ($StateFile) {
   $stateDoc = [ordered]@{
@@ -977,6 +1010,8 @@ if ($StateFile) {
     publishStallMinutes = [int]$publishStallMin
     publishStallFiles = [int]$publishStallFiles
     needsValidation = @($needsValidation)
+    awaitingConfirmation = @($awaitingConfirmation)
+    confirmSuppressed    = @($confirmSuppressed)
     briefsReady    = @($briefsReady)
     briefBatches   = @($briefBatchDocs)
     dischargePending = @($dischargePendingNames)
