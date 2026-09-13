@@ -148,9 +148,23 @@ and Season 00 is almost never empty when you return to a show.** Before adding e
 batch of discs, treat Season 00 as a *merge target*, not a fresh start:
 
 1. **Inspect the existing Season 00 on the target** and find the highest `S00Eyy` already present
-   (e.g. the West Wing already has `S00E01`…`S00E14` from the Seasons 1–3 delivery). Note the exact
-   filename convention in use (the West Wing specials are `The West Wing S00Eyy.mkv` — no year, no
-   title, matching its episodes).
+   (e.g. the West Wing already has `S00E01`…`S00E14` from the Seasons 1–3 delivery). What you take
+   from that listing is **the NUMBERING, not the naming**.
+
+   **A NEW extra is ALWAYS titled — `<Show (Year)> - S00Exx - <Extra title>.mkv` — even when every
+   file already in that Season 00 is bare.** An older bare set is a pre-existing inconsistency, not
+   a convention to propagate; the library's own Season 00 is overwhelmingly titled. `assert-season00-titles`
+   enforces this and refuses the manifest, so copying a bare neighbour costs a whole authoring round.
+
+   2026-09-13: this paragraph used to point at the West Wing's bare `The West Wing S00Eyy.mkv` as
+   "the exact filename convention in use". The Sandbaggers Series 1 Disk 1 had two legacy bare
+   `.mp4` specials, the agent matched them as instructed, and the gate refused it — `a Season 00
+   item would publish with no title Plex could get right` — leaving the unit on `.HOLD` needing a
+   human. The brief and the guard disagreed, and the brief was read first.
+
+   The ONLY bare name that passes is an in-place `supersedes` that must keep an existing NAS
+   filename. Include the year exactly when the SHOW FOLDER carries one (`Beasts (1976) - S00E02 -
+   Stills Gallery.mkv`; `Angel - S00E01 - Season One Overview.mkv`).
 2. **Append, don't renumber.** Number the new batch's extras continuing from `max+1` (`S00E15`,
    `S00E16`, …). Never reuse or shift an existing specials number — Plex identity and any watch state
    are tied to it, and `stage-and-clean.ps1`'s no-overwrite copy will *skip* a colliding number
