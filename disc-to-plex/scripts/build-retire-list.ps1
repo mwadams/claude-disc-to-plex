@@ -30,6 +30,9 @@ param(
   [string]$ManifestRoot = 'D:\video\_queue',
   [string]$Out          = 'D:\video\_nas-retire.txt',
   [string]$Report       = 'D:\video\_nas-retire-detail.tsv',
+  # Hand-declared relocations: <superseded path><TAB><replacement path><TAB><why>. See the
+  # 'hand relocations' section below for why this exists and what each row is validated against.
+  [string]$Manual       = 'D:\video\_nas-retire-manual.tsv',
   [switch]$IncludeSubtitles
 )
 
@@ -160,6 +163,67 @@ foreach ($mf in $manifests) {
     }
   }
 }
+
+# ---------------------------------------------------------------- hand relocations
+#
+# A RELOCATION HAS NO MANIFEST, SO THIS LIST COULD NOT SEE IT.
+#
+# Everything above derives from a manifest's `supersedes`. That is right for the pipeline's own
+# output, but it leaves a whole class of deletion invisible: a file moved BY HAND because it was in
+# the wrong place to begin with. The NAS cannot be moved from here - a relocation is a COPY to the
+# right path, after which the original is the operator's to remove - and no manifest ever described
+# either end of it.
+#
+# 2026-09-13: two Crown Court episodes had been filed as The Sandbaggers Season 00 S00E01/E02.mp4
+# (TheTVDB lists them among The Sandbaggers' specials, which is very likely how they got there).
+# They were copied to Crown Court (1972) Season 1972 and byte-verified. The two originals then
+# needed retiring - and _HANDOVER-ACTIONS.md says in terms that _nas-retire.txt is THE list, and
+# that a second hand-kept list is worse than one incomplete list because you cannot tell which is
+# stale. Without this section the only choices were to break that rule or to lose the deletion.
+#
+# Declared in a TSV so the decision is reviewable and dated, and validated HERE rather than trusted:
+# the same guards the manifest path applies, plus one it cannot - a relocation is a byte copy, so
+# the target must match the original's LENGTH EXACTLY. That is stronger than the manifest path's
+# size test, which compares against a local re-encode that legitimately differs.
+#
+# KEEP THE TWO SETS OF CHECKS IN STEP. They are written out twice rather than shared; a guard added
+# above but not here would silently fail to apply to hand relocations.
+$manualOk = 0
+if (Test-Path -LiteralPath $Manual) {
+  foreach ($line in (Get-Content -LiteralPath $Manual)) {
+    $t = "$line".Trim()
+    if (-not $t -or $t.StartsWith('#')) { continue }
+    $f = $t -split "`t"
+    if ($f.Count -lt 2) {
+      $held.Add([pscustomobject]@{ Superseded=$t; Replacement=''; Source='manual'; Reason='malformed row - expected <superseded><TAB><replacement>[<TAB><why>]' })
+      continue
+    }
+    $o   = ($f[0] -replace '/', '\').Trim()
+    $new = ($f[1] -replace '/', '\').Trim()
+    $why = if ($f.Count -ge 3) { $f[2].Trim() } else { '' }
+    $rec = [pscustomobject]@{ Superseded=$o; Replacement=$new; Source='manual'; Reason='' }
+
+    if (-not (Under-Nas $o))   { $rec.Reason = 'superseded path is not on the NAS'; $held.Add($rec); continue }
+    if (-not (Under-Nas $new)) { $rec.Reason = 'replacement path is not on the NAS'; $held.Add($rec); continue }
+    if ($o -eq $new)           { $rec.Reason = 'REFUSED: superseded path equals the replacement'; $held.Add($rec); continue }
+    if ($currentOutputs.Contains($o)) {
+      $rec.Reason = 'REFUSED: that path is a CURRENT declared output - a live manifest still produces it'
+      $held.Add($rec); continue
+    }
+    $newItem = Get-Item -LiteralPath $new -EA SilentlyContinue
+    if (-not $newItem)         { $rec.Reason = 'relocation target is not on the NAS yet'; $held.Add($rec); continue }
+    if (-not (Test-Path -LiteralPath $o)) { $rec.Reason = 'already gone'; $held.Add($rec); continue }
+    $oldItem = Get-Item -LiteralPath $o -EA SilentlyContinue
+    if ($oldItem.Length -ne $newItem.Length) {
+      $rec.Reason = ("REFUSED: a relocation is a byte copy but the sizes differ (original {0:N0} vs target {1:N0}) - do not retire until that is explained" -f $oldItem.Length, $newItem.Length)
+      $held.Add($rec); continue
+    }
+    $rec.Reason = if ($why) { "relocated by hand, target verified: $why" } else { 'relocated by hand, target verified same size on the NAS' }
+    $listed.Add($rec)
+    $manualOk++
+  }
+}
+Write-Host "$manualOk hand relocation(s) accepted from $Manual"
 
 # ---------------------------------------------------------------- sidecar subtitles
 # An .srt is OURS if the media beside it still carries the bitmap stream it was read from;

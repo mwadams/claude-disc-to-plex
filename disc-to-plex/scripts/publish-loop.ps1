@@ -374,9 +374,30 @@ while ($MaxPasses -le 0 -or $pass -lt $MaxPasses) {
           # specials shipped as "Episode 18".."Episode 33" that way and the user had to ask.
           # audit-season00-titles.ps1 already detects it and _idlewatch.ps1 reports it; this is the
           # half that was missing - actually setting what the manifest already knew.
+          #
+          # THE TRIGGER IS THE PUBLISH, NOT THE MANIFEST'S AGE.
+          #
+          # This used to select manifests written in the last 6 hours, which silently assumes a unit
+          # publishes soon after it is authored. When it does not, the titles are never applied AND
+          # THE PUBLISH STILL REPORTS SUCCESS - the exact "shipped as Episode 18..33" failure the
+          # comment above describes, reintroduced by a different mechanism.
+          #
+          # 2026-09-13: Doctor Who D2's manifest was written 09-11 22:39; the lanes died at 23:22
+          # and came back 09-12 04:47, by which time the 6-hour window (22:47-04:47) had closed on
+          # it BY EIGHT MINUTES. It never reopened. S90E21-E28 published and sat in Plex as
+          # 'Episode 21'..'Episode 28' until the operator noticed two days later. Any outage, any
+          # space block, any gate refusal that delays a publish past six hours does this.
+          #
+          # So: always include every manifest that declares an output for THE WORK THAT JUST
+          # PUBLISHED, whatever its age, and keep the 6-hour sweep as a safety net for anything
+          # else. A manifest matched by name that turns out to be unrelated costs nothing -
+          # apply-plex-titles.ps1 only ever sets titles its own manifest declares, and is idempotent.
           try {
             foreach ($mf in @(Get-ChildItem 'D:/video/_queue/done' -File -Filter '*.json' -ErrorAction SilentlyContinue |
-                              Where-Object { $_.LastWriteTime -gt (Get-Date).AddHours(-6) })) {
+                              Where-Object {
+                                $_.LastWriteTime -gt (Get-Date).AddHours(-6) -or
+                                ("$(Get-Content -LiteralPath $_.FullName -Raw -ErrorAction SilentlyContinue)" -like "*$($w.Name)*")
+                              })) {
               & pwsh -NoProfile -File 'D:/video/.claude/skills/disc-to-plex/scripts/apply-plex-titles.ps1' -Manifest $mf.FullName 2>&1 |
                 ForEach-Object { Write-Output "$_" }
             }
