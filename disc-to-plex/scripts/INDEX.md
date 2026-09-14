@@ -1,8 +1,8 @@
 # Script index - GENERATED, do not edit
 
-Generated 2026-09-14 19:59 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
+Generated 2026-09-14 20:47 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
 
-**143 scripts under `scripts/`, 53 loop scripts under `D:/video/`. 0 with NO usable header, 54 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
+**143 scripts under `scripts/`, 54 loop scripts under `D:/video/`. 0 with NO usable header, 54 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
 
 Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library` = dot-source, defines functions only; `tests` = a test suite, exit 0 = all passed.
 
@@ -203,6 +203,7 @@ Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library
 | `_transcribe-loop.ps1` | command | TRANSCRIPTION track: generate subtitle sidecars for library files that have NO subtitles. | NO TRIGGER IN HEADER | - |
 | `_whatsrunning.ps1` | command | Answer "what is running, and is it pipeline-managed?" - in ONE place, from ONE definition. | when: On 2026-08-25 I tried to answer that by hand: I listed `_manifests/`, `_queue/done/` and `_queue/failed/`, found no Grange Hill manifest, and concluded a subagent was hand-running encodes outside t... | `pwsh -File _whatsrunning.ps1` |
 | `audit-archived-open-work.ps1` | command | WHAT OPEN WORK IS SITTING IN ARCHIVED STATUS FILES, INVISIBLE? | when: On 2026-09-05 `D:\video` was tidied and the old `transfer-status<N>.md` files were moved into `_archive/transfer-status/`. | `pwsh -File D:/video/audit-archived-open-work.ps1` |
+| `build-batch-list.ps1` | command | Propose the next batch list for a swept source drive: EVERY disc, each tagged with the re-rip reason(s) that qualify it, ordered by value. Writes a PROPOSAL the fetch loop does not read. | when: Every list so far was composed by hand from the sweep, and each one weighed a different subset of the reasons a disc is worth ripping. | `pwsh -File build-batch-list.ps1 -Sweep D:/video/_sweep-media0.csv` |
 | `discharge-rerip.ps1` | command | AUTO-DISCHARGE the re-rip obligation register from VERIFIED NAS evidence - never from intent. | when: D:/video/_rerip-worklist.tsv is the register rerip-obligation.ps1 enforces: a disc whose row is OPEN or IN-FLIGHT cannot have its staging released. | `pwsh -NoProfile -File D:/video/discharge-rerip.ps1 -Work 'Hustle'` |
 | `discharge-rerip.tests.ps1` | tests | Tests for discharge-rerip.ps1 - the re-rip register auto-discharge. Run: pwsh -File D:/video/discharge-rerip.tests.ps1 (exit 0 = all passed) | NO TRIGGER IN HEADER | - |
 | `find-rerip-discs-on-drive.ps1` | command | Does a drive that is attached NOW carry any disc the re-rip register is still waiting for? | when: The register holds 21 OPEN rows for Deep Space Nine Seasons 2, 4 and 6 - 115 published episodes and extras carrying a DANISH subtitle stream tagged `eng`, which the discs can fix because the odd-nu... | `pwsh -NoProfile -File D:/video/find-rerip-discs-on-drive.ps1` |
