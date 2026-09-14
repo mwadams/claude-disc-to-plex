@@ -33,7 +33,12 @@ param(
   # routinely expired into failed\ and the operator learned to requeue without reading. A bound
   # that expires on healthy work is worse than no bound. Four hours covers the slowest disc seen
   # while still catching evidence that will genuinely never arrive.
-  [double]$MaxDeferHours = 4
+  [double]$MaxDeferHours = 4,
+  # How long a manifest refused for SPACE (transcode.ps1 exit 75) waits before it is tried again.
+  # Unbounded in total on purpose: space comes back when the operator confirms a work and the reclaim
+  # runs, which can take a night, and the board already reports the line as space-blocked. The wait
+  # stops the retry re-running the preflight's MakeMKV scan of a 40 GB disc every $PollSec.
+  [int]$SpaceRetryMinutes = 10
 )
 
 # SINGLE INSTANCE, AND VISIBLE TO _loops.ps1.
@@ -93,6 +98,9 @@ $deferrals = @{}
 # Names deferred during the current sweep of the queue, so the picker above can step past them
 # instead of re-selecting the same blocked manifest for ever. Reset whenever the sweep exhausts.
 $deferredThisSweep = New-Object System.Collections.Generic.HashSet[string]
+# Manifests refused for SPACE (transcode.ps1 exit 75): name -> the time it may be tried again. In
+# memory, like $deferrals, so a restart simply retries at once and gets a fresh answer.
+$spaceHold = @{}
 while ($true) {
   $busy = Busy-Lanes
   # A DEFERRED MANIFEST MUST NOT BLOCK THE ONES BEHIND IT.
@@ -108,7 +116,10 @@ while ($true) {
   # to the normal idle sleep - which also stops the skip list growing without bound.
   $queued = @(Get-ChildItem -LiteralPath $Queue -File -Filter '*.json' -ErrorAction SilentlyContinue |
               Sort-Object CreationTime)
-  $next = $queued | Where-Object { -not $deferredThisSweep.Contains($_.Name) } | Select-Object -First 1
+  $now = Get-Date
+  $next = $queued | Where-Object { -not $deferredThisSweep.Contains($_.Name) -and
+                                   -not ($spaceHold.ContainsKey($_.Name) -and $spaceHold[$_.Name] -gt $now) } |
+          Select-Object -First 1
   if (-not $next -and $queued.Count -gt 0) {
     $deferredThisSweep.Clear()      # everything is waiting on evidence; start the sweep again
   }
@@ -238,7 +249,16 @@ while ($true) {
     & pwsh -NoProfile -File $transcode -Manifest $claim -LogDir $log 2>&1 |
       Tee-Object -FilePath $tlog |
       Select-String 'OK |FAILED|ABORT|REFUS|WARNING|MANIFEST DONE|AUDIO REVIEW' | ForEach-Object { "    $_" }
-    if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) {
+    if ($LASTEXITCODE -eq 75) {
+      # NOT ENOUGH ROOM YET - see transcode.ps1's space preflight. Nothing is wrong with the manifest,
+      # so it goes back in the queue, not to failed\, and waits $SpaceRetryMinutes before being tried
+      # again. Manifests behind it stay pickable meanwhile: a smaller one may well fit.
+      $spaceHold[$next.Name] = (Get-Date).AddMinutes($SpaceRetryMinutes)
+      Lane-Note $log ("{0}: transcode exit 75 (not enough free space yet) - returned to the queue, next try after {1:HH:mm} (full output: {2})" -f $next.Name, $spaceHold[$next.Name], $tlog)
+      Move-Item -LiteralPath $claim -Destination (Join-Path $Queue $next.Name) -Force
+    }
+    elseif ($LASTEXITCODE -and $LASTEXITCODE -ne 0) {
+      [void]$spaceHold.Remove($next.Name)
       Lane-Note $log "$($next.Name): transcode exit $LASTEXITCODE - moving to failed (full output: $tlog)"
       Move-Item -LiteralPath $claim -Destination (Join-Path $Queue "failed\$($next.Name)") -Force
     }

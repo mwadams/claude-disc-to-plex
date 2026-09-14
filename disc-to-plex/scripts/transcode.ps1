@@ -324,7 +324,12 @@ if($pending.Count){
     Write-Output '  Release staging for a unit whose outputs are byte-verified on the NAS, or'
     Write-Output '  wait for a publish to complete. Do NOT encode into the last few GB - ffmpeg'
     Write-Output '  leaves a truncated, unfinalised mkv that looks finished.'
-    exit 2
+    # EXIT 75, NOT 2: "not yet", not "wrong". Every other refusal in this script is a fault in the
+    # manifest, and lane-runner.ps1 sends those to _queue\failed where only a human puts them back.
+    # A disc that is merely short of room was routed the same way - Intergalactic D2, 2026-09-14,
+    # refused at 36.0 GB free against 36.7 GB and then sat in failed\ while the reclaim freed 40 GB
+    # behind it. 75 is EX_TEMPFAIL; lane-runner returns the manifest to the queue and retries it.
+    exit 75
   }
   Write-Output ("space preflight OK - {0} GB free, ~{1} GB needed for {2} pending item(s)" -f $freeGB, $needGB, $pending.Count)
 }
