@@ -208,6 +208,13 @@ function Preflight-BDStreams($items){
     }
     if(-not $len.Count){ Write-Warning "preflight: MakeMKV reported no titles for $disc"; continue }
 
+    # Seconds of every raw stream this manifest ships from this disc, by stem - see PLAY-ALL below.
+    $shipped = @{}
+    foreach($it in $g.Group){
+      $st = [IO.Path]::GetFileNameWithoutExtension((Split-Path $it.src -Leaf))
+      if(-not $shipped.ContainsKey($st)){ $shipped[$st] = [double](& $fp -v error -show_entries format=duration -of csv=p=0 $it.src 2>$null) }
+    }
+
     foreach($it in $g.Group){
       $stream = Split-Path $it.src -Leaf                     # e.g. 00020.m2ts
       $stem   = [IO.Path]::GetFileNameWithoutExtension($stream)
@@ -230,7 +237,17 @@ function Preflight-BDStreams($items){
         if(-not (Test-Path -LiteralPath $mpls)){ return $true }   # can't prove it - report it
         $txt = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($mpls))
         $clips = [regex]::Matches($txt,'(\d{5})(?=M2TS)') | ForEach-Object { $_.Groups[1].Value }
-        return ($clips -contains $stem)
+        if($clips -notcontains $stem){ return $false }
+
+        # PLAY-ALL. A playlist that is only the episodes this manifest already ships, back to back,
+        # contains nothing this item misses - every clip of it goes out in some item. Intergalactic
+        # D1 (2026-09-14): 00000.mpls = 00000,00004,00005,00006 + a zero-length 00009, 10969 s
+        # against four shipped streams totalling 10970 s, and the check refused all four episodes.
+        # The danger is UNSHIPPED seconds, so measure those: what the playlist runs beyond the
+        # distinct clips shipped from this disc. A repeated clip or an unshipped one still refuses.
+        $covered = 0.0
+        foreach($u in ($clips | Select-Object -Unique)){ if($shipped[$u]){ $covered += $shipped[$u] } }
+        return ($len[$_] -gt $covered + 20)
       }
       foreach($c in $cands){
         $problems += [pscustomobject]@{
