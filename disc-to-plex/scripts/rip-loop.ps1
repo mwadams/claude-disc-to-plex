@@ -57,11 +57,38 @@ if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path 
 try { Start-Transcript -Path (Join-Path $logDir '_rip-loop.log') -Append | Out-Null } catch { }
 
 $ripper = 'D:/video/.claude/skills/disc-to-plex/scripts/rip-titles.ps1'
+
+# Does any manifest for this disc exist, and does NONE of them read its rip folder? See the call site
+# ("A DISC ITS MANIFEST ALREADY READS DIRECTLY NEEDS NO RIP"). Reads the manifest record once per pass:
+# authored (_pending), queued, running and done. NOT failed\ - a refused manifest may be rewritten to
+# read a rip, and suppressing the rip on its evidence would starve the fix.
+$script:ManifestTexts = $null
+function Test-DiscReadDirectly {
+  param([Parameter(Mandatory)][string]$Disc, [Parameter(Mandatory)][string]$RipDir)
+  if ($null -eq $script:ManifestTexts) {
+    $script:ManifestTexts = @(foreach ($dir in 'D:/video/_pending', 'D:/video/_queue', 'D:/video/_queue/running', 'D:/video/_queue/done') {
+      foreach ($m in Get-ChildItem -LiteralPath $dir -File -Filter '*.json' -ErrorAction SilentlyContinue) {
+        try { [IO.File]::ReadAllText($m.FullName) } catch { }
+      }
+    })
+  }
+  # A path segment, not a substring: the disc name must be followed by a separator or the end of the
+  # JSON string, so "DAZB0971_D2-d16621b1" never matches "dazb0971_d2-d16621b1-rip".
+  $discPat = '_stage(\\\\|/)+' + [regex]::Escape($Disc) + '(\\\\|/|")'
+  $ripPat  = '_stage(\\\\|/)+' + [regex]::Escape((Split-Path $RipDir -Leaf)) + '(\\\\|/|")'
+  $consumers = 0
+  foreach ($txt in $script:ManifestTexts) {
+    if ($txt -match $ripPat) { return $false }
+    if ($txt -match $discPat) { $consumers++ }
+  }
+  return ($consumers -gt 0)
+}
 $tp = Get-Content 'D:/video/.transcode-tools/tool-paths.json' -Raw | ConvertFrom-Json
 $ffprobe = Join-Path (Split-Path $tp.ffmpeg) 'ffprobe.exe'
 
 while ($true) {
   $did = $false
+  $script:ManifestTexts = $null     # re-read the manifest record each pass (Test-DiscReadDirectly)
 
   foreach ($disp in Get-ChildItem "$Catalogue/*.dispositions.txt" -ErrorAction SilentlyContinue) {
     $disc = $disp.Name -replace '\.dispositions\.txt$', ''
@@ -98,6 +125,20 @@ while ($true) {
       if ($l -match ('^t(\d+)\|(' + $keepTokens + ')\|')) { $keep += [int]$Matches[1] }
     }
     if ($keep.Count -eq 0) { continue }
+
+    # A DISC ITS MANIFEST ALREADY READS DIRECTLY NEEDS NO RIP.
+    #
+    # The keep-title rule above assumes a Blu-ray manifest must read a MakeMKV .mkv. Not always: a
+    # manifest can read the raw .m2ts streams, which transcode.ps1 allows once no playlist extends
+    # them (and, since 2026-09-14, when the longer playlist is a Play All of the shipped episodes).
+    # Intergalactic D1 and D2 both encoded from raw streams, and this loop then ripped each disc again
+    # afterwards - ~40 GB apiece, nothing ever read them, and the board could only call them
+    # "redundant rip - release it WITH its disc" while D: sat below the fetch floor.
+    #
+    # So ask the record: when manifests for this disc exist and NONE reads its rip folder, the rip is
+    # waste. No manifest yet means the author may still want the rip, so that case still rips.
+    $dest0 = Join-Path $Stage ($disc.ToLower().Replace(' ', '') + '-rip')
+    if (Test-DiscReadDirectly -Disc $disc -RipDir $dest0) { continue }
 
     # THE RIP FOLDER IS DERIVED FROM THE DISC NAME - NEVER FOUND BY SEARCHING FOR A FILENAME.
     #

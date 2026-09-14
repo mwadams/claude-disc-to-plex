@@ -55,6 +55,15 @@ param(
   [ValidateRange(0, 1000)]
   [int]$Expect,
   [string]$Note = '',
+  # FILES PUBLISHED AFTER THE OPERATOR WAS SHOWN THE LIST. coversOutputs is computed from what is on
+  # the NAS when THIS runs, and the pipeline keeps publishing between the listing and the answer.
+  # 2026-09-14, Xena Warrior Princess: 26 files were put in front of the operator and confirmed; by
+  # the time the approval ran, Season 2 S02E01-E04 had published and the artefact covered 30. Caught
+  # only because the count was checked by hand. -Exclude drops leaf filenames matching any of these
+  # regexes; -ExpectFiles refuses unless the covered count is exactly what the operator confirmed.
+  [string[]]$Exclude = @(),
+  [ValidateRange(0, 100000)]
+  [int]$ExpectFiles = -1,
   [switch]$StagingOnly,          # units only: for a work whose local copies are already reclaimed
   [string]$VideoRoot = 'D:/video',
   # Needed to ask whether a file is REALLY published before asking the operator to confirm it.
@@ -474,8 +483,19 @@ if (-not $StagingOnly) {
   $covers = @()
   foreach ($w in $chosen) {
     foreach ($f in @(Get-FilesOnNas -Files @($localWorks[$w]) -VideoRoot $VideoRoot -NasRoot $NasRoot)) {
+      if (@($Exclude | Where-Object { $f.Name -match $_ }).Count) { Write-Output ("  excluded (-Exclude): {0}" -f $f.Name); continue }
       $covers += ('^' + [regex]::Escape($f.Name) + '$')
     }
+  }
+  $covers = @($covers | Sort-Object -Unique)
+  if ($ExpectFiles -ge 0 -and $covers.Count -ne $ExpectFiles) {
+    Write-Output ("REFUSE - the operator confirmed {0} file(s) but {1} are confirmable now; the set moved since it was shown:" -f $ExpectFiles, $covers.Count)
+    $covers | ForEach-Object { Write-Output ("    {0}" -f ($_ -replace '^\^|\$$','' -replace '\\(.)','$1')) }
+    Write-Output '   Nothing written. Name the extras with -Exclude, or show the operator the new list.'
+    exit 2
+  }
+  if ($StagingOnly -eq $false -and ($Exclude.Count -or $ExpectFiles -ge 0) -and $covers.Count) {
+    $doc.note = $doc.note + (" OPERATOR-SCOPED: {0} file(s) expected{1}." -f $(if ($ExpectFiles -ge 0) { $ExpectFiles } else { 'no count' }), $(if ($Exclude.Count) { "; excluded leaf pattern(s) " + ($Exclude -join ', ') } else { '' }))
   }
   if ($covers.Count) {
     $doc.coversOutputs = @($covers | Sort-Object -Unique)

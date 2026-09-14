@@ -32,3 +32,35 @@ function Test-LibraryArtefact {
   $ext = [IO.Path]::GetExtension($Name).ToLowerInvariant()
   return @('.mkv','.mp4','.avi','.srt','.json','.nfo','.jpg','.jpeg','.png') -contains $ext
 }
+
+# IS THIS LOCAL FILE INSIDE WHAT THE OPERATOR CONFIRMED?
+#
+# $Covers is a reclaim artefact's coversOutputs: anchored, regex-escaped MEDIA leaf names, exactly the
+# files put in front of the operator. Empty = the whole work. ONE implementation, two callers
+# (_release-published.ps1 deciding what it may delete, _reclaim-loop.ps1 deciding whether the
+# confirmed part is done), because a second copy of this rule is how the two would disagree.
+#
+# 2026-09-14: the per-work release took only the WORK NAME and never read coversOutputs, so Intergalactic
+# E05-E08 lost their local copies on a confirmation given for E01-E04, and an approval scoped to Xena
+# Series 1 would have released Series 2 S02E01-E04 the same way.
+#
+# A media file is in scope only if ITS OWN leaf matches. A sidecar (.eng.srt, .provenance.json, ...)
+# belongs to the media file named by its LONGEST dotted prefix that exists locally, and follows that
+# file's verdict - so "Part 1.5.eng.srt" follows "Part 1.5.mkv", never a confirmed "Part 1.mkv". Only
+# when the owner is already gone locally does any prefix naming a confirmed media leaf count.
+function Test-LeafInCovers {
+  param([Parameter(Mandatory)][string]$Name, [string[]]$Covers = @(), [string[]]$Siblings = @())
+  if (-not @($Covers).Count) { return $true }
+  $media = @('.mkv', '.mp4', '.avi', '.m4v')
+  $isCovered = { param($leaf) @($Covers | Where-Object { $leaf -match $_ }).Count -gt 0 }
+  if ($media -contains [IO.Path]::GetExtension($Name).ToLowerInvariant()) { return (& $isCovered $Name) }
+  $stems = @()
+  $i = $Name.LastIndexOf('.')
+  while ($i -gt 0) { $stems += $Name.Substring(0, $i); $i = $Name.LastIndexOf('.', $i - 1) }
+  foreach ($s in $stems) {
+    $owners = @($media | ForEach-Object { $s + $_ } | Where-Object { $Siblings -contains $_ })
+    if ($owners.Count) { return (@($owners | Where-Object { & $isCovered $_ }).Count -gt 0) }
+  }
+  foreach ($s in $stems) { if (@($media | Where-Object { & $isCovered ($s + $_) }).Count) { return $true } }
+  return $false
+}

@@ -1,8 +1,8 @@
 # Script index - GENERATED, do not edit
 
-Generated 2026-09-14 13:50 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
+Generated 2026-09-14 16:43 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
 
-**143 scripts under `scripts/`, 52 loop scripts under `D:/video/`. 0 with NO usable header, 53 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
+**143 scripts under `scripts/`, 53 loop scripts under `D:/video/`. 0 with NO usable header, 54 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
 
 Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library` = dot-source, defines functions only; `tests` = a test suite, exit 0 = all passed.
 
@@ -189,6 +189,7 @@ Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library
 | `_release-completed.ps1` | command | Release the RAW STAGING of units that are finished: published, confirmed by the user, reclaimed. | when: Releasing staging is the one irreversible step in the pipeline - the disc has to be re-fetched from a slow USB spindle to undo it. Two distinct mistakes have already been paid for: | - |
 | `_release-front.ps1` | command | Free space by giving back the CHEAPEST thing we hold: a staged disc nobody has worked on yet. | when: On 2026-08-23 the pipeline reached a genuine deadlock: 19 GB free, the encode preflight refusing for want of 27 GB, and no way to free anything - because freeing space requires publishing, which re... | - |
 | `_release-published.ps1` | command | Reclaim the LOCAL LIBRARY COPY of a work whose files are already byte-verified on the NAS. | when: _release-completed.ps1 reclaims RAW STAGING (_stage/<disc>). Nothing reclaimed the encoded outputs under D:\video\Movies and D:\video\Television Shows, so they accumulated for the whole batch. | `pwsh -File _release-published.ps1 -Works 'The Bill (1984)' -DryRun` |
+| `_release-published.scope.tests.ps1` | tests | DOES A SCOPED CONFIRMATION RELEASE ONLY WHAT WAS CONFIRMED? | NO TRIGGER IN HEADER | - |
 | `_restart-ocr-when-quiet.ps1` | command | Restart the OCR track ONCE, at a genuinely quiet moment, to load edited code. | when: PowerShell reads a script once at launch, so a running `_ocr-loop.ps1` cannot see an edit. | - |
 | `_rip-loop.ps1` | command | RIP track: rip every title a disc's dispositions mark as KEEP, and stop. | when: Rip was the last trigger still pulled by a human, and on 2026-08-23 it failed twice in one evening for that reason alone: | - |
 | `_stall-alarm.ps1` | command | STALL ALARM: make the operator board LOUD. Runs _stallwatch.ps1 on a timer and raises a Windows toast + a plainly-named file when the line has stopped - once per stall episode, never per poll. | when: On 2026-09-04 the pipeline produced no new encodes for six hours. Fetch and catalogue swept five discs on their own and the line stopped dead at the one manual step, dispositions. | `pwsh -File D:/video/_stall-alarm.ps1` |
