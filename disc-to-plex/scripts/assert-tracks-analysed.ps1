@@ -536,6 +536,18 @@ if ($problems.Count -gt 0) {
     $absent | ForEach-Object { Write-Warning "   $_" }
   }
   if ($WarnOnly) { exit 0 }
+  # REFUSE ONCE, WITH THE WHOLE LIST - wait for the rest of the evidence before refusing.
+  #
+  # Refusing while items are still unanalysed sends the manifest to failed/ with a PARTIAL list of
+  # what is wrong, so it is fixed, re-gated and refused AGAIN when the remaining evidence lands.
+  # Friends S3 D1 (2026-09-16) went round twice that way, and S4 D1 was refused over E08's commentary
+  # while E12 - also carrying a commentary - had no evidence yet. A manifest in failed/ also stops
+  # the analyse track measuring it, so the second problem could not surface until the first was
+  # fixed. Waiting costs nothing: nothing encodes either way, and the refusal then names everything.
+  if ($absent.Count -gt 0) {
+    Write-Warning "NOT REFUSING YET - $($absent.Count) item(s) still await evidence; the refusal will list every problem once the analyse track has measured them all (exit 4 = wait)."
+    exit 4
+  }
   Write-Warning "Refusing. Correct the manifest to match the evidence, or re-run analyze-tracks.py."
   exit 2
 }
