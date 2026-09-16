@@ -320,6 +320,24 @@ while ($MaxPasses -le 0 -or $pass -lt $MaxPasses) {
         } catch {
           Write-Output "    subtitle-coverage.ps1 threw: $($_.Exception.Message)"
         }
+
+        # PLEX TITLES ON A PARTIAL PUBLISH TOO (2026-09-16). The title step below runs only when the
+        # whole work is published. Since TV publishes per SEASON (publish-work.ps1), a show can put a
+        # complete season on the NAS while another season is still encoding - so "whole work
+        # published" may be days away. Friends Season 00 went up that way and its 37 deleted scenes
+        # sat in Plex as "Episode 3".."Episode 37" (two under real documentaries' titles) although
+        # every one had a plexTitle in its manifest. The event that makes a title settable is a file
+        # ARRIVING, so apply here as well; apply-plex-titles.ps1 is idempotent and carries any item
+        # Plex has not indexed yet.
+        if ($after.Count -gt 0) {
+          try {
+            foreach ($mf in @(Get-ChildItem 'D:/video/_queue/done' -File -Filter '*.json' -ErrorAction SilentlyContinue |
+                              Where-Object { "$(Get-Content -LiteralPath $_.FullName -Raw -ErrorAction SilentlyContinue)" -like "*$($w.Name)*" })) {
+              & pwsh -NoProfile -File 'D:/video/.claude/skills/disc-to-plex/scripts/apply-plex-titles.ps1' -Manifest $mf.FullName 2>&1 |
+                ForEach-Object { Write-Output "$_" }
+            }
+          } catch { Write-Output "    apply-plex-titles.ps1 threw: $($_.Exception.Message)" }
+        }
       }
 
       # THE WORK IS PUBLISHED ONLY WHEN NOTHING IS OUTSTANDING.
