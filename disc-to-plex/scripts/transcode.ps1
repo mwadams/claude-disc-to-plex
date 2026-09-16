@@ -1397,6 +1397,36 @@ foreach($it in $items){
     $delta = $lenV.Delta
     $overAllowed = $lenV.OverAllowance
     $bad = -not $lenV.Ok
+    # THE SOURCE CONTAINER CAN OUTLAST ITS OWN MEDIA - judge a SHORT output against the media too.
+    #
+    # expectSeconds is the source's container duration (_briefs/manifest.md rule 2), and on most
+    # sources that is the end of the last audio/video packet. Not always: Friends S3 D2 clip 00068
+    # (2026-09-16) has container 1,368.38 s, video 1,364.45 s, audio 1,365.41 s - the container runs
+    # ~3 s past both. The encode (1,365.43 s) matched the audio to 0.02 s and was quarantined as
+    # 2.95 s short, because no encode can reproduce trailing container time with no media in it.
+    #
+    # The container's end there is set by a stream we DO NOT KEEP: audio a:1 (a dub) runs to exactly
+    # 1,368.384 s, while the kept a:0 ends at 1,365.408 s.
+    #
+    # So before calling an under-run a failure, measure where the KEPT streams end - the video and
+    # the manifest's audioTracks (a:0 when it names none). If the output meets THAT under the same
+    # tolerance, nothing that ships was lost. A genuinely short encode is short against its own
+    # streams too and still fails; dropped frames are also caught independently by the frame guard
+    # below, which counts video packets and is untouched by this.
+    if($bad -and $delta -lt 0 -and (Test-Path -LiteralPath "$($it.src)" -PathType Leaf)){
+      $mediaEnd = 0.0
+      $keptSpecs = @('V') + @($(if(Has $it 'audioTracks'){ @($it.audioTracks) } else { @(0) }) | ForEach-Object { "a:$_" })
+      foreach($ln in @($keptSpecs | ForEach-Object { & $fp -v error -select_streams $_ -show_entries stream=duration -of csv=p=0 $it.src 2>$null })){
+        $v = 0.0; if([double]::TryParse("$ln".Trim().TrimEnd(','), [ref]$v) -and $v -gt $mediaEnd){ $mediaEnd = $v }
+      }
+      if($mediaEnd -gt 0 -and $mediaEnd -lt $want){
+        $medV = Test-OutputDuration -GotSeconds $gd -ExpectSeconds $mediaEnd
+        if($medV.Ok){
+          Write-Output ("   length {0:N2}s is {1:N2}s under the container's {2:N2}s, but the source's audio/video end at {3:N2}s - the container outlasts its media; not a short cut" -f $gd, (-$delta), $want, $mediaEnd)
+          $bad = $false
+        }
+      }
+    }
     if($bad){
       Write-Output ("   !! WRONG LENGTH - output is {0:N2}s, manifest expects {1:N2}s ({2:+0.00;-0.00}s, allowance {3:N2}s over / 2.00s under); moved aside as .wrong-length" -f $gd, $want, $delta, $overAllowed)
       Move-Item -LiteralPath $it.out -Destination "$($it.out).wrong-length" -Force

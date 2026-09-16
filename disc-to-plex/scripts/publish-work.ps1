@@ -231,6 +231,7 @@ if ($partial.Count) {
 if (-not (Get-Command Test-BitmapSubsPopulated -ErrorAction SilentlyContinue)) {
   throw 'lib-subtitles.ps1 failed to load - refusing to publish with the subtitle gate undefined'
 }
+$heldDirs = @()   # season folders held by the per-season plan rule below (television only)
 if (-not $SkipSubtitleCheck) {
   # THE DECISION IS PER WORK, AND IT COMES FROM THE PLAN - not from inspecting the folder.
   #
@@ -397,12 +398,44 @@ if (-not $SkipSubtitleCheck) {
     # file the reclaim is entitled to remove again. A deadlock, not a backlog.
     #
     # So ask the same question the media half asks: does this sidecar exist ANYWHERE it should?
-    $awaiting = @()
+    $awaiting = @(); $awaitingPaths = @()
     foreach ($o in @($declared | Where-Object { Test-Path -LiteralPath $_ })) {
       if ([IO.Path]::GetExtension($o) -ne '.mkv') { continue }
       $sidecar = [IO.Path]::ChangeExtension($o, $null) + 'eng.srt'
       if (Test-DeclaredSatisfied $sidecar) { continue }
-      if (Test-BitmapSubsPopulated -Path $o -Ffprobe $ffprobe) { $awaiting += (Split-Path $o -Leaf) }
+      if (Test-BitmapSubsPopulated -Path $o -Ffprobe $ffprobe) { $awaiting += (Split-Path $o -Leaf); $awaitingPaths += $o }
+    }
+    # TELEVISION: THE SCHEDULED SET IS A SEASON, NOT THE WHOLE SHOW. Operator decision 2026-09-16.
+    #
+    # The whole-work rule deadlocked a long series. Friends (1994) is a dozen discs fetched over days;
+    # every newly gated disc extended the plan, so 44 finished Season 02 files could not publish while
+    # Season 03 discs were still encoding - nothing published for 3+ hours, nothing could be confirmed
+    # or reclaimed, and D: (318 GB) fell to 5.6 GB free. For TV the plan is judged PER TOP-LEVEL FOLDER
+    # under the work (Season NN, or the work root): a complete season publishes, an incomplete one is
+    # held - excluded from the copy with /XD below, not merely from the report. Films keep the
+    # whole-work rule, which is what stopped Moulin Rouge publishing without its extras disc.
+    $heldDirs = @()
+    if (($missing.Count -or $awaiting.Count) -and $Kind -ne 'Movies') {
+      $seasonOf = { param($p) $rel = $p.Substring($workOut.Length).TrimStart('\'); if ($rel -match '^([^\\]+)\\') { $Matches[1] } else { '' } }
+      $heldNames = @(@($missing + $awaitingPaths) | ForEach-Object { & $seasonOf $_ } | Sort-Object -Unique)
+      $allNames  = @(@($declared + @($local | ForEach-Object FullName)) | ForEach-Object { & $seasonOf $_ } | Sort-Object -Unique)
+      if ($heldNames -notcontains '' -and @($allNames | Where-Object { $heldNames -notcontains $_ }).Count) {
+        foreach ($h in $heldNames) {
+          $hm = @($missing | Where-Object { (& $seasonOf $_) -eq $h })
+          $ha = @($awaitingPaths | Where-Object { (& $seasonOf $_) -eq $h })
+          Write-Warning ("REFUSING - HOLDING '{0}' only (not the whole work): {1} declared output(s) neither local nor on the NAS, {2} awaiting OCR." -f $h, $hm.Count, $ha.Count)
+          $hm | ForEach-Object { Write-Warning "    not encoded : $(Split-Path $_ -Leaf)" }
+          $ha | ForEach-Object { Write-Warning "    awaiting OCR: $(Split-Path $_ -Leaf)" }
+          $heldDirs += (Join-Path $src $h)
+        }
+        $local = @($local | Where-Object { $heldNames -notcontains (& $seasonOf $_.FullName) })
+        if (-not $local.Count) {
+          Write-Warning ("REFUSING - every local file of '{0}' is in a held season folder; nothing is publishable yet." -f $Work)
+          exit 2
+        }
+        $missing = @(); $awaiting = @()
+        Write-Host ("plan satisfied for the other season folder(s) - publishing them; held: {0}" -f ($heldNames -join ', '))
+      }
     }
     if ($missing.Count -or $awaiting.Count) {
       # THE WORD 'REFUSING' IS LEAD, NOT DECORATION. _publish-loop.ps1 surfaces only the lines
@@ -416,7 +449,7 @@ if (-not $SkipSubtitleCheck) {
       Write-Warning '    Publication triggers when the whole declared set is complete. -SkipSubtitleCheck overrides the OCR half.'
       exit 2
     }
-    Write-Host ("plan satisfied: all {0} declared output(s) present with subtitles resolved" -f $declared.Count)
+    if (-not $heldDirs.Count) { Write-Host ("plan satisfied: all {0} declared output(s) present with subtitles resolved" -f $declared.Count) }
   }
   else {
     # No manifest declares into this folder - judge per file, as before.
@@ -458,6 +491,9 @@ if ($partial.Count) { $flags += '/XF'; $flags += @($partial | ForEach-Object { $
 # Same again for non-artefact files (quarantine litter like .wrong-length): dropping them from
 # $local governs only what is reported and verified; this /XF is what keeps them off the NAS.
 if ($nonArtefact.Count) { $flags += '/XF'; $flags += @($nonArtefact | ForEach-Object { $_.FullName }) }
+# Season folders the plan gate is HOLDING (television, per-season rule above). /XD with full paths is
+# what keeps them off the NAS; dropping them from $local only narrows what is reported and verified.
+if ($heldDirs.Count) { $flags += '/XD'; $flags += $heldDirs }
 # SAME REASONING FOR -SubtitlesOnly. robocopy's file spec is positional, before the switches, and
 # it is the only thing that stops /E dragging the .mkv along. Narrowing $local above governs what
 # is REPORTED and VERIFIED; this governs what actually moves.

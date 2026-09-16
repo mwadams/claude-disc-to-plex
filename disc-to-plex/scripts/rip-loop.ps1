@@ -66,7 +66,10 @@ $script:ManifestTexts = $null
 function Test-DiscReadDirectly {
   param([Parameter(Mandatory)][string]$Disc, [Parameter(Mandatory)][string]$RipDir)
   if ($null -eq $script:ManifestTexts) {
-    $script:ManifestTexts = @(foreach ($dir in 'D:/video/_pending', 'D:/video/_queue', 'D:/video/_queue/running', 'D:/video/_queue/done') {
+    # _queue/failed COUNTS. A refused manifest is still the disc's plan, waiting on a fix - Friends S3 D1
+    # (2026-09-16) sat in failed/ for a commentary decision, this check saw no consumer, and the loop
+    # re-ripped 32 GB that nothing reads onto a disk with 5 GB left.
+    $script:ManifestTexts = @(foreach ($dir in 'D:/video/_pending', 'D:/video/_queue', 'D:/video/_queue/running', 'D:/video/_queue/done', 'D:/video/_queue/failed') {
       foreach ($m in Get-ChildItem -LiteralPath $dir -File -Filter '*.json' -ErrorAction SilentlyContinue) {
         try { [IO.File]::ReadAllText($m.FullName) } catch { }
       }
