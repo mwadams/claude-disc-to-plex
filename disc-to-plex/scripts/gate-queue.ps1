@@ -35,6 +35,7 @@ param(
   [Parameter(Mandatory)][string]$Manifest,       # a .json written but NOT yet in the queue
   [string]$Queue     = 'D:/video/_queue',
   [string]$Stage     = 'D:/video/_stage',
+  [string]$Pending   = 'D:/video/_pending',
   [string]$SrcRoot   = 'E:/Movies',
   [string]$FetchDone = 'D:/video/_fetch-done.txt',
   [int]$PollSec      = 30
@@ -226,6 +227,30 @@ function Complete-Gate($manifestPath, $how, $note) {
   $dest = Join-Path $Queue (Split-Path $manifestPath -Leaf)
   Move-Item -LiteralPath $manifestPath -Destination $dest -Force
   Write-Output ("gate passed ({0}): {1} - queued {2}" -f $how, $note, (Split-Path $manifestPath -Leaf))
+  Clear-OwnRefusal
+}
+
+# A PASS RETIRES THIS GATE'S OWN EARLIER REFUSAL. When the gate refuses, _dispositions-loop.ps1 parks
+# the unit with <unit>.NEEDS-VALIDATION.txt in _pending AND a "NEEDS VALIDATION: _gate-queue.ps1
+# refused" .HOLD in its staging folder. Clearing that by hand was two deletions, and doing only the
+# first left the hold behind: A Bit of Fry and Laurie Series 1 (2026-09-16) was fixed, gated, encoded,
+# published and confirmed, and its reclaim then FAILED on the stale hold. Only a refusal BY THIS GATE
+# is retired - a hold for any other reason (low confidence, a human's own) is left exactly as it is.
+function Clear-OwnRefusal {
+  if (-not $Disc) { return }
+  $refusal = 'NEEDS VALIDATION: _gate-queue.ps1 refused'
+  $holdPath = Join-Path (Join-Path $Stage $Disc) '.HOLD'
+  $notePath = Join-Path $Pending ($Disc + '.NEEDS-VALIDATION.txt')
+  $holdText = if (Test-Path -LiteralPath $holdPath) { "$(Get-Content -LiteralPath $holdPath -Raw -ErrorAction SilentlyContinue)" } else { '' }
+  $noteText = if (Test-Path -LiteralPath $notePath) { "$(Get-Content -LiteralPath $notePath -Raw -ErrorAction SilentlyContinue)" } else { '' }
+  if ($holdText.StartsWith($refusal)) {
+    Remove-Item -LiteralPath $holdPath -Force
+    Write-Output "  cleared the staging .HOLD this gate's earlier refusal had caused ($Disc)"
+  }
+  if ($noteText.StartsWith($refusal)) {
+    Remove-Item -LiteralPath $notePath -Force
+    Write-Output "  cleared the NEEDS-VALIDATION note for that refusal ($Disc)"
+  }
 }
 
 # -Disc: is the copy ALREADY verified? _fetch-done.txt is written only after a count-and-bytes

@@ -565,6 +565,77 @@ function Sub-IdxByLang($inspec,$lang){
   for($i=0; $i -lt $langs.Count; $i++){ if($langs[$i] -eq $lang){ return $i } }
   return $null
 }
+function Get-ClpiStreamLangs([string]$clpi){
+  # PID -> ISO 639-2 language, read from a Blu-ray CLIPINF\<clip>.clpi ProgramInfo block. This is the
+  # disc AUTHOR'S declaration of every elementary stream's language, which a raw .m2ts does not carry:
+  # ffprobe reports all fourteen PGS streams of a Friends BD clip untagged. Returns @{} when the file
+  # is not a parsable CLPI - the caller then refuses exactly as before.
+  $map = @{}
+  try {
+    $b = [IO.File]::ReadAllBytes($clpi)
+    if([Text.Encoding]::ASCII.GetString($b,0,4) -ne 'HDMV'){ return $map }
+    $be = { param($o,$n) $v=0; for($k=0;$k -lt $n;$k++){ $v = ($v -shl 8) -bor $b[$o+$k] }; $v }
+    $p = (& $be 12 4) + 4 + 1
+    $nps = $b[$p]; $p++
+    for($s=0; $s -lt $nps; $s++){
+      $p += 6
+      $nst = $b[$p]; $p += 2
+      for($t=0; $t -lt $nst; $t++){
+        $streamPid = & $be $p 2; $p += 2
+        $len = $b[$p]; $ct = $b[$p+1]
+        $lang = $null
+        if($ct -in 0x90,0x91){ $lang = [Text.Encoding]::ASCII.GetString($b,$p+2,3) }
+        elseif($ct -in 0x80,0x81,0x82,0x83,0x84,0x85,0x86,0xA1,0xA2){ $lang = [Text.Encoding]::ASCII.GetString($b,$p+3,3) }
+        if($lang){ $map[$streamPid] = $lang }
+        $p += 1 + $len
+      }
+    }
+  } catch { return @{} }
+  return $map
+}
+function Sub-IdxByClpi($inspec,[string]$src,$lang){
+  # Fallback for Sub-IdxByLang on a raw Blu-ray .m2ts whose subtitle streams are UNTAGGED. Resolve the
+  # ordinal from the disc's own CLPI declaration, joined to ffprobe's streams by PID - never by
+  # position. Friends S2 (2026-09-16): clip 00058 declares PGS jpn,eng,jpn,fra,... so English is s:1;
+  # packet-count mapping on Friends S1 had reached the same answer by hand. Returns $null (-> the
+  # caller's ABORT) unless every subtitle stream's PID is declared in the CLPI and exactly one of
+  # them carries $lang.
+  if($src -notmatch '(?i)[\\/]BDMV[\\/]STREAM[\\/](\d+)\.m2ts$'){ return $null }
+  $clpi = Join-Path (Split-Path (Split-Path $src -Parent) -Parent) "CLIPINF/$($Matches[1]).clpi"
+  if(-not (Test-Path -LiteralPath $clpi)){ return $null }
+  $decl = Get-ClpiStreamLangs $clpi
+  # ffprobe lists a .m2ts stream TWICE (under its program and again under streams), so de-duplicate on
+  # the stream index, as Sub-Count does - left doubled, English matched twice and this returned $null.
+  $rows = @{}   # NOT [ordered]: an [int] key on an OrderedDictionary is read as a POSITION and throws
+  foreach($line in @(& $fp -v error @inspec -select_streams s -show_entries stream=index,id -of csv=p=0 2>$null)){
+    if("$line".Trim() -match '^(\d+),(0x[0-9a-fA-F]+)$'){ $rows[[int]$Matches[1]] = $Matches[2] }
+  }
+  $ids = @($rows.Keys | Sort-Object | ForEach-Object { $rows[$_] })
+  if($ids.Count -eq 0){ return $null }
+  $hits = @()
+  for($i=0; $i -lt $ids.Count; $i++){
+    $sid = [Convert]::ToInt32(($ids[$i] -replace '^0x',''), 16)
+    if(-not $decl.ContainsKey($sid)){ return $null }
+    if($decl[$sid] -eq $lang){ $hits += $i }
+  }
+  if($hits.Count -eq 1){ return $hits[0] }
+  if($hits.Count -eq 0){ return $null }
+  # SEVERAL streams declare $lang. Friends S3 D1 declares a second full language block, whose English
+  # stream carries 8 packets against the main one's 3,120 - a near-empty (forced-only) track. Pick by
+  # CONTENT: take a stream only when it is populated and dominates every other candidate tenfold.
+  # Anything closer (English + English SDH, say) is a real choice, so return $null and let the ABORT
+  # send it back to the manifest.
+  $counts = @{}
+  foreach($h in $hits){
+    $n = @(& $fp -v error @inspec -select_streams "s:$h" -count_packets -show_entries stream=nb_read_packets -of csv=p=0 2>$null) |
+         ForEach-Object { "$_".Trim() } | Where-Object { $_ -match '^\d+$' } | Select-Object -First 1
+    $counts[$h] = if($n){ [int]$n } else { 0 }
+  }
+  $best = $hits | Sort-Object { $counts[$_] } -Descending | Select-Object -First 1
+  if($counts[$best] -lt 100){ return $null }
+  foreach($h in $hits){ if($h -ne $best -and $counts[$h] * 10 -gt $counts[$best]){ return $null } }
+  return $best
+}
 function Get-DAR($inspec){   # source display aspect ("16:9"/"4:3"); preserve it, never force
   $d="$(& $fp -v error @inspec -select_streams v:0 -show_entries stream=display_aspect_ratio -of csv=p=0 2>$null | Select-Object -First 1)"
   if($d -match '(\d+):(\d+)' -and "$($Matches[1]):$($Matches[2])" -ne '0:1'){ "$($Matches[1]):$($Matches[2])" } else { '4:3' }
@@ -872,7 +943,9 @@ foreach($it in $items){
     elseif($subSpec -match '^\d+$'){ $subIdx = [int]$subSpec }
     elseif($ns -gt 0){
       $byLang = Sub-IdxByLang $inspec $subSpec
+      $byClpi = if($null -eq $byLang){ Sub-IdxByClpi $inspec "$($it.src)" $subSpec } else { $null }
       if($null -ne $byLang){ $subIdx = $byLang; Write-Output "   subTrack '$subSpec'$subDflt -> s:$subIdx" }
+      elseif($null -ne $byClpi){ $subIdx = $byClpi; Write-Output "   subTrack '$subSpec'$subDflt -> s:$subIdx (untagged stream; language from the disc's CLIPINF declaration)" }
       else {
         # ABORT, do not fall back to s:0.
         #
