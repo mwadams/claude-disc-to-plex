@@ -117,11 +117,15 @@ foreach ($r in $rows) {
   $expF = Get-Text $r 'expectFrames'
   $expFrames = 0
   if ($expF -and [int]::TryParse(($expF -replace '\.0+$', ''), [ref]$expFrames) -and $expFrames -gt 0) {
-    $vs = "$(& $ffprobe -v error -select_streams v:0 -show_entries stream=field_order,r_frame_rate -of csv=p=0 $src 2>$null)".Trim()
-    $fo = ''; $rfr = 0.0
-    foreach ($part in ($vs -split ',')) {
-      if ($part -match '^(\d+)/(\d+)$' -and [double]$Matches[2] -ne 0) { $rfr = [double]$Matches[1] / [double]$Matches[2] }
-      elseif ($part -match '^(tt|bb|tb|bt)$') { $fo = $part }
+    # avg_frame_rate, NOT r_frame_rate: Friends S5 D2's Season 5 Overview (bb, 2026-09-17) reports
+    # r_frame_rate 60000/1001 - the FIELD rate - and avg 30000/1001, so a test on r_frame_rate missed it.
+    # ONE LINE: a BD .m2ts lists each stream once per PROGRAM, so ffprobe prints the answer twice.
+    $fo = "$(& $ffprobe -v error -select_streams v:0 -show_entries stream=field_order -of csv=p=0 $src 2>$null | Select-Object -First 1)".Trim().TrimEnd(',')
+    if ($fo -notmatch '^(tt|bb|tb|bt)$') { $fo = '' }
+    $rfr = 0.0
+    foreach ($key in 'avg_frame_rate', 'r_frame_rate') {
+      $v = "$(& $ffprobe -v error -select_streams v:0 -show_entries stream=$key -of csv=p=0 $src 2>$null | Select-Object -First 1)".Trim().TrimEnd(',')
+      if ($v -match '^(\d+)/(\d+)$' -and [double]$Matches[2] -ne 0 -and [double]$Matches[1] -gt 0) { $rfr = [double]$Matches[1] / [double]$Matches[2]; break }
     }
     $rate = $expFrames / $act
     if ($fo -and $rfr -gt 0 -and [math]::Abs($rate - 2 * $rfr) -le 0.01 * 2 * $rfr) {
