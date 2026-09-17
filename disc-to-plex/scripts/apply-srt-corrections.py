@@ -99,6 +99,71 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from srt_cues import parse_srt, label_positions      # noqa: E402  (ONE parser - see srt_cues.py)
 
 
+def lexicon_name_tokens(srt_path, lexicon_dir='D:/video/_lexicons'):
+    """The capitalised name WORDS of this show's cast and terms (episode lexicon + show base), for
+    the `"cue": "all"` guard. Same path convention as prepare-srt-review.py: the show folder is two
+    levels above the subtitle."""
+    show = os.path.basename(os.path.dirname(os.path.dirname(srt_path)))
+    d = os.path.join(lexicon_dir, show)
+    files = [os.path.join(d, '_show.json')]
+    m = re.search(r'[Ss](\d{1,4})[Ee](\d{1,3})', os.path.basename(srt_path))
+    if m:
+        files.append(os.path.join(d, 'S%02dE%02d.json' % (int(m.group(1)), int(m.group(2)))))
+    toks = set()
+    for p in files:
+        if not os.path.exists(p):
+            continue
+        try:
+            doc = json.load(io.open(p, encoding='utf-8'))
+        except Exception:
+            continue
+        for n in list(doc.get('characters', [])) + list(doc.get('terms', [])):
+            for t in re.findall(r"[A-Z][A-Za-z'\-]{2,}", str(n)):
+                toks.add(t)
+    return toks
+
+
+def ordinary_word_counts(corpus_dir, exclude_show):
+    """How often each word is used in LOWERCASE across every OTHER show's transcripts.
+
+    A capitalised word is not necessarily a name: "Revenge" opens a sentence. The first Power Game
+    run swept "Revenge" -> "Revidge" through S02E09 and taught it to the show lexicon, where
+    transcription applies fixes case-insensitively - every future "revenge" would have become a
+    name. Neither Tesseract's dictionary (it lists bly, blige and Revenge alike) nor capitalisation
+    can separate the two, but usage can: measured over 1,800 transcripts of 45 shows, "revenge"
+    occurs 123 times in lowercase, and bly, blythe, blige, walden, coffey, septon and haggadah occur
+    0 times. The library's own speech is the frequency list, so no download is needed."""
+    counts = {}
+    if not corpus_dir or not os.path.isdir(corpus_dir):
+        return counts
+    word = re.compile(r"(?<![A-Za-z'])[a-z][a-z']{2,}")
+    for dirpath, _dirs, files in os.walk(corpus_dir):
+        rel = os.path.relpath(dirpath, corpus_dir).split(os.sep)
+        if exclude_show and exclude_show in rel:
+            continue
+        for fn in files:
+            if not fn.lower().endswith('.srt'):
+                continue
+            try:
+                text = io.open(os.path.join(dirpath, fn), encoding='utf-8', errors='replace').read()
+            except Exception:
+                continue
+            for w in word.findall(text):
+                counts[w] = counts.get(w, 0) + 1
+    return counts
+
+
+def name_stem(word):
+    """Bligh's / Blighs / Bligh -> Bligh: a possessive or plural of a cast name is still that name."""
+    return re.sub(r"(?:'s|s')$|(?<=[a-z])s$", '', word)
+
+
+def whole(frm):
+    """Whole-word pattern for an `all` correction: not inside a longer word, so "Bly" never touches
+    "Blythe", while "Bly's" still carries its possessive through."""
+    return re.compile(r"(?<![\w'])" + re.escape(norm(frm)) + r"(?![\w])")
+
+
 def write_srt(path, blocks):
     out = []
     for i, (_idx, timing, text) in enumerate(blocks, 1):
@@ -151,6 +216,12 @@ def main():
     ap.add_argument('--max-unmatched-pct', type=float, default=20.0,
                     help='refuse the whole pass if more than this %% of proposals fail to match')
     ap.add_argument('--dry-run', action='store_true')
+    # Where the show lexicons live: read for the "all" guard, written when a name fix is learned.
+    ap.add_argument('--lexicon-dir', default='D:/video/_lexicons')
+    # The ordinary-word guard for "all": lowercase usage across other shows' transcripts.
+    ap.add_argument('--corpus-dir', default='D:/video/_correction-originals')
+    ap.add_argument('--ordinary-min', type=int, default=5,
+                    help='a word used this often in lowercase elsewhere is ordinary English, not a name')
     # OFF THE LIBRARY ENTIRELY. See the note where the backup is written.
     ap.add_argument('--backup-dir', default='D:/video/_correction-originals',
                     help='where originals are kept; "" puts them beside the subtitle (not advised)')
@@ -188,10 +259,55 @@ def main():
     #   fatal     - malformed, out of range, or a substitution that rewrites its own anchor beyond
     #               recognition. These say the pass is not what it claims to be, so they stop it.
     unmatched, fatal, planned = [], [], []
+    name_toks, ordinary = None, {}
     for n, f in enumerate(fixes, 1):
         missing = [k for k in ('cue', 'from', 'to') if k not in f]
         if missing:
             fatal.append('correction %d is missing %s' % (n, ', '.join('"%s"' % k for k in missing)))
+            continue
+        # A RECURRING CAST NAME IS ONE CORRECTION, APPLIED EVERYWHERE. The Power Game's "Bligh" was
+        # transcribed as Bly / Blythe / Blige / Bly's ~476 times across 39 episodes, and a pass that
+        # must quote a cue for every occurrence proposed about a dozen per episode - S01E12 fixed
+        # one and left 26. So `"cue": "all"` applies a substitution to every whole-word occurrence,
+        # and because that is not anchored to one line it is held to a stricter claim instead:
+        #   * `from` is a NAME as written - every word capitalised, at most three words - so an
+        #     ordinary word ("blight", "blithe") can never be swept;
+        #   * every word `to` introduces is a name in this show's own cast/terms lexicon (its
+        #     possessive or plural counts), so the pass can only move text TOWARDS a known name.
+        # Tesseract's dictionary is no guard here: it lists Bly, Blythe and Blige as surnames.
+        if str(f['cue']).strip().lower() == 'all':
+            frm, to = norm(str(f['from'])), norm(str(f['to']))
+            fw, tw = frm.split(' '), to.split(' ')
+            if not frm or frm == to:
+                unmatched.append('all: "from" and "to" are empty or identical (%r)' % frm)
+                continue
+            if len(fw) > 3 or not all(re.match(r"[A-Z]", w) for w in fw):
+                unmatched.append('all: %r is not a capitalised name of at most three words - an '
+                                 '"all" correction may only replace a name' % frm)
+                continue
+            if name_toks is None:
+                name_toks = lexicon_name_tokens(a.srt, a.lexicon_dir)
+                ordinary = ordinary_word_counts(a.corpus_dir, os.path.basename(os.path.dirname(os.path.dirname(a.srt))))
+            common = [w for w in fw if ordinary.get(re.sub(r"[^\w']", '', w).lower(), 0) >= a.ordinary_min]
+            if common:
+                unmatched.append('all: %r contains %s, an ordinary word in other shows\' dialogue (%s) - '
+                                 'give each occurrence its own cue instead'
+                                 % (frm, ', '.join(repr(c) for c in common),
+                                    ', '.join('%s x%d' % (c.lower(), ordinary.get(re.sub(r"[^\w']", '', c).lower(), 0)) for c in common)))
+                continue
+            added = [w for w in tw if w not in fw]
+            bad = [w for w in added if name_stem(re.sub(r"[^\w']", '', w)) not in name_toks]
+            if not added or bad:
+                unmatched.append('all: %r -> %r introduces %s, not a name in this show\'s lexicon'
+                                 % (frm, to, ', '.join(repr(b) for b in (bad or ['nothing']))))
+                continue
+            rx = whole(frm)
+            hits = [i for i, b in enumerate(blocks, 1) if rx.search(norm(' '.join(b[2])))]
+            if not hits:
+                unmatched.append('all: %r does not occur in this transcript' % frm)
+                continue
+            for ci in hits:
+                planned.append((ci, frm, to, f.get('why', ''), 'all'))
             continue
         try:
             ci = resolve(int(f['cue']))
@@ -224,7 +340,7 @@ def main():
             unmatched.append('cue %d: %r -> %r rewrites %.0f%% of the anchor (cap %.0f%%)'
                              % (ci, f['from'], f['to'], 100 * r, 100 * a.max_edit_ratio))
             continue
-        planned.append((ci, f['from'], f['to'], f.get('why', '')))
+        planned.append((ci, f['from'], f['to'], f.get('why', ''), 'cue'))
 
     touched = len({p[0] for p in planned})
     pct = 100.0 * touched / len(blocks)
@@ -259,19 +375,30 @@ def main():
 
     if a.dry_run:
         print('\nDRY RUN - would apply:')
-        for ci, frm, to, why in planned[:40]:
-            print('   cue %-5d %r -> %r   %s' % (ci, frm, to, why))
+        for ci, frm, to, why, scope in planned[:40]:
+            print('   cue %-5d %r -> %r   %s%s' % (ci, frm, to, why, '  [all]' if scope == 'all' else ''))
         if len(planned) > 40:
             print('   ... and %d more' % (len(planned) - 40))
         return 0
 
     # ---- apply
     applied = []
-    for ci, frm, to, why in planned:
+    # CUE-ANCHORED FIRST, `all` AFTER. A cue-anchored proposal quotes the text as it stands now; if
+    # an `all` substitution ran first it could rewrite that anchor away and the specific fix would
+    # silently drop - S01E05 cue 345 "Mr. Kerris Bly's" -> "Mr. Kenneth Bligh's" lost its "Kenneth"
+    # in a dry run when "Bly" -> "Bligh" was applied ahead of it.
+    for ci, frm, to, why, scope in sorted(planned, key=lambda p: p[4] == 'all'):
         # Operate on the JOINED cue then re-wrap, so a correction spanning the display wrap
         # applies and the result is still a normally-shaped two-line cue.
         joined = norm(' '.join(blocks[ci - 1][2]))
         nfrm = norm(frm)
+        if scope == 'all':
+            new = whole(frm).sub(lambda _m: norm(to), joined)
+            if new == joined:
+                continue
+            blocks[ci - 1][2] = rewrap(new)
+            applied.append({'cue': ci, 'from': frm, 'to': to, 'why': why, 'scope': 'all'})
+            continue
         if nfrm not in joined:
             continue                      # already validated; belt and braces
         blocks[ci - 1][2] = rewrap(joined.replace(nfrm, norm(to)))
@@ -317,6 +444,34 @@ def main():
             io.open(prov, 'w', encoding='utf-8').write(json.dumps(d, indent=1, ensure_ascii=False))
         except Exception as e:
             print('  (provenance not updated: %s)' % e)
+
+    # AN OBSERVED MIS-HEARING OF A CAST NAME IS KNOWLEDGE ABOUT THE SHOW, not about one file. The
+    # show lexicon's `fixes` map ("added from OBSERVED mis-hearings only - never predicted") is what
+    # transcribe-subtitles.py applies to every new transcript of the show - and it had never been
+    # written by anything, so every Power Game episode re-learned "Bly" from scratch. Record each
+    # applied `all` name correction there, so the next transcription starts right.
+    learned = sorted({(c['from'], c['to']) for c in applied if c.get('scope') == 'all'})
+    if learned:
+        show = os.path.basename(os.path.dirname(os.path.dirname(a.srt)))
+        sp = os.path.join(a.lexicon_dir, show, '_show.json')
+        if os.path.exists(sp):
+            try:
+                doc = json.load(io.open(sp, encoding='utf-8'))
+                fx = doc.get('fixes') or {}
+                added = 0
+                for frm, to in learned:
+                    # CASE-SENSITIVE inside a case-insensitive caller: transcribe-subtitles.py applies
+                    # every fix with re.I, so without (?-i:) a learned name rewrites lowercase words.
+                    pat = r"(?<![\w'])(?-i:" + re.escape(frm) + r")(?![\w])"
+                    if pat not in fx:
+                        fx[pat] = to
+                        added += 1
+                if added:
+                    doc['fixes'] = fx
+                    io.open(sp, 'w', encoding='utf-8').write(json.dumps(doc, indent=2, ensure_ascii=False))
+                    print('learned  -> %d name fix(es) added to %s' % (added, sp))
+            except Exception as e:
+                print('  (show lexicon not updated: %s)' % e)
 
     print('\napplied %d correction(s) across %d cue(s)' % (len(applied), touched))
     print('original -> %s' % backup)

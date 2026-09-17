@@ -1,8 +1,8 @@
 # Script index - GENERATED, do not edit
 
-Generated 2026-09-17 07:36 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
+Generated 2026-09-17 10:19 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
 
-**145 scripts under `scripts/`, 54 loop scripts under `D:/video/`. 0 with NO usable header, 55 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
+**146 scripts under `scripts/`, 54 loop scripts under `D:/video/`. 0 with NO usable header, 56 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
 
 Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library` = dot-source, defines functions only; `tests` = a test suite, exit 0 = all passed.
 
@@ -14,6 +14,7 @@ Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library
 | `apply-plex-titles.ps1` | command | Set (and LOCK) the Plex episode title for every published item whose manifest declared a `plexTitle`. Runs after a publish; takes its names from the MANIFEST, never from a guess. | when: fix-plex-extras.ps1 sets Plex titles from THE FILENAME, and says so: "our filenames are the source of truth". | - |
 | `apply-proof.py` | python | Rewrite a catalogue.json onto the mapping proved by prove-dvd-mapping.py. | NO TRIGGER IN HEADER | - |
 | `apply-srt-corrections.py` | python | Apply a reviewed list of WORD-LEVEL corrections to a machine-transcribed .srt. | when: Whisper produces fluent text with homophone errors that a dictionary cannot catch, because both spellings are real words. Measured in this library's own output: | `python apply-srt-corrections.py <file.eng.srt> --corrections fixes.json [--max-change-pct 8]` |
+| `apply-srt-corrections.tests.ps1` | tests | Tests for apply-srt-corrections.py - the cue-anchored path and the `"cue": "all"` recurring-name path, against a scratch transcript and a scratch lexicon (never D:/video/_lexicons). Exit 0 = all passed. | NO TRIGGER IN HEADER | - |
 | `approve-confirmed.ps1` | command | List the works awaiting the operator's Plex confirmation, and turn a "yes" into a correctly-scoped reclaim artefact with ONE command. | when: The conversation is the right approval channel - the operator nods through what they are happy with, which no tag or label captures as well. | `pwsh -File approve-confirmed.ps1` |
 | `assert-accounted.menu.tests.ps1` | tests | Tests for the MENU-DOMAIN key space in assert-accounted.ps1. | NO TRIGGER IN HEADER | `pwsh -File assert-accounted.menu.tests.ps1` |
 | `assert-accounted.ps1` | command | Refuse to release a disc's raw staging until EVERY catalogued title has a recorded disposition. | when: The per-unit gate's check #1 - "every title accounted for" - was prose, so it was signed off by recalling that the rips looked fine. Twice that was wrong in a way that cost a re-fetch: | `pwsh -File assert-accounted.ps1 -Disc "MAN_GOLDEN_GUN_F1" -RequireEvidence` |

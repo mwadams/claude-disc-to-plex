@@ -515,6 +515,23 @@ function Get-EnglishWordSet {
   return ,$set
 }
 
+# A CLOSED COMPOUND OF TWO DICTIONARY WORDS IS AN ENGLISH WORD. Tesseract's dawg lists "bone" and
+# "thigh" but not "thighbone", so the dictionary gate read the "Dem Bones" song in The Prisoner's
+# "Fall Out" - hipbone x8, thighbone x7, heelbone, legbone, neckbone, anklebone, footbone, kneebone,
+# headbone, shoulderbone, toebone - as some 60 split-letter failures, and a clean conversion scored
+# 94.3% against the 95% floor (2026-09-11; the direct renderer read the same words and failed too).
+# The head must be a real word of 3+ letters and the tail of 4+. With a 3-letter tail allowed, known
+# OCR splits passed as compounds - "comact" (com+act), "bailat", "deciare" - because the dawg holds
+# short fragments; with 4, those fail and every "-bone" word still passes. "loucler", "magnitucle"
+# and "tfeld" have no division at all.
+function Test-ClosedCompound([string]$w, $set) {
+  if ($w.Length -lt 6) { return $false }
+  for ($i = 3; $i -le $w.Length - 4; $i++) {
+    if ($set.Contains($w.Substring(0, $i)) -and $set.Contains($w.Substring($i))) { return $true }
+  }
+  return $false
+}
+
 # ---------------------------------------------------------------------------------------------
 # STAGING HELPERS - see the -NoStage parameter comment for the why.
 # ---------------------------------------------------------------------------------------------
@@ -1057,7 +1074,7 @@ foreach ($f in $targets) {
             $tot++
             # "doesn't" is stored as "doesn" in the dawg, so retry on the pre-apostrophe stem.
             $bare = ($w -replace "'.*$", '')
-            if ($words.Contains($w) -or $words.Contains($bare)) { $inDict++ }
+            if ($words.Contains($w) -or $words.Contains($bare) -or (Test-ClosedCompound $bare $words)) { $inDict++ }
           }
         }
         $dictPct = if ($tot) { [math]::Round(100 * $inDict / $tot, 1) } else { 0 }

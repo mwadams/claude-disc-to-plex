@@ -57,7 +57,7 @@ episode's cast list (spell those names correctly) and then the transcript, one c
 "<cue number>|<text>".
 
 Return ONLY a JSON array. No prose, no markdown fence. Each element:
-  {"cue": <number>, "from": "<text exactly as it appears now>", "to": "<corrected text>", "why": "<short reason>"}
+  {"cue": <number, or "all" for a name mis-heard throughout - see RULES>, "from": "<text exactly as it appears now>", "to": "<corrected text>", "why": "<short reason>"}
 
 RULES
 - Correct only what is WRONG: mis-heard words that make no sense in context, and misspelled
@@ -81,6 +81,16 @@ RULES
   always ONE name, and the spelling that is a real place or person is the right one. In the example
   above the correct "Runcorn" appears in the PREVIOUS cue. Reading the file as a whole is the point
   of this pass - a dictionary cannot do it.
+- THE CAST LIST'S SPELLING WINS, EVEN AGAINST THE MAJORITY. A transcript can spell a cast name
+  wrong more often than right: The Power Game's "Bligh" came out as "Bly" 260 times and "Blythe" 83
+  times against 120 correct, and a previous pass "corrected" Blige to Bly because Bly was commoner.
+  If a name in the list below is the one being said, use the list's spelling.
+- A NAME MIS-HEARD THROUGHOUT IS ONE CORRECTION, NOT ONE PER LINE. For a capitalised name that is
+  wrong in many cues, return ONE element with "cue": "all" and it is applied to every whole-word
+  occurrence in the file - e.g. {"cue": "all", "from": "Bly", "to": "Bligh", "why": "..."}, and
+  separately {"cue": "all", "from": "Bly's", "to": "Bligh's"} and {"cue": "all", "from": "Blythes",
+  "to": "Blighs"}. Use "all" ONLY where "from" is a capitalised name as written and "to" is a
+  name from the cast list; for anything else give the cue number as usual.
 - The "from" string MUST be copied character-for-character from the cue text. If you cannot quote
   it exactly, omit the correction. A proposal that does not match is discarded anyway.
 - Do NOT change style, punctuation, capitalisation, contractions or informal speech. This is
