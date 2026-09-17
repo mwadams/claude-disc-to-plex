@@ -48,7 +48,10 @@ param(
   # So: stop fetching once this many units are staged and not yet completed. 10 is ~2 hours of
   # authoring at the measured rate - a real buffer, not a hoard. Raise it if authoring ever gets
   # faster than fetching again, which is the situation this default assumes is over.
-  [int]$MaxStagedUnits = 10
+  [int]$MaxStagedUnits = 10,
+  # Units past authoring (closed ships-nothing, or manifested) waiting on the user's confirmation do
+  # not count against $MaxStagedUnits; this caps the total folder count regardless.
+  [int]$MaxStagedFolders = 30
 )
 
 # SINGLE INSTANCE. Two copies would both pick the same "next" disc and robocopy it concurrently
@@ -139,11 +142,29 @@ while ($true) {
 
   # DEPTH FIRST: is the line already holding more than it can chew? Cheaper than the space test and
   # the one that actually matters now - see $MaxStagedUnits.
+  #
+  # COUNT ONLY UNITS THAT STILL NEED AUTHORING. 2026-09-17: the limit counted every staged folder, so
+  # nine West Wing discs closed as ships-nothing plus Friends S5 D1 (published) - all ten waiting only
+  # on the user's nod - held the fetch for 90 minutes with the dispositions agent idle and the GPU
+  # lanes empty, and the stall alarm blamed "the authoring step". A unit past authoring costs disk,
+  # which the space floor below already guards; it costs no authoring, which is what this limit is
+  # for. "Past authoring" is a POSITIVE record, as on the board: a ships-nothing closure in
+  # _catalogue, or a manifest naming the staged path in _pending or the queue. $MaxStagedFolders is a
+  # backstop so a pile of unconfirmed units still cannot grow without bound.
   $stagedNow = @(Get-ChildItem 'D:/video/_stage' -Directory -ErrorAction SilentlyContinue |
                  Where-Object { $_.Name -notlike '*-rip' })
-  if ($stagedNow.Count -ge $MaxStagedUnits) {
-    Write-Output ("[{0}] {1} unit(s) staged (limit {2}) - holding; the line is authoring-bound, not fetch-bound. {3} disc(s) still to stage" -f `
-                  (Get-Date -Format 'HH:mm:ss'), $stagedNow.Count, $MaxStagedUnits, $left.Count)
+  $manifestText = @(Get-ChildItem @('D:/video/_pending/*.json', 'D:/video/_queue/*.json', 'D:/video/_queue/running/*.json',
+                                    'D:/video/_queue/done/*.json', 'D:/video/_queue/failed/*.json') -ErrorAction SilentlyContinue |
+                    ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw })
+  $needAuthoring = @($stagedNow | Where-Object {
+    $n = $_.Name
+    if (Test-Path -LiteralPath ("D:/video/_catalogue/{0}.ships-nothing.json" -f $n)) { return $false }
+    $pathRx = '_stage[\\/]+' + [regex]::Escape($n) + '(?=["\\/])'
+    -not ($manifestText | Where-Object { $_ -match $pathRx } | Select-Object -First 1)
+  })
+  if ($needAuthoring.Count -ge $MaxStagedUnits -or $stagedNow.Count -ge $MaxStagedFolders) {
+    Write-Output ("[{0}] {1} unit(s) need authoring (limit {2}), {3} staged in all (backstop {4}) - holding; the line is authoring-bound, not fetch-bound. {5} disc(s) still to stage" -f `
+                  (Get-Date -Format 'HH:mm:ss'), $needAuthoring.Count, $MaxStagedUnits, $stagedNow.Count, $MaxStagedFolders, $left.Count)
     Start-Sleep -Seconds 300
     continue
   }
