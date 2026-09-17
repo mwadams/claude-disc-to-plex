@@ -60,6 +60,10 @@ param(
   [string]$Token   = $env:PLEX_TOKEN,
   # HOW MUCH BETTER A RIVAL SLOT MUST SCORE BEFORE THIS CALLS IT WRONG. See the verdict rules below.
   [double]$Margin = 0.34,
+  # A RIVAL MUST SCORE HIGHER THAN A MATCH NEEDS TO. Agreement only confirms what the filename already
+  # says; an accusation overturns it, and a 0.67 partial read is not enough to call a correct file wrong
+  # (Espionage S01E10/E23, 2026-09-17). Raise, never lower, without a measured reason.
+  [double]$RivalMinScore = 0.80,
   # WHERE THE VERDICTS ARE KEPT SO SOMETHING ELSE CAN READ THEM. OCR over a season takes minutes, so
   # nothing can afford to re-run this at the moment the user is asked to confirm a work in Plex -
   # and that is exactly the moment the answer is worth having. Verdicts are written per FILE and
@@ -87,6 +91,21 @@ function Normalize([string]$s){
 # Token-overlap score. Deliberately NOT Levenshtein: OCR of a lower-third card picks up stray
 # glyphs from the picture behind it, so edit distance punishes a correct read. What matters is
 # whether the card's words are present.
+# Does this OCR read look like a TITLE CARD rather than noise off ordinary footage? A card is a few
+# words of large clean type: mostly letters, few stray one-character tokens. Noise is the opposite.
+function Test-CardLike([string]$txt){
+  $t = "$txt".Trim()
+  if($t.Length -lt 6){ return $false }
+  $chars = ($t -replace '\s', '').ToCharArray()
+  if($chars.Count -lt 6){ return $false }
+  $alpha = @($chars | Where-Object { $_ -match '[A-Za-z]' }).Count
+  if(($alpha / [double]$chars.Count) -lt 0.75){ return $false }
+  $words = @(($t -split '\s+') | Where-Object { $_ -match '[A-Za-z]' })
+  if(-not $words.Count){ return $false }
+  $runts = @($words | Where-Object { ($_ -replace '[^A-Za-z]', '').Length -le 2 }).Count
+  return (($runts / [double]$words.Count) -le 0.5)
+}
+
 function Score([string]$expected,[string]$got){
   # KEEP short numeric/roman tokens. Dropping everything <= 2 chars made "Lights of London (1)"
   # and "(2)" reduce to the identical {lights, london}: the scorer returned 1.00 for whichever
@@ -181,6 +200,12 @@ try {
       foreach($k in $canon[$sNum].Keys){
         if($k -eq $eNum){ continue }
         foreach($t in $texts){
+          # ONLY A CARD-LIKE READ MAY ACCUSE. 2026-09-17, Espionage: OCR over ordinary footage returned
+          # "wt at: ;; e, : / 2 YY 5 es / . ry A" - noise, which still scored 0.67 against another
+          # episode's title on its stray short words, and REFUSED two correctly numbered episodes whose
+          # own cards (read at 1.00 when sampled finely) say exactly what their filenames claim. An
+          # accusation must rest on text that looks like a title card: mostly letters, not punctuation.
+          if(-not (Test-CardLike $t)){ continue }
           $sc = Score $canon[$sNum][$k] $t
           if($sc -gt $rivalScore){ $rivalScore = $sc; $rivalIdx = $k; $rivalTitle = $canon[$sNum][$k] }
         }
@@ -188,7 +213,7 @@ try {
     }
     $verdict =
       if($best -ge $MinScore){ 'OK' }
-      elseif($rivalScore -ge $MinScore -and ($rivalScore - $best) -ge $Margin){ 'MISMATCH' }
+      elseif($rivalScore -ge $RivalMinScore -and ($rivalScore - $best) -ge $Margin){ 'MISMATCH' }
       else{ 'UNREAD' }
 
     $at = $Start + ($bestIdx - 1) * $Step
