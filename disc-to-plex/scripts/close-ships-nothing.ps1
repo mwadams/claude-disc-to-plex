@@ -197,6 +197,21 @@ if ($assertExit -ne 0) {
   exit 2
 }
 
+# ---- 6b. "already published" must be the SAME episode ----------------------------------------
+# A ships-nothing closure is the replace-an-existing-episode case with the answer "no gain", and it
+# releases the disc. It is only true if every episode row really is the published episode:
+# FRIENDS_S4_DISC_2 t11 (2026-09-17) was called S04E05 - already published - and was S04E21.
+$identity = Join-Path $PSScriptRoot 'assert-replacement-identity.ps1'
+if (Test-Path -LiteralPath $identity) {
+  $idOut = @(& pwsh -NoProfile -File $identity -Disc $discName -Catalogue $CatalogueDir 2>&1 | ForEach-Object { "$_" })
+  $idExit = $LASTEXITCODE
+  if ($idExit -eq 2) {
+    Write-Output "REFUSE  $discName - assert-replacement-identity.ps1 found a row that is NOT the published episode it claims; nothing here can be 'already published' until it is re-identified."
+    $idOut | ForEach-Object { Write-Output "        | $_" }
+    exit 2
+  }
+}
+
 # ---- existing record: idempotent when nothing changed, refuse-by-default when it has ---------
 if ((Test-Path -LiteralPath $recPath) -and -not $Force) {
   $old = $null

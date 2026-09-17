@@ -1,8 +1,8 @@
 # Script index - GENERATED, do not edit
 
-Generated 2026-09-16 19:51 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
+Generated 2026-09-17 07:36 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
 
-**143 scripts under `scripts/`, 54 loop scripts under `D:/video/`. 0 with NO usable header, 54 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
+**145 scripts under `scripts/`, 54 loop scripts under `D:/video/`. 0 with NO usable header, 55 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
 
 Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library` = dot-source, defines functions only; `tests` = a test suite, exit 0 = all passed.
 
@@ -24,6 +24,8 @@ Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library
 | `assert-expectations-match-source.ps1` | command | REFUSE a manifest whose `expectSeconds` does not match the SOURCE FILE it claims to describe. | NO TRIGGER IN HEADER | - |
 | `assert-extras-folders-recognised.ps1` | command | REFUSE a movie manifest that files an extra into a subfolder Plex does not recognise as a local-extras folder - because Plex then scans those files as SEPARATE FILMS. | when: 2026-09-07, reported by the operator: "many of these extras have appeared as top level films e.g. 'snapshot', costume gallery, Mary Ellen, little red book". | `pwsh -NoProfile -File assert-extras-folders-recognised.ps1 -Manifest D:/video/_queue/x.json` |
 | `assert-output-paths-legal.ps1` | command | REFUSE a manifest whose output filename contains a character Windows cannot put in a file name. | when: 2026-09-07, Tales of the Unexpected S04E01 "Would You Believe It?". The manifest declared | `pwsh -NoProfile -File assert-output-paths-legal.ps1 -Manifest D:/video/_queue/x.json` |
+| `assert-replacement-identity.ps1` | command | THE "REPLACE AN EXISTING EPISODE" CASE MUST PROVE IT IS THE SAME EPISODE. | when: a disc's rows name episodes the library already has - a re-rip, a supersede, or a "nothing worth shipping" closure - and you need to know each really is that episode. | `pwsh -NoProfile -File assert-replacement-identity.ps1 -Disc 'FRIENDS_S4_DISC_2-1a09de4f'` |
+| `assert-replacement-identity.tests.ps1` | tests | Tests for assert-replacement-identity.ps1, against a scratch catalogue and a scratch "library". Transcription is stubbed (-SampleStub), so the suite is deterministic and needs no audio. Exit 0 = all passed. | NO TRIGGER IN HEADER | - |
 | `assert-season00-titles-declared.ps1` | command | REFUSE a manifest that ships a BARE-NAMED Season 00 item without declaring its `plexTitle`. | when: Plex's TV agent titles an episode it does not recognise BY INDEX - "Episode 16", or worse, a real title belonging to a different item. | - |
 | `assert-season00-titles-declared.tests.ps1` | tests | Tests for assert-season00-titles-declared.ps1 - the gate that stops a bare-named Season 00 item publishing with no title Plex could get right. | NO TRIGGER IN HEADER | - |
 | `assert-staged-complete.ps1` | command | Refuse to enumerate or rip a staging folder that is still being copied. | when: MakeMKV enumerates whatever stream files are PRESENT. Run it against a half-copied folder and it returns a SHORTER, entirely plausible title list - no error, no warning - and that list becomes the... | - |
