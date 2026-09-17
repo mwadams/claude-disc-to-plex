@@ -268,8 +268,16 @@ Write-Output ("  record : {0}" -f $recPath)
 Write-Output ("  titles : {0}" -f (($kindCounts.GetEnumerator() | Sort-Object Name | ForEach-Object { "$($_.Value) $($_.Name)" }) -join ', '))
 Write-Output ("  why    : {0}" -f $record.because)
 Write-Output ''
-Write-Output 'The staging is NOT released by this. To release it: tell the user WHY nothing ships and'
-Write-Output 'ask them to confirm the verdict; after they confirm, author a _reclaim-queue artefact'
-Write-Output 'naming this unit (works: []), with a note citing this record. The reclaim loop and the'
-Write-Output 'existing release gates do the rest.'
+# The user granted a standing authorisation on 2026-09-17 to release ships-nothing staging without
+# asking; release-ships-nothing.ps1 honours it only while D:/video/_standing-authorisations.json holds it.
+$releaser = Join-Path $PSScriptRoot 'release-ships-nothing.ps1'
+$relOut = @(& pwsh -NoProfile -File $releaser -Disc $discName -CatalogueDir $CatalogueDir -Stage $Stage 2>&1 | ForEach-Object { "$_" })
+if ($LASTEXITCODE -eq 0) {
+  $relOut | ForEach-Object { Write-Output "  release: $_" }
+} else {
+  Write-Output 'The staging is NOT released by this, and no standing authorisation is recorded. To release it:'
+  Write-Output 'tell the user WHY nothing ships and ask them to confirm the verdict; after they confirm, author a'
+  Write-Output '_reclaim-queue artefact naming this unit (works: []), with a note citing this record. The reclaim'
+  Write-Output 'loop and the existing release gates do the rest.'
+}
 exit 0
