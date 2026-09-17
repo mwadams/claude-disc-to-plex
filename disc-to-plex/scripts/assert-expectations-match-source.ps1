@@ -87,7 +87,7 @@ function Get-Text($row, [string]$name) {
   return "$($row.$name)".Trim()
 }
 
-$faults = @(); $checked = 0; $skipped = 0
+$faults = @(); $fieldFaults = @(); $checked = 0; $skipped = 0
 foreach ($r in $rows) {
   $exp = Get-Text $r 'expectSeconds'
   if (-not $exp) { $skipped++; continue }
@@ -107,6 +107,31 @@ foreach ($r in $rows) {
   if (-not [double]::TryParse($raw, [ref]$act) -or $act -le 0) { $skipped++; continue }
 
   $checked++
+
+  # FIELD-CODED INTERLACED H.264 PUTS EACH FIELD IN ITS OWN PACKET. 2026-09-17: every Firefly Blu-ray
+  # SD extra (720x480, field_order tt, 30000/1001) was manifested with expectFrames = the source's
+  # PACKET count - 103,036 for a 1719 s title, i.e. 59.94 per second - and the encoder rightly wrote
+  # 51,518 frames at 29.97, so all eleven correct encodes were quarantined as .wrong-length. The ratio
+  # passes assert-expectations-consistent (59.94 is a real rate); only the source's own frame rate and
+  # field order show the packets are FIELDS.
+  $expF = Get-Text $r 'expectFrames'
+  $expFrames = 0
+  if ($expF -and [int]::TryParse(($expF -replace '\.0+$', ''), [ref]$expFrames) -and $expFrames -gt 0) {
+    $vs = "$(& $ffprobe -v error -select_streams v:0 -show_entries stream=field_order,r_frame_rate -of csv=p=0 $src 2>$null)".Trim()
+    $fo = ''; $rfr = 0.0
+    foreach ($part in ($vs -split ',')) {
+      if ($part -match '^(\d+)/(\d+)$' -and [double]$Matches[2] -ne 0) { $rfr = [double]$Matches[1] / [double]$Matches[2] }
+      elseif ($part -match '^(tt|bb|tb|bt)$') { $fo = $part }
+    }
+    $rate = $expFrames / $act
+    if ($fo -and $rfr -gt 0 -and [math]::Abs($rate - 2 * $rfr) -le 0.01 * 2 * $rfr) {
+      $fieldFaults += [pscustomobject]@{
+        Out = (Split-Path (Get-Text $r 'out') -Leaf); Src = (Split-Path $src -Leaf)
+        Expect = $expFrames; Should = [int][math]::Floor($expFrames / 2); FieldOrder = $fo; Rate = $rfr
+      }
+    }
+  }
+
   $delta = $expSec - $act
   if ([math]::Abs($delta) -gt $ToleranceSeconds) {
     $faults += [pscustomobject]@{
@@ -139,6 +164,20 @@ if ($faults.Count) {
     Say  'quarantines an output as .wrong-length by comparing against these figures, so a wrong'
     Say  'expectation rejects a CORRECT encode and fails the whole manifest.'
   }
+  exit 2
+}
+
+if ($fieldFaults.Count) {
+  Say ''
+  Say ("expectFrames COUNTS FIELDS, NOT FRAMES - {0} row(s) from a field-coded interlaced source:" -f $fieldFaults.Count)
+  Say ''
+  foreach ($f in ($fieldFaults | Select-Object -First 25)) {
+    Say ("   {0}" -f $f.Out)
+    Say ("      expectFrames {0,9:N0} = 2x the source's {1:N3} fps (field_order {2}); the encode writes {3:N0} frames   ({4})" -f $f.Expect, $f.Rate, $f.FieldOrder, $f.Should, $f.Src)
+  }
+  Say ''
+  Say 'Each field of a PAFF-coded H.264 stream is its own packet, so -count_packets on the SOURCE doubles the'
+  Say 'frame count, while transcode.ps1 counts the OUTPUT''s whole frames. Set expectFrames to the value shown.'
   exit 2
 }
 
