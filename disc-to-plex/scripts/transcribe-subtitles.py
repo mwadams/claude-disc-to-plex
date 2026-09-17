@@ -422,6 +422,38 @@ def main():
         segments = [{'start': s.start, 'end': s.end, 'text': s.text.strip(),
                      'no_speech_prob': s.no_speech_prob}
                     for s in segs if s.text.strip()]     # consume inside the guard
+
+        # IS THE UNCOVERED TAIL SPEECH AT ALL? (2026-09-17)
+        # The coverage floor reads "last cue ends early" as "speech was dropped". For a trailer or a
+        # featurette that closes on music, a title card and a release date it is simply where the
+        # talking stops: five of the seven transcribe failures then owed were trailers at 78-80%
+        # (Conquest of the Planet of the Apes x3, This Happy Breed, Lawrence of Arabia's advertising
+        # reel). So transcribe the tail AGAIN, on its own, before the wav is gone: a decode that
+        # stalled finds the speech it skipped; a tail of music finds none. Only the latter waives
+        # the floor, and the log says so.
+        # TEST SEAM: simulate the failure the coverage floor exists for - a transcript that stops while
+        # speech continues - by dropping every cue after this many seconds. Never set in production.
+        _trunc = os.environ.get('TRANSCRIBE_TEST_TRUNCATE_AT')
+        if _trunc:
+            segments = [s for s in segments if s['end'] <= float(_trunc)]
+            print(f'[test] TRANSCRIBE_TEST_TRUNCATE_AT={_trunc}: kept {len(segments)} cue(s)')
+        tail_check = None
+        if segments and duration and segments[-1]['end'] / duration < MIN_COVERAGE:
+            tail_start = max(0.0, segments[-1]['end'] - 1.0)
+            tail_wav = os.path.join(tmpdir, 'tail.tmp16k.wav')
+            subprocess.run([ff, '-v', 'error', '-ss', f'{tail_start:.3f}', '-i', wav,
+                            '-c:a', 'pcm_s16le', '-y', tail_wav], check=True)
+            tsegs, _ = model.transcribe(tail_wav, language='en', beam_size=5, vad_filter=False,
+                                        condition_on_previous_text=False)
+            tail = [{'start': tail_start + s.start, 'end': tail_start + s.end, 'text': s.text.strip(),
+                     'no_speech_prob': s.no_speech_prob} for s in tsegs if s.text.strip()]
+            # Speech = a cue of 3+ words that the decoder itself believes is speech, beyond the
+            # last cue already kept (the 1 s overlap re-hears that cue's own tail).
+            spoken = [t for t in tail if t['end'] > segments[-1]['end'] + 0.5
+                      and len(t['text'].split()) >= 3 and t['no_speech_prob'] < 0.5]
+            tail_check = {'tailSeconds': round(duration - segments[-1]['end'], 1),
+                          'spokenCues': len(spoken),
+                          'sample': [t['text'] for t in spoken[:3]]}
     except subprocess.CalledProcessError as e:
         print(f'[failed] audio extraction failed: {e}')
         return 2
@@ -460,7 +492,14 @@ def main():
 
     # --- GUARDS -------------------------------------------------------------------------
     coverage = segments[-1]['end'] / duration if duration else 0
-    if coverage < MIN_COVERAGE:
+    if coverage < MIN_COVERAGE and tail_check is not None and tail_check['spokenCues'] == 0:
+        print(f'[info] transcript covers {coverage:.0%} of {duration/60:.1f} min, but the '
+              f'{tail_check["tailSeconds"]:.0f} s after the last cue re-transcribed on its own holds '
+              f'no speech (music/titles) - coverage floor waived')
+    elif coverage < MIN_COVERAGE:
+        if tail_check is not None:
+            print(f'[info] the uncovered tail re-transcribed on its own found {tail_check["spokenCues"]} '
+                  f'spoken cue(s), e.g. {tail_check["sample"]}')
         print(f'[failed] transcript covers only {coverage:.0%} of {duration/60:.1f} min '
               f'(floor {MIN_COVERAGE:.0%}) - refusing. This is the signature of speech being '
               f'dropped; do not ship a subtitle that stops early.')
@@ -501,7 +540,7 @@ def main():
         'srt': out, 'source': src, 'work': a.work,
         'method': 'audio-transcription', 'model': a.model, 'device': dev,
         'vad': False, 'cues': len(rows), 'cuesPerMin': round(cues_per_min, 2),
-        'coverage': round(coverage, 3), 'englishFraction': round(frac, 3),
+        'coverage': round(coverage, 3), 'englishFraction': round(frac, 3), 'tailCheck': tail_check,
         'lexicon': lexpath or None, 'lexiconPrompted': bool(prompt),
         'lexiconEpisodeKey': epkey or None, 'lexiconFixes': len(changed),
         'promptNameOverlap': overlap,
