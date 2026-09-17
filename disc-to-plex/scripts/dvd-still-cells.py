@@ -69,6 +69,7 @@ USAGE
              resolve cell sectors against VTS_xx_0.VOB instead of VTS_xx_1..9.VOB.
 """
 import os
+import re
 import struct
 import sys
 
@@ -227,7 +228,28 @@ def main():
     if len(argv) < 4:
         raise SystemExit(__doc__.strip().rsplit('USAGE', 1)[-1].strip())
     outdir = third
-    for pgc in [int(x) for x in argv[3].split(',')]:
+    # PGCs may be written as a list, a RANGE, or both: "3", "1,2,5", "1-26", "1-3,7,10-12".
+    # A gallery's PGCs are contiguous and a manifest author writes them the obvious way; without this,
+    # "1-26" died as ValueError: invalid literal for int() with base 10 - Robin of Sherwood Series 3
+    # Disk 2 (2026-09-17) failed both its photo galleries that way, after the encode had already run.
+    def parse_pgcs(spec):
+        out = []
+        for part in [p.strip() for p in spec.split(',') if p.strip()]:
+            m = re.fullmatch(r'(\d+)\s*-\s*(\d+)', part)
+            if m:
+                lo, hi = int(m.group(1)), int(m.group(2))
+                if hi < lo:
+                    raise SystemExit('PGC range %s runs backwards' % part)
+                out.extend(range(lo, hi + 1))
+            elif part.isdigit():
+                out.append(int(part))
+            else:
+                raise SystemExit('cannot read PGC list %r - use "3", "1,2,5", "1-26" or "1-3,7"' % spec)
+        if not out:
+            raise SystemExit('no PGCs given')
+        return out
+
+    for pgc in parse_pgcs(argv[3]):
         cl = cells.get(pgc)
         if cl is None:
             raise SystemExit('PGC %d is not declared by VTS_%02d %s domain'
