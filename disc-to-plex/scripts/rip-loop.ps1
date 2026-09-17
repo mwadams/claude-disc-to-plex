@@ -279,7 +279,32 @@ while ($true) {
     # Never start a second MakeMKV. rip-titles.ps1 is space-gated but not concurrency-gated, and
     # two rips off one disc contend on the same spindle - measured today, both ran slower than
     # either alone would have.
-    if (@(Get-Process makemkvcon64 -ErrorAction SilentlyContinue).Count -gt 0) { break }
+    #
+    # BUT THE OPTICAL TRACK'S MakeMKV IS NOT A RIP OFF THIS SPINDLE. It reads the physical USB drive
+    # into the optical archive; this loop reads a staged folder on D:. 2026-09-17: a two-and-a-half-
+    # hour Friends S5 D2 disc backup held Firefly Disk 1's one feature rip - and with it the encoders -
+    # idle, and this branch logged nothing, so the idle line said "none asking for a title". Discount
+    # one process while the optical loop is alive AND its status file says a read is in flight.
+    $mkvCount = @(Get-Process makemkvcon64 -ErrorAction SilentlyContinue).Count
+    $opticalReading = $false
+    try {
+      $oh = $null
+      if ([System.Threading.Mutex]::TryOpenExisting(('Global' + [char]92 + 'video-optical-loop'), [ref]$oh)) {
+        $oh.Dispose()
+        $ost = Get-Content -LiteralPath 'D:/video/_optical-status.json' -Raw -ErrorAction Stop | ConvertFrom-Json
+        $opticalReading = [bool]$ost.inFlight
+      }
+    } catch { $opticalReading = $false }
+    if ($mkvCount - $(if ($opticalReading) { 1 } else { 0 }) -gt 0) {
+      if (-not $script:lastBusySay -or ((Get-Date) - $script:lastBusySay).TotalMinutes -ge 10) {
+        $script:lastBusySay = Get-Date
+        Write-Output ("[{0}] {1}: {2} title(s) to rip, deferred - another MakeMKV ({3} running, optical in flight: {4}) is not the optical track's" -f `
+                      (Get-Date -Format 'HH:mm:ss'), $disc, $todo.Count, $mkvCount, $opticalReading)
+      }
+      $did = $true   # waiting on a rip, not idle - keep the idle line honest
+      Start-Sleep -Seconds 60
+      break
+    }
 
     $one = $todo[0]
     Write-Output ("[{0}] {1}: ripping t{2:00} ({3} title(s) still to rip)" -f `

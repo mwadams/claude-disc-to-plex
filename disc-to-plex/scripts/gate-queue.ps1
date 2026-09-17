@@ -80,6 +80,19 @@ if (Test-Path -LiteralPath $titleGuard) {
   }
 }
 
+# A NEW Season 00 item that duplicates a special the library already holds. 2026-09-17: the Firefly
+# Blu-ray reunion published as a new S00E15 over the legacy bare-named S00E02 (identical 1442.5 s), and
+# Disk 1's "Journey of Serenity" was about to do the same to S00E01. A bare legacy special has no title
+# for the dispositions agent to compare, so the duration match is the only signal - and Plex already has it.
+$dupGuard = 'D:/video/.claude/skills/disc-to-plex/scripts/assert-season00-not-duplicate.ps1'
+if (Test-Path -LiteralPath $dupGuard) {
+  & pwsh -NoProfile -File $dupGuard -Manifest $Manifest
+  if ($LASTEXITCODE -ne 0) {
+    Write-Output ("gate REFUSED: {0} - a new Season 00 item matches an existing special by duration; supersede it or say why it differs. Not queued." -f (Split-Path $Manifest -Leaf))
+    exit 2
+  }
+}
+
 # THIRD FAULT, SAME LOGIC: a DVD row that asks ffmpeg for the WRONG TITLE NUMBER. transcode.ps1
 # passes `title` straight to the dvdvideo demuxer as a 1-based dvdvideoTitle, so numbering the
 # chosen episodes 1..N - instead of using each one's true dvdvideoTitle - shifts every output by
