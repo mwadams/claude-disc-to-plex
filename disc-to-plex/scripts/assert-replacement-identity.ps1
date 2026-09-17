@@ -235,6 +235,21 @@ function Get-Refs([int]$season, [int]$episode) {
   }
   return $out
 }
+# A SAMPLE THAT IS NOT ENGLISH IS NOT EVIDENCE. 2026-09-17, Monty Python S1 D1 t02 (S01E03): whisper, forced
+# to English, rendered two stretches as Welsh-looking gibberish ("Llywid yn pwnnwych fel turbau i ddobos...") -
+# scored 2% and 7% against the published subtitles and REFUSED an episode the dispositions had matched
+# verbatim at 400 s. Garbled or foreign speech carries almost no English function words; real dialogue is
+# full of them. Such a sample proves nothing either way, so it is not informative.
+$englishFunction = [System.Collections.Generic.HashSet[string]]::new([string[]]@(
+  'the','and','to','of','you','it','is','that','in','we','he','she','they','what','this','be','have','not','no',
+  'yes','on','for','with','my','your','me','was','are','but','if','there','here','all','just','so','do','don''t',
+  'i''m','it''s','well','oh','now','then','can','will','would','know','at','his','her','him','our','them','an','or'))
+function Get-EnglishFraction([string]$text) {
+  $tok = @([regex]::Matches($text.ToLowerInvariant(), "[a-z']{2,}") | ForEach-Object { $_.Value })
+  if (-not $tok.Count) { return 0.0 }
+  return [math]::Round(@($tok | Where-Object { $englishFunction.Contains($_) }).Count / [double]$tok.Count, 2)
+}
+[double]$MinEnglish = 0.15
 function Score-Sample($refList, [string]$text, [double]$at) {
   $words = Get-Words $text
   $bestRef = $null
@@ -243,7 +258,7 @@ function Score-Sample($refList, [string]$text, [double]$at) {
     $near = Get-Words ((@($r.Cues | Where-Object { $_.Start -ge $lo -and $_.Start -le $hi }) | ForEach-Object { $_.Text }) -join ' ')
     $found = @($words | Where-Object { $near.Contains($_) }).Count
     $s = if ($words.Count) { [math]::Round($found / [double]$words.Count, 2) } else { 0.0 }
-    if (-not $bestRef -or $s -gt $bestRef.Score) { $bestRef = [pscustomobject]@{ At = $at; Words = $words.Count; Found = $found; Score = $s; File = $r.File.Name; Text = $text } }
+    if (-not $bestRef -or $s -gt $bestRef.Score) { $bestRef = [pscustomobject]@{ At = $at; Words = $words.Count; Found = $found; Score = $s; File = $r.File.Name; Text = $text; English = (Get-EnglishFraction $text) } }
   }
   return $bestRef
 }
@@ -301,7 +316,7 @@ foreach ($l in $lines) {
       if (@($samples | Where-Object { $_.Words -ge $MinWords -and $_.Score -ge $MatchAt }).Count) { break }
     }
   }
-  $informative = @($samples | Where-Object { $_.Words -ge $MinWords })
+  $informative = @($samples | Where-Object { $_.Words -ge $MinWords -and $_.English -ge $MinEnglish })
   $pooled = if ($informative.Count) { [math]::Round(($informative | Measure-Object Found -Sum).Sum / [double]($informative | Measure-Object Words -Sum).Sum, 2) } else { 0.0 }
   $desc = (@($samples | ForEach-Object { '@{0}s {1}/{2} words ({3:P0})' -f $_.At, $_.Found, $_.Words, $_.Score }) -join '; ')
   if (-not $useStored) { $desc = "stored sample set aside (dispositions prove this title is dvdvideo $dvFixed); $desc" }

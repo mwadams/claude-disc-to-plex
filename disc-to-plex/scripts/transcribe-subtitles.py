@@ -123,7 +123,12 @@ def safe_component(x):
 COMMON = set('the a an and or but if of to in on at for with from that this it is was are were '
              'be been being have has had do does did not no yes you i he she we they me him her '
              'them my your his our their what when where who how why can could will would should '
-             'there here all any some more most just now then than so very'.split())
+             'there here all any some more most just now then than so very '
+             # CONTRACTIONS ARE ENGLISH. 2026-09-17, Magnolia's teaser: the cast introduce themselves
+             # ("I'm Stanley Spector.", "I'm Earl Partridge." ...) - ten of twelve lines matched nothing
+             # in this set, because "i'm" is one token, and a clean transcript was refused at 18%.
+             "i'm i've i'll i'd you're you've you'll we're we've they're he's she's it's that's there's "
+             "what's let's don't doesn't didn't can't won't isn't aren't wasn't couldn't wouldn't".split())
 
 
 def hhmmss(sec):
@@ -241,7 +246,7 @@ def english_fraction(segments):
     lines = [s['text'] for s in segments if len(s['text'].split()) >= 3]
     if not lines:
         return 0.0
-    ok = sum(1 for l in lines if COMMON & set(re.findall(r"[a-z']+", l.lower())))
+    ok = sum(1 for l in lines if COMMON & set(re.findall(r"[a-z']+", l.lower().replace('’', "'"))))
     return ok / len(lines)
 
 
@@ -443,17 +448,22 @@ def main():
             tail_wav = os.path.join(tmpdir, 'tail.tmp16k.wav')
             subprocess.run([ff, '-v', 'error', '-ss', f'{tail_start:.3f}', '-i', wav,
                             '-c:a', 'pcm_s16le', '-y', tail_wav], check=True)
-            tsegs, _ = model.transcribe(tail_wav, language='en', beam_size=5, vad_filter=False,
-                                        condition_on_previous_text=False)
-            tail = [{'start': tail_start + s.start, 'end': tail_start + s.end, 'text': s.text.strip(),
-                     'no_speech_prob': s.no_speech_prob} for s in tsegs if s.text.strip()]
-            # Speech = a cue of 3+ words that the decoder itself believes is speech, beyond the
-            # last cue already kept (the 1 s overlap re-hears that cue's own tail).
-            spoken = [t for t in tail if t['end'] > segments[-1]['end'] + 0.5
-                      and len(t['text'].split()) >= 3 and t['no_speech_prob'] < 0.5]
-            tail_check = {'tailSeconds': round(duration - segments[-1]['end'], 1),
-                          'spokenCues': len(spoken),
-                          'sample': [t['text'] for t in spoken[:3]]}
+            # VOICE ACTIVITY, NOT A SECOND DECODE. Re-transcribing the tail was tried first and is not a
+            # measurement: whisper hallucinates lines over music ('Thanks for watching!', 'Battle of the
+            # Chiefs!'), and no_speech_prob is scored per 30 s window, so the same real narration read
+            # 0.16 in one run and past 0.3 in the next. Silero VAD separates the cases outright
+            # (2026-09-17): Conquest's narrated tail 24.4 s of speech in 49 s; its music ending 0.4 s in
+            # 25 s; This Happy Breed's sung/cheering ending 0.0 s in 32 s. (VAD is barred from the
+            # DECODE because it clipped line tails - it is used here only to ask 'is anyone talking'.)
+            from faster_whisper.audio import decode_audio
+            from faster_whisper.vad import get_speech_timestamps, VadOptions
+            tail_audio = decode_audio(tail_wav, sampling_rate=16000)
+            regions = get_speech_timestamps(tail_audio, VadOptions())
+            speech_s = sum(r['end'] - r['start'] for r in regions) / 16000.0
+            tail_s = len(tail_audio) / 16000.0
+            threshold = max(3.0, 0.10 * tail_s)
+            tail_check = {'tailSeconds': round(tail_s, 1), 'speechSeconds': round(speech_s, 1),
+                          'thresholdSeconds': round(threshold, 1), 'spoken': speech_s >= threshold}
     except subprocess.CalledProcessError as e:
         print(f'[failed] audio extraction failed: {e}')
         return 2
@@ -492,14 +502,14 @@ def main():
 
     # --- GUARDS -------------------------------------------------------------------------
     coverage = segments[-1]['end'] / duration if duration else 0
-    if coverage < MIN_COVERAGE and tail_check is not None and tail_check['spokenCues'] == 0:
+    if coverage < MIN_COVERAGE and tail_check is not None and not tail_check['spoken']:
         print(f'[info] transcript covers {coverage:.0%} of {duration/60:.1f} min, but the '
-              f'{tail_check["tailSeconds"]:.0f} s after the last cue re-transcribed on its own holds '
-              f'no speech (music/titles) - coverage floor waived')
+              f'{tail_check["tailSeconds"]:.0f} s after the last cue hold {tail_check["speechSeconds"]:.1f} s of voice activity '
+              f'(threshold {tail_check["thresholdSeconds"]:.1f} s) - music/titles, coverage floor waived')
     elif coverage < MIN_COVERAGE:
         if tail_check is not None:
-            print(f'[info] the uncovered tail re-transcribed on its own found {tail_check["spokenCues"]} '
-                  f'spoken cue(s), e.g. {tail_check["sample"]}')
+            print(f'[info] the uncovered {tail_check["tailSeconds"]:.0f} s tail holds {tail_check["speechSeconds"]:.1f} s of voice '
+                  f'activity (threshold {tail_check["thresholdSeconds"]:.1f} s) - speech was dropped')
         print(f'[failed] transcript covers only {coverage:.0%} of {duration/60:.1f} min '
               f'(floor {MIN_COVERAGE:.0%}) - refusing. This is the signature of speech being '
               f'dropped; do not ship a subtitle that stops early.')

@@ -21,7 +21,9 @@ $vocab = @{
   E06 = 'bakery sourdough croissant oven flour yeast pastry baguette dough apron rolling icing ganache meringue souffle brioche crumble kneading whisk tartlet'
   THEME = 'singing along chorus melody refrain harmony humming lyrics tambourine jingle banjo whistling rhythm dancing clapping cheerful ukulele serenade ballad anthem'
 }
-function Words([string]$k, [int]$from, [int]$n) { (($vocab[$k] -split ' ')[$from..($from + $n - 1)]) -join ' ' }
+# Joined with ' the ', because real speech carries function words and the script now treats a sample with
+# almost none as non-English (not evidence). 'the' is under the 4-letter distinctive-word floor, so scores are unchanged.
+function Words([string]$k, [int]$from, [int]$n) { (($vocab[$k] -split ' ')[$from..($from + $n - 1)]) -join ' the ' }
 
 try {
   $cat = Join-Path $root 'cat'; $nas = Join-Path $root 'nas'; $q = Join-Path $root 'q'
@@ -97,6 +99,12 @@ try {
   Check 'a title that pooled-matches ANOTHER claimed episode is CROSSED, not refused' ($r.Text -match 'INCONCLUSIVE t03 S01E06 - CROSSED: this row''s sample matches t01 S01E01')
   Check 'an extra''s "proposed S00Exx" is its claim, not the episode it mentions' ($r.Text -match 'NEW\s+t04 S00E01')
   Check 'show resolved from the dispositions, not the folder name' ($r.Text -match '\(from named in the dispositions\)')
+
+  # A garbled/foreign sample (no English function words) is not evidence: Monty Python S1 D1 S01E03, 2026-09-17.
+  $junk = 'Llywid pwnnwych turbau ddobos brondi syddau ffnwfod ffodd newid ymod ffodd bwysheidd ddryddi ffodd bumaf'
+  $stubG = New-Disc 'Disc G' @('t01|episode|S01E01 Lighthouse|speech:x') @{ '1' = @{ Dv = 2; Text = $junk } } @{ 'dv2@300' = $junk; 'dv2@540' = $junk }
+  $r = Run 'Disc G' $stubG
+  Check 'non-English samples are not evidence: no MISMATCH refusal' ($r.Code -eq 0 -and $r.Text -notmatch 'MISMATCH\s+t01') "exit $($r.Code)`n$($r.Text)"
 
   Write-Host 'replacement identity - cannot run'
   $r = [pscustomobject]@{ Code = 0 }
