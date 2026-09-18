@@ -99,6 +99,12 @@ try {
   Write-Output '5. slug convention still finds the raw folder, sidecars and -rip intermediate'
   Check 'targets' ((Targets 'Some Disc') -join ',') 'Some Disc,Some Disc.title4.tracks.json,Some Disc.tracks.json,somedisc-rip'
 
+  Write-Output '5b. the single-audio marker leaves with the staging that produced it'
+  Set-Content -LiteralPath (Join-Path $stage 'Some Disc.title5.single-audio') -Value 'Some Disc|dvdvideo title 5|1 audio stream(s)'
+  Check 'marker is a target' ((Targets 'Some Disc') -contains 'Some Disc.title5.single-audio') $true
+  Set-Content -LiteralPath (Join-Path $stage 'Other Disc.title5.single-audio') -Value 'x'
+  Check 'another unit''s marker is NOT' ((Targets 'Some Disc') -contains 'Other Disc.title5.single-audio') $false
+
   Write-Output '6. a unit with nothing on disk returns EMPTY (the only honest "already released")'
   Check 'count' (Targets 'Never Staged').Count 0
 

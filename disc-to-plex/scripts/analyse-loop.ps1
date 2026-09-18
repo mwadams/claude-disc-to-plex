@@ -343,9 +343,32 @@ while ($true) {
 
       # ONE audio stream needs no evidence - assert-tracks-analysed exempts a lone `audioTracks:[0]`
       # because there is nothing to choose between. Skip those rather than burn whisper on them.
+      #
+      # ...BUT RECORD THE EXEMPTION, or it is re-decided every pass, for ever. Until 2026-09-18 this
+      # `continue` left nothing behind, so a single-audio title was re-probed every 120 seconds for
+      # as long as its disc stayed staged - and each probe opens the DVD. That is what filled
+      # `analyse-loop.log` with 204,185 libdvd lines / 233 MB in one morning, and it stopped the
+      # moment Man In A Suitcase Disk 1's staging was released, which is how it was identified.
+      #
+      # AND `2>$null` DOES NOT SILENCE A TRANSCRIPT. Measured directly: the same probe run inside
+      # Start-Transcript put 11 `libdvdread/libdvdnav` lines into the transcript file while printing
+      # nothing to the console. `2>$null` drops the display; Start-Transcript still captures the
+      # native command's stderr. `2>&1` merges it into the pipeline instead, where the digits filter
+      # below - which was always here - discards it. A read-only check whose noise is 500x its
+      # signal is the "read the live log, not a decoy" failure waiting to happen.
+      $skipMark = Join-Path $Stage "$disc.title$n.single-audio"
+      if (Test-Path -LiteralPath $skipMark) { continue }
       $na = @(& $ffprobe -v error -f dvdvideo -title $n -i $discDir.FullName -select_streams a `
-                 -show_entries stream=index -of csv=p=0 2>$null | Where-Object { $_ -match '^\d+$' }).Count
-      if ($na -le 1) { continue }
+                 -show_entries stream=index -of csv=p=0 2>&1 | Where-Object { $_ -match '^\d+$' }).Count
+      if ($na -le 1) {
+        # The marker says WHAT was measured, not just that something was skipped: a later reader
+        # (or a re-rip that changes the audio layout) can see the claim and re-test it by deleting
+        # this file. Failing to write it only costs the old behaviour, so it never blocks the pass.
+        try { Set-Content -LiteralPath $skipMark -Encoding UTF8 -Value `
+              ("{0}|dvdvideo title {1}|{2} audio stream(s) at {3} - no evidence needed (assert-tracks-analysed exempts a lone audioTracks:[0]); delete this file to re-measure" -f `
+               $disc, $n, $na, (Get-Date).ToString('s')) } catch { }
+        continue
+      }
 
       $handRun = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
                    Where-Object { $_.CommandLine -and $_.CommandLine -match 'analyze-tracks' -and

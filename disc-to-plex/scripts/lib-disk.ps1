@@ -217,6 +217,13 @@ function Get-UnitStageTargets {
   Get-ChildItem -LiteralPath $Stage -Filter "$unit.title*.tracks.json" -File -ErrorAction SilentlyContinue |
     ForEach-Object { $targets += $_.FullName }
 
+  # `<unit>.title<N>.single-audio` - _analyse-loop.ps1's record that a title has one audio stream and
+  # therefore needs no evidence. Derived from the disc exactly as the evidence files are, and just as
+  # meaningless once the disc has gone, so it leaves with them. Added 2026-09-18 with the marker
+  # itself: a sidecar whose cleanup is not wired at the same time is litter by the next release.
+  Get-ChildItem -LiteralPath $Stage -Filter "$unit.title*.single-audio" -File -ErrorAction SilentlyContinue |
+    ForEach-Object { $targets += $_.FullName }
+
   # '-rip' is the raw rip intermediate; '-x'/'-main'/'-mkv' are transcode-stage intermediates;
   # '-reel' is the per-PROGRAM extraction used to recover a first-cell-truncated title; '-audio' is
   # a per-title audio extraction for analysis. All are named with the slug convention.
