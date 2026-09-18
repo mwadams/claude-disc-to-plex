@@ -318,7 +318,19 @@ foreach ($id in ($byId.Keys | Sort-Object)) {
   $points = @($FrameAt | Where-Object { $dur -eq 0 -or $_ -lt $dur * 0.95 })
   if (-not $points -and $dur -gt 0) { $points = @([math]::Max(1, [int]($dur * 0.25))) }
   foreach ($sec in $points) {
-    $png = Join-Path $frameDir ("t{0:D3}-{1:D4}.png" -f $id, $sec)
+    # NAMED FOR THE dvdvideo TITLE THE FRAME IS ACTUALLY OF, not the MakeMKV row it was captured
+    # for. `capture-evidence.py` changed to `dv%02d-` on 2026-08-29 for exactly this reason and
+    # said why; this script kept `t%03d-` and the defect kept happening here instead.
+    #
+    # THIRD OCCURRENCE, 2026-09-18, Man In A Suitcase Disk 5. The catalogue's mapping was stale
+    # when these frames were cut (row t01 -> dvdvideo 4); apply-proof.py later proved t01 -> dvdvideo
+    # 2 and re-homed the bundle, but the FILE was still called `t001-0095.png` while its burnt-in
+    # caption correctly read "dvdvideo 4". A dispositions pass read the filename as authoritative,
+    # judged the caption a mislabelling, and compared a DIFFERENT EPISODE's frame against the
+    # published S01E14.mkv - concluding a library fault that does not exist. The caption, the
+    # comment below and the note in capture-evidence.py all said not to trust the filename. Prose
+    # lost, three times; the name now cannot disagree with the content.
+    $png = Join-Path $frameDir ("dv{0:D2}-{1:D4}.png" -f $dv, $sec)
     # BURN THE dvdvideo TITLE NUMBER, PROMINENTLY - the MakeMKV row only as a secondary label.
     #
     # WHY (2026-09-02). Evidence is keyed to the PHYSICAL dvdvideo title (the speechFrom stamp),
@@ -338,7 +350,7 @@ foreach ($id in ($byId.Keys | Sort-Object)) {
 
   # head strip - title cards live in the first seconds and are gone by 30 s
   $headLen = if ($dur -gt 0 -and $dur -lt $HeadSeconds) { $dur } else { $HeadSeconds }
-  $head = Join-Path $frameDir ("t{0:D3}-head.png" -f $id)
+  $head = Join-Path $frameDir ("dv{0:D2}-head.png" -f $dv)   # keyed to the title, as above
   $hvf = "fps=1,scale=300:169:force_original_aspect_ratio=decrease," +
          "pad=300:169:(ow-iw)/2:(oh-ih)/2:black,tile=8x5"
   & $ff -v error @src -t $headLen -vf $hvf -frames:v 1 -y $head 2>$null
