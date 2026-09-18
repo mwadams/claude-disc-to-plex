@@ -948,7 +948,7 @@ $identityAudit = 'D:/video/.claude/skills/disc-to-plex/scripts/audit-season-iden
 if (Test-Path -LiteralPath $identityAudit) {
   try {
     $since = (Get-Date).Date
-    $todayShows = @{}
+    $todayShows = @{}          # "Show|Season" -> newest manifest write feeding it (the cache key)
     foreach ($mf in @(@('_queue\done', '_queue\running', '_queue') |
                       ForEach-Object { Join-Path 'D:/video' $_ } |
                       Where-Object { Test-Path -LiteralPath $_ } |
@@ -959,19 +959,68 @@ if (Test-Path -LiteralPath $identityAudit) {
         $o = "$($r.out)" -replace '/', '\'
         if ($o -match '\\Television Shows\\([^\\]+)\\Season (\d{1,2})\\') {
           $season = [int]$Matches[2]
-          if ($season -gt 0) { $todayShows[("{0}|{1}" -f $Matches[1], $season)] = $true }   # Season 00 has no canonical titles to check
+          if ($season -gt 0) {   # Season 00 has no canonical titles to check
+            $k0 = "{0}|{1}" -f $Matches[1], $season
+            if (-not $todayShows.ContainsKey($k0) -or $mf.LastWriteTime -gt $todayShows[$k0]) { $todayShows[$k0] = $mf.LastWriteTime }
+          }
         }
       }
     }
+
+    # CACHED, BECAUSE THE ANSWER ONLY CHANGES WHEN A MANIFEST DOES. Measured 2026-09-18: 10-15 s per
+    # show, re-run for every show published that day on EVERY board run, took the board from ~70 s
+    # to 240 s - and a board that takes four minutes is a board people stop reading, which undoes the
+    # reason the audit was put here. A show is re-audited only when a newer manifest feeds it, or
+    # after $identityCacheHours in case Plex's titles moved underneath. The cache is ADVISORY: a
+    # missing or unreadable file just means every show is audited this run, never that one is skipped.
+    $identityCacheFile  = 'D:/video/_identity-audit-cache.json'
+    $identityCacheHours = 6
+    $identityCache = @{}
+    try {
+      $raw = Get-Content -LiteralPath $identityCacheFile -Raw -ErrorAction Stop | ConvertFrom-Json
+      foreach ($pp in $raw.PSObject.Properties) { $identityCache[$pp.Name] = $pp.Value }
+    } catch { $identityCache = @{} }
+    $cacheDirty = $false
+
     # A CAP, because a board that takes a minute stops being read. Six covers a day's work here.
     foreach ($k in @($todayShows.Keys | Sort-Object | Select-Object -First 6)) {
       $show, $season = $k -split '\|'
-      $out = @(& pwsh -NoProfile -File $identityAudit -Show $show -Season ([int]$season) 2>&1 | ForEach-Object { "$_" })
-      $code = $LASTEXITCODE
+      # The key is the manifest time rendered to the second, in the sortable form - NEVER a [datetime]
+      # stringified in the ambient culture (ConvertFrom-Json hands back a real [datetime], and en-GB
+      # renders it as an unparseable US date; see the memory of that name).
+      $key = $todayShows[$k].ToString('s')
+      $hit = $identityCache[$k]
+      $fresh = $false
+      if ($hit -and "$($hit.key)" -eq $key) {
+        $at = [datetime]::MinValue
+        $atText = $(if ($hit.at -is [datetime]) { $hit.at.ToString('s') } else { "$($hit.at)" })
+        if ([datetime]::TryParse($atText, [cultureinfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$at) -and
+            ((Get-Date) - $at).TotalHours -lt $identityCacheHours) { $fresh = $true }
+      }
+      if ($fresh) {
+        $code = [int]$hit.code
+        $out = @($hit.lines)
+      } else {
+        $out = @(& pwsh -NoProfile -File $identityAudit -Show $show -Season ([int]$season) 2>&1 | ForEach-Object { "$_" })
+        $code = $LASTEXITCODE
+        # Keep only what the board prints, so the cache stays small and says the same thing twice.
+        $identityCache[$k] = [pscustomobject]@{ key = $key; at = (Get-Date).ToString('s'); code = $code
+                                                lines = @($out | Where-Object { $_ -match '^\s*(\*\*\*|\s{3}S\d\dE)' }) }
+        $cacheDirty = $true
+      }
       if ($code -eq 2) {
         Write-Output ("*** SEASON IDENTITY FAULT: '{0}' Season {1:00} - a published slot disagrees with its own disc's evidence. Full report: pwsh -File {2} -Show '{0}' -Season {1}" -f $show, [int]$season, $identityAudit)
         foreach ($l in @($out | Where-Object { $_ -match '^\s*(\*\*\*|\s{3}S\d\dE)' })) { Write-Output ("   {0}" -f $l.Trim()) }
       }
+    }
+    if ($cacheDirty) {
+      # Written whole to a temp name and swapped in, so a board killed mid-write leaves the previous
+      # cache rather than half a file - and a half file would only cost one full audit anyway.
+      try {
+        $tmpCache = "$identityCacheFile.writing"
+        [pscustomobject]$identityCache | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $tmpCache -Encoding UTF8
+        Move-Item -LiteralPath $tmpCache -Destination $identityCacheFile -Force
+      } catch { }
     }
   } catch {
     # Never let the audit break the board. Say it could not run rather than staying silent, because
