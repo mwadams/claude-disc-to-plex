@@ -985,10 +985,15 @@ if (Test-Path -LiteralPath $identityAudit) {
     # A CAP, because a board that takes a minute stops being read. Six covers a day's work here.
     foreach ($k in @($todayShows.Keys | Sort-Object | Select-Object -First 6)) {
       $show, $season = $k -split '\|'
-      # The key is the manifest time rendered to the second, in the sortable form - NEVER a [datetime]
-      # stringified in the ambient culture (ConvertFrom-Json hands back a real [datetime], and en-GB
-      # renders it as an unparseable US date; see the memory of that name).
-      $key = $todayShows[$k].ToString('s')
+      # THE KEY IS A TICK COUNT, BECAUSE AN ISO STRING DOES NOT SURVIVE THE ROUND TRIP. The first
+      # version stored `.ToString('s')` - "2026-09-18T17:36:12" - and ConvertFrom-Json handed it back
+      # as a real [datetime], which "$(...)" rendered in en-GB as "09/18/2026 17:36:12". The two never
+      # compared equal, so EVERY lookup missed, all six audits re-ran on every board, and the cache
+      # that existed to cut the board from 250 s cut nothing (measured: 195 s in this block alone).
+      # This is the ConvertFrom-Json [datetime] trap recorded in memory the SAME MORNING, and handled
+      # correctly for `at` below while being missed for `key` two lines above it. A string of digits
+      # is left alone by ConvertFrom-Json, so it compares exactly.
+      $key = [string]$todayShows[$k].Ticks
       $hit = $identityCache[$k]
       $fresh = $false
       if ($hit -and "$($hit.key)" -eq $key) {
