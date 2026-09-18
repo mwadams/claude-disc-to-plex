@@ -106,6 +106,13 @@ while ($true) {
                       Where-Object { $_ -and $_.Trim() -and -not $_.Trim().StartsWith('#') } |
                       ForEach-Object { $_.Trim() })
     if ($completeList -contains $disc) { continue }
+    # ...AND CLOSED MEANS DONE TOO. A disc closed as ships-nothing has nothing to rip by definition,
+    # and its folder can outlive the closure by minutes while the reclaim deletes it - the window in
+    # which this loop touched Sherlock Holmes BBC Collection Disk 4's -rip folder at 19:35 on
+    # 2026-09-18, sixteen minutes after the disc was closed. Checked inline rather than through
+    # lib-disk.ps1's Get-UnitRetiredReason because this loop loads no library; the rule is the same
+    # (ships-nothing record OR _completed.txt), and _completed.txt is handled on the line above.
+    if (Test-Path -LiteralPath ("D:/video/_catalogue/{0}.ships-nothing.json" -f $disc) -PathType Leaf) { continue }
 
     # KEEP = feature or extra. Anything with an unresolved '?' means the dispositions are not
     # finished, and ripping against a half-written file would rip the wrong titles.

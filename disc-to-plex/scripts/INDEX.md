@@ -1,8 +1,8 @@
 # Script index - GENERATED, do not edit
 
-Generated 2026-09-18 18:11 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
+Generated 2026-09-18 20:45 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
 
-**151 scripts under `scripts/`, 54 loop scripts under `D:/video/`. 1 with NO usable header, 57 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
+**151 scripts under `scripts/`, 54 loop scripts under `D:/video/`. 2 with NO usable header, 57 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
 
 Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library` = dot-source, defines functions only; `tests` = a test suite, exit 0 = all passed.
 
@@ -174,7 +174,7 @@ Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library
 | `_coverage-loop.ps1` | command | COVERAGE track: own the library-wide subtitle-coverage sweep, out of the publish loop's way. | when: The full `subtitle-coverage.ps1` sweep is a LIBRARY-WIDE REPORT: it ffprobes ~5,600 published files for a bitmap subtitle stream and rewrites one CSV. | `pwsh -File D:/video/_coverage-loop.ps1` |
 | `_coverage-loop.tests.ps1` | tests | Tests for the COVERAGE track's decision logic (_coverage-loop.ps1). Run: pwsh -File D:/video/_coverage-loop.tests.ps1 (exit 0 = all passed) | NO TRIGGER IN HEADER | - |
 | `_dispositions-loop.ps1` | command | DISPOSITIONS track: drive a catalogued unit through dispositions -> manifest -> _gate-queue.ps1 by briefing a headless Claude agent per step, so the line never again waits for a human to NOTICE. | when: On 2026-09-04 the pipeline produced no new encodes for six hours. | `pwsh -File D:/video/_dispositions-loop.ps1` |
-| `_dispositions-loop.tests.ps1` | tests | Tests for the DISPOSITIONS track's decision logic (_dispositions-loop.ps1). Run: pwsh -File D:/video/_dispositions-loop.tests.ps1 (exit 0 = all passed) | NO TRIGGER IN HEADER | - |
+| `_dispositions-loop.tests.ps1` | tests | NO HEADER - purpose unknown | NO TRIGGER IN HEADER | - |
 | `_fetch-loop.ps1` | command | SOURCE track: keep staging discs from the current batch list, forever. | when: Every other track self-drains (two lane-runners, OCR, publish, catalogue, analyse). FETCH did not: `_fetch-one.ps1` takes ONE disc per run by design, so somebody had to retrigger it 175 times. | - |
 | `_fetch-one.ps1` | command | Stage exactly ONE disc, then exit. | when: Copying off E: saturates the USB spindle: Explorer locks up and crashes, and even our own shell calls stall. | - |
 | `_gate-queue.ps1` | command | Hold a manifest until its source disc is BYTE-COMPLETE, then drop it in the encode queue. | NO TRIGGER IN HEADER | `pwsh -File _gate-queue.ps1 -Disc 'Babylon 5 Season 1 Disk 6' -Manifest D:/video/b5d6.json` |
@@ -221,9 +221,10 @@ Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library
 | `worklist-remaining.ps1` | command | What is ACTUALLY left to do on a source drive - computed, not remembered. | when: `updates_media2.txt` is a RENDERED REPORT, not a worklist. It was produced on 2026-08-31 by enumerating 201 disc folders with MakeMKV (1816 titles) and matching them by duration against 859 NAS fil... | `pwsh -File worklist-remaining.ps1` |
 | `worklist-status.ps1` | command | WHAT DOES THE WORK LIST SAY IS LEFT, AND IS ANYTHING DRIVING IT? | when: `updates_media2.txt` is the authority for what this drive owes the library: one action per TITLE, in named categories, with explicit do-not-touch exceptions. | `pwsh -File worklist-status.ps1` |
 
-## Scripts with NO usable header (1)
+## Scripts with NO usable header (2)
 
 These are listed, not described. Their purpose is unknown to this index until someone gives them a header comment / docstring.
 
+- `_dispositions-loop.tests.ps1`
 - `_optical-loop.ps1`
 

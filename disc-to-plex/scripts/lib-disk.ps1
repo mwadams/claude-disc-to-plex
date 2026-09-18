@@ -196,6 +196,113 @@ function ConvertTo-RipSlug {
   array is the ONLY honest basis for "there is nothing left to release" - it means every location
   this function knows to check was tested and found empty, not merely that the raw folder is gone.
 #>
+function Get-UnitRetiredReason {
+  <#
+    Why a staged unit must NOT be worked on any more - or $null while it is live.
+
+    WHY THIS EXISTS - ONE DEFINITION OF "THIS DISC IS FINISHED", FOR EVERY TRACK.
+    2026-09-18, Sherlock Holmes BBC Collection Disk 4. The dispositions loop CLOSED it as ships-
+    nothing at 19:18:38; the reclaim registered it in _completed.txt and began deleting its staging
+    at 19:19:44 - and got "PARTIAL release, 2 path(s) still present (locked?)", because the analyse
+    loop had started reading title 3 at 19:16:06 and still had the files open. Worse, the analyse loop
+    then carried on: it wrote title3.tracks.json and ten .single-audio markers at 19:23 and more at
+    19:35, for a disc that was closed and half deleted. The operator: "The fact that something has
+    them locked suggests that multiple processes are running in parallel."
+
+    Each track decided "is this disc live?" for itself, from whether its folder existed: the rip loop
+    read _completed.txt and nothing else, the analyse and catalogue loops read neither register. A
+    closed disc looks workable to all of them until its last file is gone. So the answer lives here,
+    once, and every track that works on a staged unit asks it.
+
+    RETIRED means any of:
+      * `_catalogue/<unit>.ships-nothing.json` - closed; there is nothing to make from this disc.
+      * `<unit>` in `_completed.txt`           - released, or being released right now.
+  #>
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory)][string]$Unit,
+    [string]$VideoRoot = 'D:/video'
+  )
+  $u = $Unit.Trim()
+  if (Test-Path -LiteralPath (Join-Path (Join-Path $VideoRoot '_catalogue') "$u.ships-nothing.json") -PathType Leaf) {
+    return 'closed as ships-nothing'
+  }
+  $completed = Join-Path $VideoRoot '_completed.txt'
+  if (Test-Path -LiteralPath $completed -PathType Leaf) {
+    foreach ($line in [IO.File]::ReadLines($completed)) {
+      $t = $line.Trim()
+      if ($t -and -not $t.StartsWith('#') -and $t -eq $u) { return 'released (named in _completed.txt)' }
+    }
+  }
+  return $null
+}
+
+function Get-RipDirRetiredReason {
+  <#
+    Get-UnitRetiredReason for an INTERMEDIATE folder (`<slug>-rip`, `-x`, `-main`, `-mkv`), which is
+    named by ConvertTo-RipSlug and so cannot be looked up by unit name directly. The owning unit is
+    found by slugging every retired unit and comparing - the same convention in reverse, never a
+    guess. Returns the reason and the unit, or $null while no retired unit owns this folder.
+  #>
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory)][string]$FolderName,
+    [string]$VideoRoot = 'D:/video'
+  )
+  $base = ($FolderName -replace '(?i)-(rip|x|main|mkv|reel|audio)$', '').ToLowerInvariant()
+  $cat = Join-Path $VideoRoot '_catalogue'
+  foreach ($f in @(Get-ChildItem -LiteralPath $cat -Filter '*.ships-nothing.json' -File -ErrorAction SilentlyContinue)) {
+    $unit = $f.Name -replace '\.ships-nothing\.json$', ''
+    if ((ConvertTo-RipSlug $unit) -eq $base) { return ("closed as ships-nothing ({0})" -f $unit) }
+  }
+  $completed = Join-Path $VideoRoot '_completed.txt'
+  if (Test-Path -LiteralPath $completed -PathType Leaf) {
+    foreach ($line in [IO.File]::ReadLines($completed)) {
+      $t = $line.Trim()
+      if ($t -and -not $t.StartsWith('#') -and (ConvertTo-RipSlug $t) -eq $base) { return ("released ({0} is named in _completed.txt)" -f $t) }
+    }
+  }
+  return $null
+}
+
+function Test-UnitBeingAnalysed {
+  <#
+    Is the analyse loop reading one of this unit's titles RIGHT NOW?
+
+    The other half of the Sherlock Disk 4 fix: the READERS stop at closure (Get-UnitRetiredReason),
+    and the DELETER waits for a reader already mid-title. _analyse-loop.ps1 holds a named mutex for
+    exactly as long as it reads a title - 'Global\analyse-' + "<unit>-title<N>" with every character
+    outside [\w\-\.] replaced by '_' - and disposes it when done, so the mutex EXISTING is the signal.
+    Titles are taken from the unit's catalogue; with no catalogue, 1..99 are tried (cheap: each probe
+    is one kernel lookup).
+
+    Returns the first busy title number, or 0.
+  #>
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory)][string]$Unit,
+    [string]$VideoRoot = 'D:/video'
+  )
+  $u = $Unit.Trim()
+  $titles = @()
+  $cat = Join-Path (Join-Path $VideoRoot '_catalogue') "$u.catalogue.json"
+  if (Test-Path -LiteralPath $cat -PathType Leaf) {
+    try {
+      $cj = Get-Content -LiteralPath $cat -Raw | ConvertFrom-Json
+      $titles = @(@($cj.titles) | ForEach-Object { $_.dvdvideoTitle } | Where-Object { $_ } | ForEach-Object { [int]$_ } | Sort-Object -Unique)
+    } catch { $titles = @() }
+  }
+  if (-not $titles.Count) { $titles = 1..99 }
+  foreach ($n in $titles) {
+    $name = 'Global\analyse-' + ("$u-title$n" -replace '[^\w\-\.]', '_')
+    $h = $null
+    try {
+      if ([System.Threading.Mutex]::TryOpenExisting($name, [ref]$h)) { if ($h) { $h.Dispose() }; return [int]$n }
+    } catch { }
+  }
+  return 0
+}
+
 function Get-UnitStageTargets {
   [CmdletBinding()]
   param(

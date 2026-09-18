@@ -63,6 +63,14 @@ if (-not (Test-Path -LiteralPath $ffprobe)) { throw "ffprobe not found at $ffpro
 if (-not (Get-Command Get-ManifestAudioWork -ErrorAction SilentlyContinue)) {
   throw "$Lib did not load - refusing to run without the queued-manifest arm"   # dot-source failures do not throw
 }
+# "IS THIS DISC STILL LIVE?" - asked of the ONE shared definition (lib-disk.ps1), not re-derived.
+# Fail CLOSED on the load: without it this loop analyses discs that are already closed and being
+# deleted, which is the Sherlock Holmes BBC Collection Disk 4 fault of 2026-09-18.
+. 'D:/video/.claude/skills/disc-to-plex/scripts/lib-disk.ps1'
+if (-not (Get-Command Get-UnitRetiredReason -ErrorAction SilentlyContinue)) {
+  throw 'lib-disk.ps1 did not load - refusing to run without the retired-unit check'
+}
+$saidRetired = @{}   # say each retired unit once per loop, not every pass
 
 function Say($msg) { Write-Output ("[{0}] {1}" -f (Get-Date -Format 'HH:mm:ss'), $msg) }
 
@@ -208,6 +216,13 @@ while ($true) {
     # A held unit is deliberately parked (e.g. mumins1-mkv, awaiting a missing disc) - burning
     # hours of whisper on rips nobody can manifest yet steals CPU from live units.
     if (Test-Path -LiteralPath (Join-Path $ripDir.FullName '.HOLD')) { continue }
+    # A RIP OF A CLOSED OR RELEASED DISC IS NOT WORK EITHER - same rule as the staged-DVD branch
+    # below, looked up through the slug because intermediates are named by slug, not by unit.
+    $retiredRip = Get-RipDirRetiredReason -FolderName $ripDir.Name
+    if ($retiredRip) {
+      if (-not $saidRetired.ContainsKey($ripDir.Name)) { Say ("{0}: {1} - not analysing a finished disc's rip" -f $ripDir.Name, $retiredRip); $saidRetired[$ripDir.Name] = $true }
+      continue
+    }
 
     # BIGGEST FIRST - the feature, not the extras.
     #
@@ -321,6 +336,14 @@ while ($true) {
                          Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'VIDEO_TS') })) {
     if (Test-Path -LiteralPath (Join-Path $discDir.FullName '.HOLD')) { continue }
     $disc = $discDir.Name
+    # A CLOSED OR RELEASED DISC IS NOT WORK. Its folder can outlive the decision by minutes while
+    # the reclaim deletes it, and reading its files in that window both wastes the analysis and
+    # holds the files open so the release fails part-way (Sherlock Holmes BBC Collection Disk 4).
+    $retired = Get-UnitRetiredReason -Unit $disc
+    if ($retired) {
+      if (-not $saidRetired.ContainsKey($disc)) { Say ("{0}: {1} - not analysing a finished disc" -f $disc, $retired); $saidRetired[$disc] = $true }
+      continue
+    }
     $dispPath = Join-Path $Catalogue "$disc.dispositions.txt"
     $catPath  = Join-Path $Catalogue "$disc.catalogue.json"
     if (-not (Test-Path -LiteralPath $dispPath) -or -not (Test-Path -LiteralPath $catPath)) { continue }
