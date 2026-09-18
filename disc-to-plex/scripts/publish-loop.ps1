@@ -22,6 +22,16 @@ param(
   # bounced. 2,166 attempts (Boston Legal, 2026-09-02) must be structurally impossible.
   [int]$MaxNoProgress         = 5,
   [int]$MaxNoProgressLifetime = 40,
+  # THE TRANSCRIBABLE SURVEY IS NOT PUBLISH WORK, AND IT MUST NOT STARVE IT. Operator decision
+  # 2026-09-18. `queue-transcribable.ps1` runs after every successful publish and silence-probes
+  # candidates by pulling 40-50 MB EACH off the NAS; the governor paces those to a 50 Mbps ceiling,
+  # ~6 s apiece, and it had done 757 of them - over works unrelated to what just published. Measured
+  # that afternoon: Friends had nineteen finished files waiting to publish, the disk was below the
+  # fetch floor so nothing could be fetched or encoded, and the loop was surveying Randall And
+  # Hopkirk and The Sweeney. The survey is worth doing; doing it in front of the thing that unblocks
+  # the line is not. So: not while the disk is below the floor, and not more than once an hour.
+  [int]$TranscribableSurveyMinIntervalMin = 60,
+  [int]$FetchFloorGB      = 120,
   [int]$IdleSleepSeconds  = 90,
   # THE PASS-RATE FLOOR. The 2026-09-02 hot loop ran passes 5 s apart for three hours because a
   # pass that "published" skipped the idle sleep entirely. A pass that landed something still
@@ -461,17 +471,41 @@ while ($MaxPasses -le 0 -or $pass -lt $MaxPasses) {
           # show and nothing else. The audit set is grow-only (see its -Merge default), and
           # queue-transcribable re-checks every candidate anyway, so a stale row is filtered rather
           # than transcribed.
+          # BUILDING THE AUDIT SET IS CHEAP AND SCOPED TO THIS WORK - it always runs, so the row for
+          # what just published is never lost. Only the SURVEY that reads it is deferred.
           try {
             & pwsh -NoProfile -File 'D:/video/.claude/skills/disc-to-plex/scripts/build-transcribable-audit.ps1' `
                    -FromManifests -OnlyWorks $w.Name 2>&1 | ForEach-Object { Write-Output "    [audit-set] $_" }
           } catch { Write-Output "    build-transcribable-audit.ps1 threw: $($_.Exception.Message)" }
 
-          try {
-            $audit = 'D:/video/_audit-transcribable-combined.json'
-            $qArgs = @('-NoProfile', '-File', 'D:/video/.claude/skills/disc-to-plex/scripts/queue-transcribable.ps1', '-Append')
-            if (Test-Path -LiteralPath $audit) { $qArgs += @('-AuditSet', $audit) }
-            & pwsh @qArgs 2>&1 | ForEach-Object { Write-Output "    $_" }
-          } catch { Write-Output "    queue-transcribable.ps1 threw: $($_.Exception.Message)" }
+          # DEFERRED, NEVER DROPPED (see $TranscribableSurveyMinIntervalMin). The audit set is
+          # grow-only and queue-transcribable re-checks every candidate itself, so running it later
+          # enqueues exactly what running it now would - it is a survey of a standing set, not a
+          # reaction to this publish. Skipping a turn costs nothing; taking it in front of the
+          # publish that unblocks the line costs the whole line.
+          $surveyWhy = ''
+          $freeGB = try { [math]::Round((Get-PSDrive ($LocalRoot.Substring(0,1))).Free / 1GB, 1) } catch { 9999 }
+          if ($freeGB -lt $FetchFloorGB) {
+            $surveyWhy = "the disk is below the fetch floor ($freeGB GB < $FetchFloorGB) - publishing first"
+          } elseif ($script:lastTranscribableSurvey -and
+                    ((Get-Date) - $script:lastTranscribableSurvey).TotalMinutes -lt $TranscribableSurveyMinIntervalMin) {
+            $mins = [int]((Get-Date) - $script:lastTranscribableSurvey).TotalMinutes
+            $surveyWhy = "surveyed $mins min ago (interval $TranscribableSurveyMinIntervalMin min)"
+          }
+          if ($surveyWhy) {
+            # SAID OUT LOUD. A silent skip of a step that used to run every time is how a capability
+            # quietly stops happening and nobody notices for four days - which is exactly how this
+            # call came to be added in the first place (Clayhanger, 2026-09-06).
+            Write-Output ("    [transcribable] survey DEFERRED - {0}. The audit set is already updated; nothing is lost." -f $surveyWhy)
+          } else {
+            try {
+              $script:lastTranscribableSurvey = Get-Date
+              $audit = 'D:/video/_audit-transcribable-combined.json'
+              $qArgs = @('-NoProfile', '-File', 'D:/video/.claude/skills/disc-to-plex/scripts/queue-transcribable.ps1', '-Append')
+              if (Test-Path -LiteralPath $audit) { $qArgs += @('-AuditSet', $audit) }
+              & pwsh @qArgs 2>&1 | ForEach-Object { Write-Output "    $_" }
+            } catch { Write-Output "    queue-transcribable.ps1 threw: $($_.Exception.Message)" }
+          }
         }
       }
     }

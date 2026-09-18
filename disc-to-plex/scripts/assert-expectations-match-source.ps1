@@ -153,19 +153,31 @@ foreach ($r in $rows) {
     # So before declaring a fault, MEASURE THE A/V EXTENT: the last video and audio packet. Only on
     # a row that would otherwise fail, and only over the tail of the file, so the fast path stays
     # one header probe per row as the header promises.
-    $avExtent = 0.0
+    # EACH STREAM'S OWN END, NOT JUST THE LATEST. Video and audio rarely end together, and a
+    # manifest may legitimately describe either: Friends S7 D2 t06 took the AUDIO end (1316.352 vs
+    # audio 1316.320), while Friends S8 D1 t12/t13 took the VIDEO end (1317.400 = 31,586 packets at
+    # 23.976, vs video 1317.358, audio 1318.304). Comparing only against the LATER of the two
+    # refused the second pair - a 0.9 s disagreement between the two streams of the same file, read
+    # as a wrong expectation. transcode.ps1 tolerates 2 s under and re-measures the kept streams
+    # before quarantining anything, so either end is a workable expectation; what must NOT pass is a
+    # figure matching neither, which is what a real mistake looks like.
+    $vExtent = 0.0; $aExtent = 0.0
     $tailFrom = [math]::Max(0, $act - 120)
     foreach ($sel in 'v:0', 'a:0') {
       $pts = @(& $ffprobe -v error -select_streams $sel -read_intervals ("{0}%+#100000" -f [int]$tailFrom) `
                  -show_entries packet=pts_time -of csv=p=0 $src 2>$null |
                Where-Object { $_ -match '^[0-9]+(\.[0-9]+)?$' })
-      if ($pts.Count) { $t = [double]$pts[-1]; if ($t -gt $avExtent) { $avExtent = $t } }
+      if ($pts.Count) { if ($sel -eq 'v:0') { $vExtent = [double]$pts[-1] } else { $aExtent = [double]$pts[-1] } }
     }
+    $avExtent = [math]::Max($vExtent, $aExtent)
     # One frame of slack on top of the last packet's START time: at 23.976 fps that is 0.042 s.
-    if ($avExtent -gt 0 -and [math]::Abs($expSec - $avExtent) -le ($ToleranceSeconds + 0.05)) {
+    $matchesAnEnd = @($vExtent, $aExtent) | Where-Object { $_ -gt 0 -and [math]::Abs($expSec - $_) -le ($ToleranceSeconds + 0.05) }
+    if ($matchesAnEnd.Count) {
       $containerOverruns += [pscustomobject]@{
         Out = (Split-Path (Get-Text $r 'out') -Leaf); Src = (Split-Path $src -Leaf)
         Expect = $expSec; Container = $act; AvExtent = $avExtent
+        Which = $(if ([math]::Abs($expSec - $vExtent) -le ($ToleranceSeconds + 0.05)) { 'video' } else { 'audio' })
+        VideoEnd = $vExtent; AudioEnd = $aExtent
       }
     } else {
       $faults += [pscustomobject]@{
@@ -186,8 +198,11 @@ if ($containerOverruns.Count) {
   Say ("CONTAINER RUNS PAST THE PROGRAMME - {0} row(s) match the A/V content, not the container:" -f $containerOverruns.Count)
   foreach ($c in $containerOverruns) {
     Say ("   {0}" -f $c.Out)
-    Say ("      manifest {0,12:N3}s  =  last A/V packet {1,12:N3}s   BUT container says {2,12:N3}s   ({3})" -f `
-         $c.Expect, $c.AvExtent, $c.Container, $c.Src)
+    Say ("      manifest {0,12:N3}s  =  the {1} end ({2:N3}s)   BUT container says {3,12:N3}s   ({4})" -f `
+         $c.Expect, $c.Which, $(if ($c.Which -eq 'video') { $c.VideoEnd } else { $c.AudioEnd }), $c.Container, $c.Src)
+    if ([math]::Abs($c.VideoEnd - $c.AudioEnd) -gt 0.5) {
+      Say ("      (video ends {0:N3}s, audio {1:N3}s - the streams do not end together on this source)" -f $c.VideoEnd, $c.AudioEnd)
+    }
   }
   Say  '   A subtitle or data stream declaring a longer duration inflates the container. The encode'
   Say  '   will be the A/V length, so the manifest is RIGHT and is left alone.'

@@ -110,7 +110,10 @@ function Get-PlanHold {
         [int]$FreshMin = 30,
         [int]$BlockedCapMin = 45,
         # Seam for the self-test: how old the item's own file is, in minutes. Real runs stat it.
-        [scriptblock]$AgeOf = $null)
+        [scriptblock]$AgeOf = $null,
+        # Seam for the self-test: has this item's OCR sidecar arrived since the record was written?
+        [scriptblock]$SidecarExists = $null,
+        [string]$NasRoot = '')
   $parts = @($RelPath -split '[\\/]')
   if ($parts.Count -lt 2) { return $null }
   $work = $parts[0]
@@ -142,9 +145,32 @@ function Get-PlanHold {
       ($Now - (Get-Item -LiteralPath $p).LastWriteTime).TotalMinutes
     }
   }
+  # A RECORD IS A SNAPSHOT, AND OCR IS EXACTLY THE THING THAT MOVES UNDER IT. The gate writes what
+  # it saw on its last pass; a sidecar that lands one minute later leaves the record saying "awaiting
+  # OCR" for a file that is ready. 2026-09-18 13:47: all five OCR items in Friends' record had their
+  # .eng.srt already on disk, one written 14 minutes earlier, and this reported the work as STUCK on
+  # a file whose OCR had SUCCEEDED ("310 cues, 1% junk -> sidecar"). Clocking the mkv's age asks how
+  # old the FILE is; the question is whether the sidecar is THERE. Ask the disk, not the record.
+  if (-not $SidecarExists) {
+    $SidecarExists = {
+      param($item)
+      $local = Join-Path (Join-Path "$($rec.workRoot)" "$($item.dir)") "$($item.leaf)"
+      $srt = [IO.Path]::ChangeExtension($local, $null) + 'eng.srt'
+      if (Test-Path -LiteralPath $srt) { return $true }
+      # Reclaimed locally but published: the sidecar is small and ships first, so look there too.
+      if ($NasRoot -and "$($rec.workRoot)" -match '(?i)\\(Television Shows|Movies)\\') {
+        $rel = "$($rec.workRoot)".Substring("$($rec.workRoot)".IndexOf($Matches[1]))
+        $nasSrt = [IO.Path]::ChangeExtension((Join-Path (Join-Path $NasRoot $rel) (Join-Path "$($item.dir)" "$($item.leaf)")), $null) + 'eng.srt'
+        if (Test-Path -LiteralPath $nasSrt) { return $true }
+      }
+      return $false
+    }
+  }
   $encoding = @($items | Where-Object { "$($_.reason)" -eq 'not encoded' -and @('queued', 'running') -contains "$($_.manifestState)" })
-  $ocr      = @($items | Where-Object { "$($_.reason)" -eq 'awaiting OCR' })
-  $other    = @($items | Where-Object { $encoding -notcontains $_ -and $ocr -notcontains $_ })
+  $ocrAll   = @($items | Where-Object { "$($_.reason)" -eq 'awaiting OCR' })
+  $ocr      = @($ocrAll | Where-Object { -not (& $SidecarExists $_) })   # still owed; the rest have landed
+  $resolved = $ocrAll.Count - $ocr.Count
+  $other    = @($items | Where-Object { $encoding -notcontains $_ -and $ocrAll -notcontains $_ })
   $blocked  = @()
   foreach ($o in $ocr) { if ((& $AgeOf $o) -gt $BlockedCapMin) { $blocked += $o } }
   $where   = $(if ($scopeIsWork) { 'this work' } else { "'$dir'" })
@@ -152,6 +178,7 @@ function Get-PlanHold {
   $parts2 = @()
   if ($encoding.Count) { $parts2 += ("{0} still encoding" -f $encoding.Count) }
   if ($ocr.Count)      { $parts2 += ("{0} awaiting OCR" -f $ocr.Count) }
+  if ($resolved -gt 0) { $parts2 += ("{0} whose sidecar has since landed - the gate has not re-run yet" -f $resolved) }
   if ($other.Count)    { $parts2 += ("{0} with no live manifest - a manifest needs correcting" -f $other.Count) }
   $reason = ("HELD by the plan gate - {0} is incomplete: {1}." -f $where, ($parts2 -join ', '))
   if ($blocked.Count) {
@@ -179,7 +206,9 @@ if ($SelfTest) {
   # The age seam: every item is $ageMin minutes old. Only 'awaiting OCR' items are clocked.
   $young = { param($i) 5 }
   $old   = { param($i) 400 }
-  $H = { param($holds, $age = $young) Get-PlanHold -RelPath $rel -Holds $holds -Now $now -BlockedCapMin 45 -AgeOf $age }
+  $noSidecar = { param($i) $false }   # nothing has landed
+  $hasSidecar = { param($i) $true }   # the sidecar arrived after the record was written
+  $H = { param($holds, $age = $young, $sc = $noSidecar) Get-PlanHold -RelPath $rel -Holds $holds -Now $now -BlockedCapMin 45 -AgeOf $age -SidecarExists $sc }
   T 'held season, all in flight -> suppressed' ((& $H (& $mk $inFlight)).Suppress)
   T 'the reason names the hold, not the loop'  ((& $H (& $mk $inFlight)).Reason -match '^HELD by the plan gate')
   $withFailed = @($inFlight + [pscustomobject]@{ dir = 'Season 06'; leaf = 'c.mkv'; reason = 'not encoded'; manifest = 'x.json'; manifestState = 'failed' })
@@ -190,6 +219,10 @@ if ($SelfTest) {
   T 'awaiting OCR past the cap -> NOT suppressed' (-not (& $H (& $mk $withOcr) $old).Suppress)
   T 'and the stuck file is named'              ((& $H (& $mk $withOcr) $old).Reason -match 'STUCK: d\.mkv')
   T 'an unmeasurable OCR item is not suppressed' (-not (& $H (& $mk $withOcr) { param($i) [double]::PositiveInfinity }).Suppress)
+  # THE REGRESSION OF 13:47: every OCR item's sidecar had landed, and an old mkv read as STUCK.
+  T 'an OCR item whose sidecar landed is suppressed' ((& $H (& $mk $withOcr) $old $hasSidecar).Suppress)
+  T 'and the reason says the gate has not re-run' ((& $H (& $mk $withOcr) $old $hasSidecar).Reason -match 'sidecar has since landed')
+  T 'a sidecar that has NOT landed still blocks'  (-not (& $H (& $mk $withOcr) $old $noSidecar).Suppress)
   $undeclared = @([pscustomobject]@{ dir = 'Season 06'; leaf = 'e.mkv'; reason = 'not encoded'; manifest = ''; manifestState = 'undeclared' })
   T 'an undeclared output is never suppressed' (-not (& $H (& $mk $undeclared)).Suppress)
   T 'a stale record gives no hold at all'      ($null -eq (& $H (& $mk $inFlight '2026-09-18T07:00:00')))
@@ -302,7 +335,7 @@ if ($waiting.Count -eq 0) {
 # siblings are still queued or encoding, is waiting correctly - it is counted and NAMED, but it
 # does not drive the clock. Everything else does, exactly as before.
 foreach ($w in $waiting) {
-  $hold = Get-PlanHold -RelPath $w.File -Holds $holds -Now $now -FreshMin $HoldFreshMin -BlockedCapMin $MaxWaitMin
+  $hold = Get-PlanHold -RelPath $w.File -Holds $holds -Now $now -FreshMin $HoldFreshMin -BlockedCapMin $MaxWaitMin -NasRoot $NasRoot
   $w | Add-Member -NotePropertyName Held -NotePropertyValue ([bool]($hold -and $hold.Suppress)) -Force
   # The REASON is taken whenever the gate has one, suppressed or not: "ready - waiting on the
   # publish loop" is false about a file the loop is deliberately holding, and it sent the reader to
