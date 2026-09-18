@@ -837,7 +837,7 @@ if (Test-Path -LiteralPath $rqRoot) {
   foreach ($f in $rqPending) {
     $rqAge = (Get-Date) - $f.LastWriteTime
     if (-not $rqAlive) {
-      Write-Output ("*** reclaim artefact {0} is QUEUED but _reclaim-loop is NOT RUNNING - nothing will drain it. Start-Process pwsh -ArgumentList '-NoProfile','-File','D:/video/_reclaim-loop.ps1' -WindowStyle Hidden" -f $f.Name)
+      Write-Output ("*** reclaim artefact {0} is QUEUED but _reclaim-loop is NOT RUNNING - nothing will drain it. Start it with: pwsh -File D:/video/_bounce-track.ps1 -Track reclaim (never a bare Start-Process - that skips the supervisor)" -f $f.Name)
     } elseif ($rqAge.TotalHours -gt 6) {
       Write-Output ("   reclaim artefact {0} has been retrying for {1:N1} h - upstream (publish/OCR) is not finishing what it holds; read its .status.txt in _reclaim-queue/" -f $f.Name, $rqAge.TotalHours)
     }
