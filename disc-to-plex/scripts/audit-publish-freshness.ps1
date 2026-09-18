@@ -289,6 +289,11 @@ foreach ($area in 'Television Shows', 'Movies') {
 }
 
 if ($waiting.Count -eq 0) {
+  # THE MARKER IS EMITTED HERE TOO, and it was not until 2026-09-18. This script's own rule is that
+  # "absence of the marker means the audit did not RUN - a different thing from nothing is stalled,
+  # and it must not read as reassurance" - yet the healthiest path of all, nothing waiting, printed
+  # no marker under -Quiet and was therefore indistinguishable from a crash to anything parsing it.
+  Write-Output 'PUBLISH-STALL-STATE stalled=0 minutes=0 waiting=0 held=0'
   if (-not $Quiet) { Write-Output 'PUBLISH FRESHNESS OK - no finished local file is waiting to be published.' }
   exit 0
 }
