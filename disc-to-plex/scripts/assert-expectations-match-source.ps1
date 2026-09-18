@@ -87,7 +87,7 @@ function Get-Text($row, [string]$name) {
   return "$($row.$name)".Trim()
 }
 
-$faults = @(); $fieldFaults = @(); $checked = 0; $skipped = 0
+$faults = @(); $fieldFaults = @(); $containerOverruns = @(); $checked = 0; $skipped = 0
 foreach ($r in $rows) {
   $exp = Get-Text $r 'expectSeconds'
   if (-not $exp) { $skipped++; continue }
@@ -138,12 +138,59 @@ foreach ($r in $rows) {
 
   $delta = $expSec - $act
   if ([math]::Abs($delta) -gt $ToleranceSeconds) {
-    $faults += [pscustomobject]@{
-      Out = (Split-Path (Get-Text $r 'out') -Leaf)
-      Src = (Split-Path $src -Leaf)
-      Expect = $expSec; Actual = $act; Delta = $delta
+    # A CONTAINER CAN BE LONGER THAN THE PROGRAMME, and then the container is NOT the authority.
+    #
+    # Friends S7 D2 t06 (S07E16), 2026-09-18: container 1376.320 s, last video packet 1315.356 s,
+    # last audio packet 1316.320 s - and a PGS SUBTITLE stream declaring 1376.320 s, which is what
+    # the container duration was reporting. Its siblings t05 and t07 have container == last audio
+    # packet to the millisecond, so nothing was wrong with the manifest: 1316.352 s is the
+    # programme, and the extra minute is a subtitle track hanging off the end.
+    #
+    # Refusing that row would have been actively harmful. "Correct it to the source" means writing
+    # 1376.320, and transcode.ps1 would then quarantine the CORRECT ~1316 s encode as .wrong-length
+    # - the exact failure this gate exists to prevent, caused by the gate.
+    #
+    # So before declaring a fault, MEASURE THE A/V EXTENT: the last video and audio packet. Only on
+    # a row that would otherwise fail, and only over the tail of the file, so the fast path stays
+    # one header probe per row as the header promises.
+    $avExtent = 0.0
+    $tailFrom = [math]::Max(0, $act - 120)
+    foreach ($sel in 'v:0', 'a:0') {
+      $pts = @(& $ffprobe -v error -select_streams $sel -read_intervals ("{0}%+#100000" -f [int]$tailFrom) `
+                 -show_entries packet=pts_time -of csv=p=0 $src 2>$null |
+               Where-Object { $_ -match '^[0-9]+(\.[0-9]+)?$' })
+      if ($pts.Count) { $t = [double]$pts[-1]; if ($t -gt $avExtent) { $avExtent = $t } }
+    }
+    # One frame of slack on top of the last packet's START time: at 23.976 fps that is 0.042 s.
+    if ($avExtent -gt 0 -and [math]::Abs($expSec - $avExtent) -le ($ToleranceSeconds + 0.05)) {
+      $containerOverruns += [pscustomobject]@{
+        Out = (Split-Path (Get-Text $r 'out') -Leaf); Src = (Split-Path $src -Leaf)
+        Expect = $expSec; Container = $act; AvExtent = $avExtent
+      }
+    } else {
+      $faults += [pscustomobject]@{
+        Out = (Split-Path (Get-Text $r 'out') -Leaf)
+        Src = (Split-Path $src -Leaf)
+        Expect = $expSec; Actual = $act; Delta = $delta
+        AvExtent = $avExtent
+      }
     }
   }
+}
+
+# SAID OUT LOUD EVEN THOUGH IT PASSES. A silent pass here would leave the next reader with a
+# manifest whose expectSeconds visibly disagrees with `ffprobe -show_entries format=duration` and no
+# record of why that is correct.
+if ($containerOverruns.Count) {
+  Say ''
+  Say ("CONTAINER RUNS PAST THE PROGRAMME - {0} row(s) match the A/V content, not the container:" -f $containerOverruns.Count)
+  foreach ($c in $containerOverruns) {
+    Say ("   {0}" -f $c.Out)
+    Say ("      manifest {0,12:N3}s  =  last A/V packet {1,12:N3}s   BUT container says {2,12:N3}s   ({3})" -f `
+         $c.Expect, $c.AvExtent, $c.Container, $c.Src)
+  }
+  Say  '   A subtitle or data stream declaring a longer duration inflates the container. The encode'
+  Say  '   will be the A/V length, so the manifest is RIGHT and is left alone.'
 }
 
 if ($faults.Count) {
@@ -153,6 +200,9 @@ if ($faults.Count) {
   foreach ($f in ($faults | Select-Object -First 25)) {
     Say ("   {0}" -f $f.Out)
     Say ("      source {0,12:N3}s   manifest {1,12:N3}s   {2:+0.000;-0.000}s   ({3})" -f $f.Actual, $f.Expect, $f.Delta, $f.Src)
+    # Say what the tail probe found, so "the container is long" and "the manifest is wrong" are
+    # distinguishable at a glance rather than by re-measuring.
+    if ($f.AvExtent -gt 0) { Say ("      last A/V packet {0,12:N3}s - so the container is not merely overrunning" -f $f.AvExtent) }
   }
   if ($faults.Count -gt 25) { Say ("   ... and {0} more" -f ($faults.Count - 25)) }
   Say ''

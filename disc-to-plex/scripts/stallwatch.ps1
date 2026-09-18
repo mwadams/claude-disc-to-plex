@@ -933,6 +933,53 @@ if (Test-Path -LiteralPath $freshaudit) {
   }
 }
 
+# IDENTITY OF WHAT SHIPPED TODAY - does each published slot hold the episode its own DISC named?
+#
+# Operator decision 2026-09-18, choosing the board over a manual run or a reclaim gate: "It costs one
+# Plex call per show per board run, it reports rather than blocks, and the board is already where you
+# look for what needs a human." A guard that cannot reach Plex must not refuse a release, which is
+# why this is NOT wired into the reclaim.
+#
+# SCOPED TO TODAY'S SHOWS, deliberately - the same reasoning audit-release-records.ps1 records for
+# scoping to the current batch: an audit that reports on the whole library reports on decisions taken
+# under older conventions, and a check that prints dozens of rows gets ignored, which is how the real
+# one goes unnoticed.
+$identityAudit = 'D:/video/.claude/skills/disc-to-plex/scripts/audit-season-identity.ps1'
+if (Test-Path -LiteralPath $identityAudit) {
+  try {
+    $since = (Get-Date).Date
+    $todayShows = @{}
+    foreach ($mf in @(@('_queue\done', '_queue\running', '_queue') |
+                      ForEach-Object { Join-Path 'D:/video' $_ } |
+                      Where-Object { Test-Path -LiteralPath $_ } |
+                      ForEach-Object { Get-ChildItem -LiteralPath $_ -Filter *.json -File -EA SilentlyContinue } |
+                      Where-Object { $_.LastWriteTime -ge $since })) {
+      try { $rows = @(Get-Content -LiteralPath $mf.FullName -Raw | ConvertFrom-Json) } catch { continue }
+      foreach ($r in @($rows | Where-Object { $_ -is [pscustomobject] })) {
+        $o = "$($r.out)" -replace '/', '\'
+        if ($o -match '\\Television Shows\\([^\\]+)\\Season (\d{1,2})\\') {
+          $season = [int]$Matches[2]
+          if ($season -gt 0) { $todayShows[("{0}|{1}" -f $Matches[1], $season)] = $true }   # Season 00 has no canonical titles to check
+        }
+      }
+    }
+    # A CAP, because a board that takes a minute stops being read. Six covers a day's work here.
+    foreach ($k in @($todayShows.Keys | Sort-Object | Select-Object -First 6)) {
+      $show, $season = $k -split '\|'
+      $out = @(& pwsh -NoProfile -File $identityAudit -Show $show -Season ([int]$season) 2>&1 | ForEach-Object { "$_" })
+      $code = $LASTEXITCODE
+      if ($code -eq 2) {
+        Write-Output ("*** SEASON IDENTITY FAULT: '{0}' Season {1:00} - a published slot disagrees with its own disc's evidence. Full report: pwsh -File {2} -Show '{0}' -Season {1}" -f $show, [int]$season, $identityAudit)
+        foreach ($l in @($out | Where-Object { $_ -match '^\s*(\*\*\*|\s{3}S\d\dE)' })) { Write-Output ("   {0}" -f $l.Trim()) }
+      }
+    }
+  } catch {
+    # Never let the audit break the board. Say it could not run rather than staying silent, because
+    # silence here is indistinguishable from "nothing is wrong".
+    Write-Output ("season identity audit could not run: {0}" -f $_.Exception.Message)
+  }
+}
+
 # AND RE-RIP OBLIGATIONS THAT PUBLISHED BUT DID NOT CLOSE. discharge-rerip.ps1 runs after every
 # completed publish and closes a register row only on NAS-verified evidence; a row that published
 # and still could not close (fewer verified than owed, or a candidate row) is written here so it

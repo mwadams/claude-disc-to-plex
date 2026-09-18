@@ -1,8 +1,8 @@
 # Script index - GENERATED, do not edit
 
-Generated 2026-09-18 11:05 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
+Generated 2026-09-18 13:21 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
 
-**150 scripts under `scripts/`, 54 loop scripts under `D:/video/`. 0 with NO usable header, 57 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
+**151 scripts under `scripts/`, 54 loop scripts under `D:/video/`. 0 with NO usable header, 57 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
 
 Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library` = dot-source, defines functions only; `tests` = a test suite, exit 0 = all passed.
 
@@ -46,6 +46,7 @@ Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library
 | `audit-bd-titles.ps1` | command | Audit every Blu-ray on the source drive with MakeMKV and compare its longest titles against what we actually shipped. | when: Features were selected by taking the largest .m2ts in BDMV/STREAM and reading it with ffmpeg. | - |
 | `audit-publish-freshness.ps1` | command | Has anything been sitting ENCODED BUT UNPUBLISHED for too long? | when: On 2026-09-01 the user asked "so it has been a couple of hours since anything published." They were right, and nothing had noticed. | `pwsh -File audit-publish-freshness.ps1 [-MaxWaitMin 45] [-Quiet]` |
 | `audit-release-records.ps1` | command | Find discs IN THE CURRENT BATCH that were released without a recorded confirmation. | when: _release-completed.ps1 and _release-published.ps1 both gate on _completed.txt, which is written only after the user confirms a unit in Plex. | `pwsh -File audit-release-records.ps1` |
+| `audit-season-identity.ps1` | command | Does every published episode slot hold the episode its own DISC said it holds? | when: Every expensive mistake in this library passed its structural checks - right file count, plausible durations, matching slots - and held the wrong episode. | `pwsh -File audit-season-identity.ps1 -Show 'Man In A Suitcase'` |
 | `audit-season00-titles.ps1` | command | Report every published show whose Season 00 (Specials) still carries AGENT titles instead of our filename titles — i.e. every show where `fix-plex-extras.ps1` has not been run. | when: This is step 6 of the per-unit gate and it is the step that keeps getting skipped, because it falls due LATE — after the encode, after the OCR, after the publish, after attention has moved to the n... | `pwsh -File audit-season00-titles.ps1` |
 | `audit-space-block.ps1` | command | Is the line stopped for DISK SPACE that only the operator can release? | when: On 2026-09-01 the fetch loop sat below its floor for over an hour with 16 discs still to stage, and `_stallwatch.ps1` reported "no unit is waiting on the operator" the whole time. | `pwsh -File audit-space-block.ps1` |
 | `authorise-staging-release.ps1` | command | Stamp a per-record, evidenced opt-out onto an existing *.shipped-outside-manifest.json so that _release-completed.ps1 will release THAT ONE unit's raw staging - and no other. | NO TRIGGER IN HEADER | `pwsh -NoProfile -File authorise-staging-release.ps1 -Disc 'Edge of Darkness Disk 1'` |
