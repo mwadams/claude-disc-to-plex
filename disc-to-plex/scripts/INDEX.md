@@ -1,8 +1,8 @@
 # Script index - GENERATED, do not edit
 
-Generated 2026-09-18 14:38 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
+Generated 2026-09-18 16:13 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
 
-**151 scripts under `scripts/`, 54 loop scripts under `D:/video/`. 0 with NO usable header, 57 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
+**151 scripts under `scripts/`, 54 loop scripts under `D:/video/`. 1 with NO usable header, 57 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
 
 Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library` = dot-source, defines functions only; `tests` = a test suite, exit 0 = all passed.
 
@@ -184,7 +184,7 @@ Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library
 | `_nas-hold.ps1` | command | THE NAS KILL SWITCH. When the network is being hammered, run this - never reboot the machine. | NO TRIGGER IN HEADER | `pwsh -File D:/video/_nas-hold.ps1 -On` |
 | `_ocr-loop.ps1` | command | CPU track: keep OCR running over every encoded file that still needs a sidecar. | NO TRIGGER IN HEADER | - |
 | `_ocr-queue-loop.ps1` | command | OCR QUEUE-DRAIN track: convert real disc-authored bitmap subtitle streams (PGS/VOBSUB) that are already sitting inside ALREADY-PUBLISHED library files, most of which this pipeline never produced. | NO TRIGGER IN HEADER | - |
-| `_optical-loop.ps1` | command | OPTICAL track: archive whatever DVD is in the USB drive as a decrypted 1:1 folder, eject, wait for the next. ARCHIVE ONLY. | NO TRIGGER IN HEADER | `pwsh -File D:/video/_optical-loop.ps1` |
+| `_optical-loop.ps1` | command | NO HEADER - purpose unknown | NO TRIGGER IN HEADER | - |
 | `_optical-loop.tests.ps1` | tests | Tests for the OPTICAL track (_optical-loop.ps1 + lib-optical.ps1). Run: pwsh -File D:/video/_optical-loop.tests.ps1 (exit 0 = all passed) | NO TRIGGER IN HEADER | - |
 | `_prune-empty.ps1` | command | Remove empty folders left behind by reclaims. | NO TRIGGER IN HEADER | - |
 | `_publish-all.ps1` | command | Publish every local work to the NAS, SERIALLY. | NO TRIGGER IN HEADER | - |
@@ -221,7 +221,9 @@ Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library
 | `worklist-remaining.ps1` | command | What is ACTUALLY left to do on a source drive - computed, not remembered. | when: `updates_media2.txt` is a RENDERED REPORT, not a worklist. It was produced on 2026-08-31 by enumerating 201 disc folders with MakeMKV (1816 titles) and matching them by duration against 859 NAS fil... | `pwsh -File worklist-remaining.ps1` |
 | `worklist-status.ps1` | command | WHAT DOES THE WORK LIST SAY IS LEFT, AND IS ANYTHING DRIVING IT? | when: `updates_media2.txt` is the authority for what this drive owes the library: one action per TITLE, in named categories, with explicit do-not-touch exceptions. | `pwsh -File worklist-status.ps1` |
 
-## Scripts with NO usable header (0)
+## Scripts with NO usable header (1)
 
-None.
+These are listed, not described. Their purpose is unknown to this index until someone gives them a header comment / docstring.
+
+- `_optical-loop.ps1`
 
