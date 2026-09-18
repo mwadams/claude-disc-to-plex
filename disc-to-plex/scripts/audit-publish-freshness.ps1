@@ -19,7 +19,14 @@
 # local file with no counterpart on the NAS, and how long has it been waiting? A quiet pipeline with
 # nothing to ship is healthy; one file waiting an hour is not.
 #
+# ...WITH ONE CORRECTION, 2026-09-18: a file the publish gate is DELIBERATELY holding answers that
+# question yes while waiting perfectly correctly. publish-work.ps1 now records what it holds and
+# why in _publish-holds/<work>.json, and this reads it - see -HoldsDir below and Get-PlanHold. The
+# rule that came out of it: run the clock on the file that is BLOCKING, never on the finished ones
+# queued behind it.
+#
 #   pwsh -File audit-publish-freshness.ps1 [-MaxWaitMin 45] [-Quiet]
+#   pwsh -File audit-publish-freshness.ps1 -SelfTest        # the suppression rule, case by case
 # exit 0 = nothing overdue, 2 = something has waited too long
 param(
   [string]$VideoRoot  = 'D:/video',
@@ -29,6 +36,20 @@ param(
   # half-written encode is not an unpublished one, and flagging it would train the reader to
   # ignore this check - the failure every monitor here has already had once.
   [int]$SettleMin     = 6,
+  # A HOLD IS NOT A STALL. publish-work.ps1's plan gate holds a season whose declared outputs are
+  # still encoding, which is correct and can last days on a dozen-disc show - but every file it
+  # holds looks exactly like an overdue one from here, and past $MaxWaitMin this reported PUBLISH
+  # STALLED at an operator with nothing to do about it (Friends (1994), 2026-09-18: Seasons 00, 06
+  # and 07 held while their discs ripped). The gate now writes _publish-holds/<work>.json saying
+  # what it is holding and WHY, so this can tell "still coming" from "stuck".
+  #
+  # SUPPRESSION IS NARROW and fails towards reporting: only a FRESH record, only files inside a
+  # held folder, and only when every outstanding item there is 'not encoded' with its manifest
+  # still queued or running. A failed manifest, an 'awaiting OCR' item, or a record older than
+  # $HoldFreshMin (the loop is not re-evaluating - it may be dead) all still count as waiting.
+  [string]$HoldsDir   = '',
+  [int]$HoldFreshMin  = 30,
+  [switch]$SelfTest,
   [switch]$Quiet
 )
 $ErrorActionPreference = 'Stop'
@@ -52,6 +73,142 @@ if (Test-Path -LiteralPath $toolPaths) {
 }
 if (-not $ffprobe -and -not $Quiet) {
   Write-Output 'WARNING: ffprobe not found - cannot tell a missing sidecar from a file that needs none.'
+}
+
+# ---- the plan gate's own hold records (see $HoldsDir above) ---------------------------------------
+if (-not $HoldsDir) { $HoldsDir = Join-Path $VideoRoot '_publish-holds' }
+$holds = @{}
+if (Test-Path -LiteralPath $HoldsDir -PathType Container) {
+  foreach ($h in Get-ChildItem -LiteralPath $HoldsDir -Filter *.json -File -EA SilentlyContinue) {
+    try { $rec = Get-Content -LiteralPath $h.FullName -Raw | ConvertFrom-Json } catch { continue }
+    if (-not "$($rec.work)") { continue }
+    $holds["$($rec.work)"] = $rec
+  }
+}
+function Get-PlanHold {
+  <# What the plan gate says about the folder this file sits in. Returns $null when no fresh record
+     covers it - including an unreadable or stale one, because a monitor that cannot measure must
+     report, not reassure. Otherwise: .Reason always describes the hold (so the report stops saying
+     "waiting on the publish loop" about a file the loop is deliberately holding), and .Suppress
+     says whether this wait should drive the stall clock.
+
+     RUN THE CLOCK ON THE BLOCKING FILE, NOT ITS SIBLINGS. Twelve finished Season 06 episodes were
+     each "53 minutes overdue" while the only thing anyone could act on was ONE sibling waiting for
+     an OCR sidecar. Their wait measures nothing: they are correct to wait, and they will all land
+     the moment that one clears. So:
+       - 'not encoded' with its manifest queued or running: no clock at all. An encode legitimately
+         takes hours and the encode lane has its own watchdog; counting it here just reports the
+         same backlog twice in the wrong lane.
+       - 'awaiting OCR': CLOCKED, on that item's own age. Fresh means OCR simply has not reached it
+         yet, which clears in minutes. Past the cap it is the Star Trek case this monitor was built
+         for - a work sat sixteen hours behind one failed OCR gate - and it must alarm, naming the
+         file that is actually stuck.
+       - anything else (a failed manifest, an undeclared output): never suppressed. #>
+  param([Parameter(Mandatory)][string]$RelPath,
+        [Parameter(Mandatory)][AllowNull()][hashtable]$Holds,
+        [Parameter(Mandatory)][datetime]$Now,
+        [int]$FreshMin = 30,
+        [int]$BlockedCapMin = 45,
+        # Seam for the self-test: how old the item's own file is, in minutes. Real runs stat it.
+        [scriptblock]$AgeOf = $null)
+  $parts = @($RelPath -split '[\\/]')
+  if ($parts.Count -lt 2) { return $null }
+  $work = $parts[0]
+  $dir  = $(if ($parts.Count -ge 3) { $parts[1] } else { '' })
+  if (-not $Holds -or -not $Holds.ContainsKey($work)) { return $null }
+  $rec = $Holds[$work]
+  if (-not $rec.held) { return $null }
+  # CONVERTFROM-JSON ALREADY PARSED THIS, AND STRINGIFYING IT AGAIN BREAKS IT. PowerShell 7 turns
+  # an ISO-8601 JSON value into a real [datetime]; "$($rec.when)" then renders it in the current
+  # culture as `09/18/2026 08:28:14`, and [datetime]::TryParse under en-GB reads 18 as a MONTH and
+  # returns false. Every hold looked stale, nothing was ever suppressed, and the only visible
+  # symptom was the audit quietly continuing to report files the gate was holding - measured
+  # 2026-09-18, 23 minutes after the record was written. Take the object when it IS one, and parse
+  # with the INVARIANT culture otherwise, never the ambient one.
+  $when = [datetime]::MinValue
+  if ($rec.when -is [datetime]) { $when = [datetime]$rec.when }
+  elseif (-not [datetime]::TryParse("$($rec.when)", [System.Globalization.CultureInfo]::InvariantCulture,
+                                    [System.Globalization.DateTimeStyles]::None, [ref]$when)) { return $null }
+  if (($Now - $when).TotalMinutes -gt $FreshMin) { return $null }   # the gate has not run lately
+  $scopeIsWork = ("$($rec.scope)" -eq 'work')
+  if (-not $scopeIsWork -and @($rec.heldDirs) -notcontains $dir) { return $null }
+  $items = @(@($rec.items) | Where-Object { $scopeIsWork -or "$($_.dir)" -eq $dir })
+  if (-not $items.Count) { return $null }
+  if (-not $AgeOf) {
+    $AgeOf = {
+      param($item)
+      $p = Join-Path (Join-Path "$($rec.workRoot)" "$($item.dir)") "$($item.leaf)"
+      if (-not (Test-Path -LiteralPath $p)) { return [double]::PositiveInfinity }   # cannot measure -> do not suppress
+      ($Now - (Get-Item -LiteralPath $p).LastWriteTime).TotalMinutes
+    }
+  }
+  $encoding = @($items | Where-Object { "$($_.reason)" -eq 'not encoded' -and @('queued', 'running') -contains "$($_.manifestState)" })
+  $ocr      = @($items | Where-Object { "$($_.reason)" -eq 'awaiting OCR' })
+  $other    = @($items | Where-Object { $encoding -notcontains $_ -and $ocr -notcontains $_ })
+  $blocked  = @()
+  foreach ($o in $ocr) { if ((& $AgeOf $o) -gt $BlockedCapMin) { $blocked += $o } }
+  $where   = $(if ($scopeIsWork) { 'this work' } else { "'$dir'" })
+  $suppress = (-not $other.Count) -and (-not $blocked.Count)
+  $parts2 = @()
+  if ($encoding.Count) { $parts2 += ("{0} still encoding" -f $encoding.Count) }
+  if ($ocr.Count)      { $parts2 += ("{0} awaiting OCR" -f $ocr.Count) }
+  if ($other.Count)    { $parts2 += ("{0} with no live manifest - a manifest needs correcting" -f $other.Count) }
+  $reason = ("HELD by the plan gate - {0} is incomplete: {1}." -f $where, ($parts2 -join ', '))
+  if ($blocked.Count) {
+    $reason += (" STUCK: {0} has been awaiting an OCR sidecar for over {1} min - that one file is holding the rest." -f $blocked[0].leaf, $BlockedCapMin)
+  } elseif ($suppress) {
+    $reason += ' Not a stall; it ships when the folder is complete.'
+  }
+  [pscustomobject]@{ Suppress = $suppress; Reason = $reason }
+}
+
+if ($SelfTest) {
+  # THE SUPPRESSION RULE IS THE RISKY PART OF THIS SCRIPT: every case it gets wrong silences a
+  # monitor. So each way it may NOT suppress is asserted here, not just the happy path.
+  $fail = 0
+  function T($n, $c) { if ($c) { "  ok   $n" } else { $script:fail++; "  FAIL $n" } }
+  $now = [datetime]'2026-09-18T09:00:00'
+  $mk = {
+    param($items, $when = '2026-09-18T08:55:00', $held = $true, $scope = 'season', $dirs = @('Season 06'))
+    @{ 'Friends (1994)' = [pscustomobject]@{ work = 'Friends (1994)'; when = $when; held = $held; scope = $scope
+                                             heldDirs = $dirs; items = $items } }
+  }
+  $inFlight = @([pscustomobject]@{ dir = 'Season 06'; leaf = 'a.mkv'; reason = 'not encoded'; manifest = 'm.json'; manifestState = 'running' },
+                [pscustomobject]@{ dir = 'Season 06'; leaf = 'b.mkv'; reason = 'not encoded'; manifest = 'n.json'; manifestState = 'queued' })
+  $rel = 'Friends (1994)\Season 06\Friends (1994) - S06E12.mkv'
+  # The age seam: every item is $ageMin minutes old. Only 'awaiting OCR' items are clocked.
+  $young = { param($i) 5 }
+  $old   = { param($i) 400 }
+  $H = { param($holds, $age = $young) Get-PlanHold -RelPath $rel -Holds $holds -Now $now -BlockedCapMin 45 -AgeOf $age }
+  T 'held season, all in flight -> suppressed' ((& $H (& $mk $inFlight)).Suppress)
+  T 'the reason names the hold, not the loop'  ((& $H (& $mk $inFlight)).Reason -match '^HELD by the plan gate')
+  $withFailed = @($inFlight + [pscustomobject]@{ dir = 'Season 06'; leaf = 'c.mkv'; reason = 'not encoded'; manifest = 'x.json'; manifestState = 'failed' })
+  T 'a FAILED manifest is never suppressed'    (-not (& $H (& $mk $withFailed)).Suppress)
+  T 'and the reason says a manifest needs correcting' ((& $H (& $mk $withFailed)).Reason -match 'no live manifest')
+  $withOcr = @($inFlight + [pscustomobject]@{ dir = 'Season 06'; leaf = 'd.mkv'; reason = 'awaiting OCR'; manifest = ''; manifestState = '' })
+  T 'awaiting OCR, still fresh -> suppressed'  ((& $H (& $mk $withOcr) $young).Suppress)
+  T 'awaiting OCR past the cap -> NOT suppressed' (-not (& $H (& $mk $withOcr) $old).Suppress)
+  T 'and the stuck file is named'              ((& $H (& $mk $withOcr) $old).Reason -match 'STUCK: d\.mkv')
+  T 'an unmeasurable OCR item is not suppressed' (-not (& $H (& $mk $withOcr) { param($i) [double]::PositiveInfinity }).Suppress)
+  $undeclared = @([pscustomobject]@{ dir = 'Season 06'; leaf = 'e.mkv'; reason = 'not encoded'; manifest = ''; manifestState = 'undeclared' })
+  T 'an undeclared output is never suppressed' (-not (& $H (& $mk $undeclared)).Suppress)
+  T 'a stale record gives no hold at all'      ($null -eq (& $H (& $mk $inFlight '2026-09-18T07:00:00')))
+  T 'an unparseable timestamp gives no hold'   ($null -eq (& $H (& $mk $inFlight 'not-a-date')))
+  # THE REGRESSION THAT MATTERED: ConvertFrom-Json hands back a [datetime], not a string, and the
+  # first version stringified it into an en-GB-unparseable US date - so every hold read as stale.
+  T 'a real [datetime] (what ConvertFrom-Json yields) is honoured' ((& $H (& $mk $inFlight ([datetime]'2026-09-18T08:55:00'))).Suppress)
+  T 'a US-format string is read with the invariant culture, not en-GB' ((& $H (& $mk $inFlight '09/18/2026 08:55:00')).Suppress)
+  T 'held=false gives no hold'                 ($null -eq (& $H (& $mk $inFlight '2026-09-18T08:55:00' $false)))
+  T 'a season that is NOT held gives no hold'  ($null -eq (Get-PlanHold -RelPath 'Friends (1994)\Season 05\x.mkv' -Holds (& $mk $inFlight) -Now $now -AgeOf $young))
+  T 'no record for the work -> no hold'        ($null -eq (Get-PlanHold -RelPath 'Spaced\Season 01\x.mkv' -Holds (& $mk $inFlight) -Now $now -AgeOf $young))
+  T 'no records at all -> no hold'             ($null -eq (& $H @{}))
+  $workScope = & $mk @([pscustomobject]@{ dir = ''; leaf = 'f.mkv'; reason = 'not encoded'; manifest = 'm.json'; manifestState = 'queued' }) '2026-09-18T08:55:00' $true 'work' @('')
+  $wsHold = Get-PlanHold -RelPath 'Moulin Rouge\Moulin Rouge.mkv' -Holds @{ 'Moulin Rouge' = $workScope['Friends (1994)'] } -Now $now -AgeOf $young
+  T 'a WORK-scope hold covers a file at the root' ($wsHold.Suppress -and $wsHold.Reason -match 'this work')
+  T 'a held record with NO items gives no hold' ($null -eq (& $H (& $mk @())))
+  T 'the freshness window is honoured at the boundary' ((& $H (& $mk $inFlight '2026-09-18T08:31:00')).Suppress)
+  if ($fail) { "SELFTEST FAILED - $fail case(s)"; exit 1 }
+  'SELFTEST OK'; exit 0
 }
 
 foreach ($area in 'Television Shows', 'Movies') {
@@ -135,13 +292,40 @@ if ($waiting.Count -eq 0) {
   if (-not $Quiet) { Write-Output 'PUBLISH FRESHNESS OK - no finished local file is waiting to be published.' }
   exit 0
 }
-$worst = ($waiting | Measure-Object WaitedMin -Maximum).Maximum
+
+# WHICH OF THESE IS ACTUALLY STALLING? A file the plan gate is deliberately holding, whose missing
+# siblings are still queued or encoding, is waiting correctly - it is counted and NAMED, but it
+# does not drive the clock. Everything else does, exactly as before.
+foreach ($w in $waiting) {
+  $hold = Get-PlanHold -RelPath $w.File -Holds $holds -Now $now -FreshMin $HoldFreshMin -BlockedCapMin $MaxWaitMin
+  $w | Add-Member -NotePropertyName Held -NotePropertyValue ([bool]($hold -and $hold.Suppress)) -Force
+  # The REASON is taken whenever the gate has one, suppressed or not: "ready - waiting on the
+  # publish loop" is false about a file the loop is deliberately holding, and it sent the reader to
+  # the wrong lane.
+  if ($hold) { $w | Add-Member -NotePropertyName Why -NotePropertyValue $hold.Reason -Force }
+}
+$stalling = @($waiting | Where-Object { -not $_.Held })
+$heldCount = $waiting.Count - $stalling.Count
+
+if ($stalling.Count -eq 0) {
+  $worstHeld = ($waiting | Measure-Object WaitedMin -Maximum).Maximum
+  Write-Output ("PUBLISH-STALL-STATE stalled=0 minutes=0 waiting=0 held={0}" -f $heldCount)
+  if (-not $Quiet) {
+    Write-Output ("publish held by the plan gate - {0} file(s), longest {1} min, every one waiting on a declared output that is still queued or encoding." -f $heldCount, $worstHeld)
+    foreach ($g in ($waiting | Group-Object { ($_.File -split '[\\/]')[0] })) {
+      Write-Output ("    {0}: {1} file(s) - {2}" -f $g.Name, $g.Count, $g.Group[0].Why)
+    }
+  }
+  exit 0
+}
+$worst = ($stalling | Measure-Object WaitedMin -Maximum).Maximum
 if ($worst -le $MaxWaitMin) {
   # The healthy verdict is stated too. Absence of the marker then means the audit did not RUN -
   # which is a different thing from "nothing is stalled" and must not read as reassurance.
-  Write-Output ("PUBLISH-STALL-STATE stalled=0 minutes={0} waiting={1}" -f $worst, $waiting.Count)
+  Write-Output ("PUBLISH-STALL-STATE stalled=0 minutes={0} waiting={1} held={2}" -f $worst, $stalling.Count, $heldCount)
   if (-not $Quiet) {
-    Write-Output ("publishing in progress - {0} file(s) waiting, longest {1} min (cap {2})" -f $waiting.Count, $worst, $MaxWaitMin)
+    Write-Output ("publishing in progress - {0} file(s) waiting, longest {1} min (cap {2}){3}" -f `
+                  $stalling.Count, $worst, $MaxWaitMin, $(if ($heldCount) { " - plus $heldCount held by the plan gate, still encoding" } else { '' }))
   }
   exit 0
 }
@@ -161,16 +345,19 @@ if ($worst -le $MaxWaitMin) {
 #
 # Anchored at line start and emitted even under -Quiet: a verdict is an assertion, not a mention,
 # and a caller that filters output must still be able to find it.
-Write-Output ("PUBLISH-STALL-STATE stalled=1 minutes={0} waiting={1}" -f $worst, $waiting.Count)
+Write-Output ("PUBLISH-STALL-STATE stalled=1 minutes={0} waiting={1} held={2}" -f $worst, $stalling.Count, $heldCount)
 
 if (-not $Quiet) {
   Write-Output ''
-  Write-Output ("*** NOTHING HAS PUBLISHED FOR {0} MINUTES and {1} finished file(s) are waiting:" -f $worst, $waiting.Count)
-  foreach ($w in ($waiting | Sort-Object WaitedMin -Descending | Select-Object -First 12)) {
+  Write-Output ("*** NOTHING HAS PUBLISHED FOR {0} MINUTES and {1} finished file(s) are waiting:" -f $worst, $stalling.Count)
+  foreach ($w in ($stalling | Sort-Object WaitedMin -Descending | Select-Object -First 12)) {
     Write-Output ("    {0,4} min  {1}" -f $w.WaitedMin, $w.File)
     Write-Output ("             {0}" -f $w.Why)
   }
-  $noSrt = @($waiting | Where-Object { $_.Why -like 'NO OCR*' }).Count
+  if ($heldCount) {
+    Write-Output ("    ({0} further file(s) are held by the plan gate with their siblings still encoding - not part of this stall.)" -f $heldCount)
+  }
+  $noSrt = @($stalling | Where-Object { $_.Why -like 'NO OCR*' }).Count
   if ($noSrt -gt 0) {
     Write-Output ''
     Write-Output ("    {0} of them have no sidecar. Check the OCR track is running and draining -" -f $noSrt)

@@ -293,6 +293,11 @@ if (-not $SkipSubtitleCheck) {
     $byManifest += [pscustomobject]@{
       Name = $mf.Name; When = $mf.LastWriteTime
       Failed = ($mf.Directory.Name -eq 'failed'); Done = ($mf.Directory.Name -eq 'done')
+      # WHERE the manifest sits, kept verbatim for the hold record below. 'queued' and 'running'
+      # mean the missing output is still coming; 'failed' means it is not, and only this script
+      # knows the difference - audit-publish-freshness.ps1 cannot re-derive it without becoming a
+      # second implementation of the whole plan rule.
+      State = $(if ($mf.Directory.Name -eq 'running') { 'running' } elseif ($mf.Directory.Name -eq 'done') { 'done' } elseif ($mf.Directory.Name -eq 'failed') { 'failed' } else { 'queued' })
       Outs = $outs
     }
   }
@@ -327,6 +332,75 @@ if (-not $SkipSubtitleCheck) {
   }
   $stillOwed = @($byManifest | Where-Object { $superseded -notcontains $_ })
   $declared  = @($stillOwed | ForEach-Object { $_.Outs } | Sort-Object -Unique)
+
+  # ---- THE HOLD RECORD: say OUT LOUD, in a file, why this work is not shipping -------------------
+  #
+  # A HOLD IS NOT A STALL, AND ONLY THIS SCRIPT CAN TELL THEM APART. audit-publish-freshness.ps1
+  # measures "finished local file with no counterpart on the NAS, and for how long", which is the
+  # right question - but every file a season hold is legitimately sitting on answers it YES, and
+  # past its 45-minute cap the board reports PUBLISH STALLED and _stall-alarm.ps1 raises it.
+  # 2026-09-18: Friends (1994) held Seasons 00, 06 and 07 - correctly, S06E13-E15 and twelve S07
+  # files were still encoding off discs ripped that morning - and the alarm was minutes from firing
+  # at an operator who had nothing to do about it. A dozen-disc show takes days, so this would have
+  # fired over and over.
+  #
+  # The audit cannot work this out for itself without reimplementing the whole plan rule above
+  # (gated-anywhere manifests, supersession, impossible names, per-season scope) - a second
+  # implementation that would drift from this one and be believed anyway. So the gate that KNOWS
+  # writes down what it knows, and the audit reads it.
+  #
+  # WHAT MAKES IT SAFE TO SUPPRESS ON: the manifest STATE behind each missing output. Queued or
+  # running means the file is still coming and waiting is correct. Failed means it is not coming
+  # and somebody must fix a manifest - that must still alarm. 'awaiting OCR' is recorded as its own
+  # reason and never suppresses: that is exactly the Star Trek case this monitor was built for,
+  # where a work sat sixteen hours behind one failed OCR gate.
+  #
+  # ALWAYS WRITTEN, including when nothing is held ("held": false), so the audit can tell a work
+  # that is not held from one whose gate has not run since the loop died. Nothing is ever deleted.
+  $holdDir  = Join-Path $LocalRoot '_publish-holds'
+  $holdFile = Join-Path $holdDir ((($Work -replace '[^A-Za-z0-9]', '').ToLowerInvariant()) + '.json')
+  $manifestOf = @{}
+  foreach ($m in $stillOwed) {
+    foreach ($o in $m.Outs) {
+      if (-not $manifestOf.ContainsKey($o)) { $manifestOf[$o] = @() }
+      $manifestOf[$o] = @($manifestOf[$o]) + $m
+    }
+  }
+  $dirOf = { param($p) $rel = "$p".Substring($workOut.Length).TrimStart('\'); if ($rel -match '^([^\\]+)\\') { $Matches[1] } else { '' } }
+  $writeHold = {
+    param([string]$Scope, [string[]]$HeldDirs = @(), [string[]]$MissingPaths = @(), [string[]]$AwaitingOcrPaths = @())
+    $items = @()
+    foreach ($p in @($MissingPaths)) {
+      # PREFER THE LIVE DECLARATION. An output can be declared by more than one manifest (a re-rip,
+      # a correction); if ANY of them is still queued or running, the file is in flight and that is
+      # the honest state. Only when every declaration is failed or done is this stuck.
+      $pick = $null
+      foreach ($pref in @('running', 'queued', 'done', 'failed')) {
+        $c = @(@($manifestOf[$p]) | Where-Object { $_ -and $_.State -eq $pref } | Sort-Object When -Descending | Select-Object -First 1)
+        if ($c.Count) { $pick = $c[0]; break }
+      }
+      $items += [pscustomobject]@{
+        dir = (& $dirOf $p); leaf = (Split-Path $p -Leaf); reason = 'not encoded'
+        manifest      = $(if ($pick) { $pick.Name } else { '' })
+        manifestState = $(if ($pick) { $pick.State } else { 'undeclared' })
+      }
+    }
+    foreach ($p in @($AwaitingOcrPaths)) {
+      $items += [pscustomobject]@{ dir = (& $dirOf $p); leaf = (Split-Path $p -Leaf); reason = 'awaiting OCR'; manifest = ''; manifestState = '' }
+    }
+    $rec = [pscustomobject]@{
+      work = $Work; workRoot = $workOut; when = (Get-Date).ToString('s')
+      held = [bool]($Scope -ne 'none'); scope = $Scope; heldDirs = @($HeldDirs); items = @($items)
+    }
+    try {
+      if (-not (Test-Path -LiteralPath $holdDir)) { New-Item -ItemType Directory -Path $holdDir -Force | Out-Null }
+      $rec | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $holdFile -Encoding UTF8
+    } catch {
+      # A record that cannot be written must not stop a publish. Say so and carry on: the audit
+      # then sees a stale record, which fails SAFE - it reports the wait rather than suppressing it.
+      Write-Warning ("could not write the publish hold record '{0}': {1}" -f $holdFile, $_.Exception.Message)
+    }
+  }
 
   if ($superseded.Count) {
     $dropped = @($superseded | ForEach-Object { $_.Outs } | Sort-Object -Unique | Where-Object { $declared -notcontains $_ })
@@ -428,6 +502,7 @@ if (-not $SkipSubtitleCheck) {
           $ha | ForEach-Object { Write-Warning "    awaiting OCR: $(Split-Path $_ -Leaf)" }
           $heldDirs += (Join-Path $src $h)
         }
+        & $writeHold -Scope 'season' -HeldDirs $heldNames -MissingPaths $missing -AwaitingOcrPaths $awaitingPaths
         $local = @($local | Where-Object { $heldNames -notcontains (& $seasonOf $_.FullName) })
         if (-not $local.Count) {
           Write-Warning ("REFUSING - every local file of '{0}' is in a held season folder; nothing is publishable yet." -f $Work)
@@ -447,9 +522,13 @@ if (-not $SkipSubtitleCheck) {
       $missing  | ForEach-Object { Write-Warning "    not encoded : $(Split-Path $_ -Leaf)" }
       $awaiting | ForEach-Object { Write-Warning "    awaiting OCR: $_" }
       Write-Warning '    Publication triggers when the whole declared set is complete. -SkipSubtitleCheck overrides the OCR half.'
+      & $writeHold -Scope 'work' -HeldDirs @('') -MissingPaths $missing -AwaitingOcrPaths $awaitingPaths
       exit 2
     }
-    if (-not $heldDirs.Count) { Write-Host ("plan satisfied: all {0} declared output(s) present with subtitles resolved" -f $declared.Count) }
+    if (-not $heldDirs.Count) {
+      Write-Host ("plan satisfied: all {0} declared output(s) present with subtitles resolved" -f $declared.Count)
+      & $writeHold -Scope 'none'
+    }
   }
   else {
     # No manifest declares into this folder - judge per file, as before.
