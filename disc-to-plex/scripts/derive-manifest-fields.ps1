@@ -352,7 +352,35 @@ foreach ($r in $rows) {
           $mine = & $engOf $ct
           $clip = Split-Path "$($ct.probeFile)" -Leaf
           $richer = @(@($cat.titles) | Where-Object { [int]$_.title -ne $ripT -and $_.probeFile -and (Split-Path "$($_.probeFile)" -Leaf) -eq $clip -and (& $engOf $_) -gt $mine })
-          if ($richer.Count) {
+          # SWAP TO THE RAW CLIP WHEN THAT IS PROVABLY THE SAME PROGRAMME - the step the gate kept
+          # handing to a human (Friends S10 D2 "The Last One", 2026-09-19, fixed by hand the same way).
+          # Proven means: the raw clip is staged, its OWN A/V length (last video packet minus its start
+          # timestamp - a raw BD clip does not start at 0, and its format=duration can be wrong) matches
+          # this row's expectSeconds within 1.5 s, and the playlist's first audio stream is English, so
+          # audioTracks [0] still names the programme. The audio evidence is then measured on the clip
+          # and the audio pass (here or in lane-runner) adds the commentary. Anything unproven still
+          # escalates below, unchanged.
+          $swapped = $false
+          $unitName = $catFile.Name.Substring(0, $catFile.Name.Length - 15)
+          $rawClip = (Join-Path (Join-Path (Join-Path (Join-Path (Split-Path (Split-Path $srcWin -Parent) -Parent) $unitName) 'BDMV') 'STREAM') $clip) -replace '\\', '/'
+          $firstAud = @(@($ct.streams) | Where-Object { $_.type -eq 'Audio' }) | Select-Object -First 1
+          $expRow = 0.0; [void][double]::TryParse("$(Get-Text $r 'expectSeconds')", [ref]$expRow)
+          if ($richer.Count -and $expRow -gt 0 -and $firstAud -and "$($firstAud.lang)" -eq 'English' -and (Test-Path -LiteralPath $rawClip -PathType Leaf)) {
+            $st0 = 0.0; $stTxt = "$(& $ffprobe -v error -show_entries format=start_time -of csv=p=0 $rawClip 2>$null | Select-Object -First 1)".Trim()
+            if ($stTxt -match '^[0-9]+(\.[0-9]+)?$') { $st0 = [double]$stTxt }
+            $pts = @(& $ffprobe -v error -select_streams v:0 -read_intervals ("{0}%+#100000" -f [int]($st0 + [math]::Max(0, $expRow - 120))) -show_entries packet=pts_time -of csv=p=0 $rawClip 2>$null | Where-Object { $_ -match '^[0-9]+(\.[0-9]+)?$' })
+            $clipLen = if ($pts.Count) { [double]$pts[-1] - $st0 } else { 0.0 }
+            if ($clipLen -gt 0 -and [math]::Abs($clipLen - $expRow) -le 1.5) {
+              [void]$changes.Add([ordered]@{ field = 'src'; from = $src; to = $rawClip; evidence = ("rip of t{0:D2} ({1}) cannot carry the English audio that {2} serve over the SAME clip {3}; the raw clip's A/V length {4:N3}s matches expectSeconds {5:N3}s, first audio English" -f $ripT, $ct.source, (($richer | ForEach-Object { "t{0:D2} {1}" -f [int]$_.title, $_.source }) -join ', '), $clip, $clipLen, $expRow) })
+              Set-Field $r 'src' $rawClip
+              Set-Field $r 'audioTracks' @(0); Set-Field $r 'audioLangs' @('eng')
+              if ((Get-Text $r 'subTrack') -match '^\d+$') { Set-Field $r 'subTrack' 'eng' }
+              if ($r.PSObject.Properties.Name -contains 'expectFrames') { $r.PSObject.Properties.Remove('expectFrames') }
+              $src = $rawClip; $srcWin = $rawClip -replace '/', '\'; $ext = '.m2ts'
+              $swapped = $true
+            }
+          }
+          if ($richer.Count -and -not $swapped) {
             $unsettled++
             [void]$left.Add([ordered]@{ field = 'src'; reason = ("this is a rip of t{0:D2} ({1}, {2} English audio stream(s)); the SAME clip {3} is also served by {4} with MORE English audio ({5}). The rip cannot carry those streams - a commentary door looks exactly like this. Encode from the raw clip (BDMV/STREAM/{3}) or rip the other playlist; a human decides" -f $ripT, $ct.source, $mine, $clip, (($richer | ForEach-Object { "t{0:D2} {1}" -f [int]$_.title, $_.source }) -join ', '), (($richer | ForEach-Object { (& $engOf $_) }) -join '/')) })
           }

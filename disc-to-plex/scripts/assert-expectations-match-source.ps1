@@ -161,13 +161,22 @@ foreach ($r in $rows) {
     # as a wrong expectation. transcode.ps1 tolerates 2 s under and re-measures the kept streams
     # before quarantining anything, so either end is a workable expectation; what must NOT pass is a
     # figure matching neither, which is what a real mistake looks like.
+    # RELATIVE TO THE FILE'S START, and probed near the EARLIER of the two claimed ends. A raw BD clip
+    # starts at a non-zero timestamp (Friends S9 D2 clip 00058: start_time 4198.000), so an absolute
+    # last-packet time is start + length; and its format=duration can be plain wrong (00058 reports
+    # 1851.872 s - the NEIGHBOURING clip's length - for a 1393.5 s episode), so seeking to
+    # "container - 120 s" lands past the end and finds nothing. Both refused a correct S09E14 row on
+    # 2026-09-19 while printing the true end (5592.4 - 4198.0 = 1394.4 s) as "last A/V packet".
+    $st0 = 0.0
+    $stTxt = "$(& $ffprobe -v error -show_entries format=start_time -of csv=p=0 $src 2>$null | Select-Object -First 1)".Trim()
+    if ($stTxt -match '^[0-9]+(\.[0-9]+)?$') { $st0 = [double]$stTxt }
     $vExtent = 0.0; $aExtent = 0.0
-    $tailFrom = [math]::Max(0, $act - 120)
+    $tailFrom = $st0 + [math]::Max(0, [math]::Min($act, $expSec) - 120)
     foreach ($sel in 'v:0', 'a:0') {
       $pts = @(& $ffprobe -v error -select_streams $sel -read_intervals ("{0}%+#100000" -f [int]$tailFrom) `
                  -show_entries packet=pts_time -of csv=p=0 $src 2>$null |
                Where-Object { $_ -match '^[0-9]+(\.[0-9]+)?$' })
-      if ($pts.Count) { if ($sel -eq 'v:0') { $vExtent = [double]$pts[-1] } else { $aExtent = [double]$pts[-1] } }
+      if ($pts.Count) { if ($sel -eq 'v:0') { $vExtent = [double]$pts[-1] - $st0 } else { $aExtent = [double]$pts[-1] - $st0 } }
     }
     $avExtent = [math]::Max($vExtent, $aExtent)
     # One frame of slack on top of the last packet's START time: at 23.976 fps that is 0.042 s.

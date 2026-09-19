@@ -138,7 +138,9 @@ function Read-DispositionClaims {
   if (-not $Lines) { return @() }
   $claims = @()
   foreach ($l in $Lines) {
-    if ($l -match '^(t\d+)\|(episode|extra)\|(S\d{1,2}E\d{1,3})\s+([^|]+)\|') {
+    # Two shapes in the wild: "S09E01 Title" and the full library leaf "Friends (1994) - S10E01 -
+    # Title" (Friends S10, 2026-09-19 - read as NO claims, all 12 slots flagged as unbacked).
+    if ($l -match '^(t\d+)\|(episode|extra)\|(?:[^|]*?\s-\s)?(S\d{1,2}E\d{1,3})(?:\s+-)?\s+([^|]+)\|') {
       $claims += [pscustomobject]@{ Row = $Matches[1]; Slot = (Get-SlotFromLeaf $Matches[3]); Title = (Get-ClaimedTitle $Matches[4]) }
     }
   }
@@ -151,6 +153,9 @@ if ($SelfTest) {
   T 'slot key zero-pads a STRING index' ((Get-SlotKey '1' '9') -eq 'S01E09')
   T 'slot key zero-pads an int index'   ((Get-SlotKey 1 9) -eq 'S01E09')
   T 'slot key keeps two digits'         ((Get-SlotKey 1 30) -eq 'S01E30')
+  $lc = @(Read-DispositionClaims @('t03|episode|Friends (1994) - S10E01 - The One After Joey and Rachel Kiss|speech:x', 't04|episode|S09E01 The One Where No One Proposes|speech:y'))
+  T 'claims: full-leaf row form is read'  ($lc.Count -eq 2 -and $lc[0].Slot -eq 'S10E01' -and $lc[0].Title -match '^The One After Joey')
+  T 'claims: short row form still read'   ($lc[1].Slot -eq 'S09E01' -and $lc[1].Title -match '^The One Where No One')
   T 'leaf slot is found'                ((Get-SlotFromLeaf 'Man In A Suitcase S01E06.mkv') -eq 'S01E06')
   T 'leaf slot normalises the padding'  ((Get-SlotFromLeaf 'Show - S1E6 - Name.mkv') -eq 'S01E06')
   T 'leaf with no slot returns empty'   ((Get-SlotFromLeaf 'O Brother Where Art Thou.mkv') -eq '')
