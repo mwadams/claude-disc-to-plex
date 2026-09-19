@@ -22,8 +22,8 @@ available. Two independent measurements stand in for it:
      because an output-side seek decodes everything before it anyway.
   2. AUDIO (corroboration). Friends commentaries are mixed OVER the programme sound, so the
      commentary's log-energy envelope still follows the programme's. Measured 2026-09-19 on S08E23:
-     r 0.13-0.45 at lag 0 ms in 5/5 windows, against -0.07..-0.01 for the same commentary laid
-     over the NEXT episode. Weak in r, decisive in lag. The envelope arithmetic is imported from
+     r 0.13-0.45 in 5/5 windows, against -0.07..-0.01 for the same commentary laid over the NEXT
+     episode. Weak in r, consistent in lag (within ~0.1 s of zero - see --audio-lag-tolerance-ms). The envelope arithmetic is imported from
      audio-envelope-correlate.py - one implementation of that measurement, not two.
 
 Output: a JSON verdict. `ok` is true only when every test passes; `offsetMs` is the one lag the
@@ -130,7 +130,11 @@ def main():
     ap.add_argument('--min-video-r', type=float, default=0.60,
                     help='a window counts as matched at this r; low-activity windows (few cuts) sit lower')
     ap.add_argument('--min-video-windows', type=int, default=4)
-    ap.add_argument('--audio-lag-tolerance-ms', type=int, default=120)
+    # 200 ms, MEASURED: on S08E23 the commentary-vs-programme envelope peaks at +100..+110 ms in 5 of
+    # 6 windows although the true offset is ZERO (the door commentary against the commentary shipped
+    # from the raw clip: r 0.91-0.95 at 0 ms). The commentary's programme bed is not the programme
+    # mix, so this estimate is biased by ~0.1 s; wrong-programme pairings scatter by seconds.
+    ap.add_argument('--audio-lag-tolerance-ms', type=int, default=200)
     ap.add_argument('--min-audio-margin', type=float, default=0.08,
                     help='median in-sync audio r must beat the median control r by this much')
     ap.add_argument('--json')
