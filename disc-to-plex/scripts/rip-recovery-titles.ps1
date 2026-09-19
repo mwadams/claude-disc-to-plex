@@ -39,6 +39,11 @@ if (-not $Unit) {
 $dirFile = Join-Path $RecoveryRoot ("{0}.json" -f $Unit)
 if (-not (Test-Path -LiteralPath $dirFile)) { Say "no directive $dirFile"; exit 3 }
 $d = Get-Content -LiteralPath $dirFile -Raw | ConvertFrom-Json
+# The optical track stands down while this marker exists (it would otherwise probe the disc under
+# MakeMKV). Only for a physical drive; removed in the finally below whatever happens.
+$marker = if ($Source -like 'dev:*') { Join-Path $RecoveryRoot '_ripping' } else { $null }
+if ($marker) { Set-Content -LiteralPath $marker -Value ("{0} pid {1} {2}" -f $Unit, $PID, (Get-Date -Format s)); Start-Sleep -Seconds 20 }
+try {
 $ripDir = Join-Path (Join-Path $RecoveryRoot $Unit) 'rip'
 New-Item -ItemType Directory -Force -Path $ripDir | Out-Null
 Say ("{0}: {1} episode(s) to rip from {2}" -f $d.discName, @($d.episodes).Count, $Source)
@@ -100,4 +105,8 @@ foreach ($e in @($d.episodes)) {
   ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $ripDir '_rip.json') -Encoding UTF8
 $bad = @($results | Where-Object { -not $_.verified }).Count
 Say ("{0} of {1} episode(s) ripped and verified -> {2}" -f (@($results).Count - $bad), @($results).Count, (Join-Path $ripDir '_rip.json'))
-if ($bad) { exit 2 } else { exit 0 }
+$code = if ($bad) { 2 } else { 0 }
+} finally {
+  if ($marker) { Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue }
+}
+exit $code

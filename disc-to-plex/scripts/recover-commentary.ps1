@@ -193,6 +193,20 @@ function Invoke-EpisodeRecovery($d, $e) {
   if ($st.Count -ne 1 + $dAud.Count) { return & $stop ("analysis saw {0} stream(s), expected {1}: {2}" -f $st.Count, (1 + $dAud.Count), $roles) }
   if ($st[0].role -ne 'primary') { return & $stop ("the published programme is not 'primary' in the analysis ({0})" -f $roles) }
   $comms = @($st | Where-Object { [int]$_.a -ge 1 -and $_.role -eq 'commentary' })
+  # A HUMAN VERDICT, RECORDED IN THE DIRECTIVE, for the one shape the analyser cannot settle alone:
+  # the episode directive carries confirmedCommentary (the probe ordinal) + confirmedBy (who read the
+  # transcripts, and what they heard). It promotes ONLY a stream the analysis already calls
+  # `commentary?` - never a dub, music, silence or the programme - and every later check (copies,
+  # sync, build) still applies. S08E03 (2026-09-19): the commentary opens under the episode's own
+  # dialogue, so both analyses said `commentary?`; its samples are production talk throughout.
+  if ($comms.Count -eq 0 -and $e.PSObject.Properties.Name -contains 'confirmedCommentary' -and "$($e.confirmedBy)") {
+    $hc = @($st | Where-Object { [int]$_.a -eq [int]$e.confirmedCommentary -and $_.role -eq 'commentary?' })
+    if ($hc.Count -eq 1) {
+      $comms = $hc
+      $r.steps['humanVerdict'] = [ordered]@{ stream = [int]$e.confirmedCommentary; by = "$($e.confirmedBy)" }
+      Say ("{0}: a:{1} taken as the commentary on a recorded human verdict - {2}" -f $ep, $e.confirmedCommentary, $e.confirmedBy)
+    }
+  }
   if ($comms.Count -ne 1) { return & $stop ("{0} door stream(s) measured as commentary, need exactly 1: {1}" -f $comms.Count, $roles) }
   $c = [int]$comms[0].a
   $others = @($st | Where-Object { [int]$_.a -ge 1 -and [int]$_.a -ne $c })
