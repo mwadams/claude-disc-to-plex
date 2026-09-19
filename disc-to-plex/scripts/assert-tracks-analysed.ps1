@@ -480,18 +480,43 @@ foreach ($it in $items) {
   # notCommentary and drops the description - and transcode.ps1's own header records that
   # unlabelled description tracks "were being dropped", which is what this field was created to
   # stop. Naming a track is strictly more informative than rejecting it, so it satisfies the gate.
+  $tagged = @()
+  if ($it.PSObject.Properties.Name -contains 'commentary') {
+    foreach ($e in @($it.commentary)) { $tagged += if ($e -is [array]) { [int]$e[0] } else { [int]$e } }
+  }
+  if ($it.PSObject.Properties.Name -contains 'audioDescription') {
+    foreach ($e in @($it.audioDescription)) { $tagged += if ($e -is [array]) { [int]$e[0] } else { [int]$e } }
+  }
+  $rejected = @()
+  if ($it.PSObject.Properties.Name -contains 'notCommentary') {
+    foreach ($e in @($it.notCommentary)) { $rejected += [int]$e }
+  }
+
+  # A CONFIRMED COMMENTARY MUST NOT BE DROPPED SILENTLY EITHER.
+  #
+  # The block below catches an UNCERTAIN track the manifest ignores. It never looked at a track the
+  # analysis was SURE of - so a manifest saying `audioTracks: [0]` over a stream with role
+  # 'commentary' made no claim, had nothing to verify, and passed. Found 2026-09-19: Friends S08E23
+  # went through this gate with its cast-and-crew commentary on a:5 dropped (only E24's uncertain a:3
+  # stopped the manifest), and the published library shows the same loss on ~20 Friends episodes
+  # across S3-S8 - S8 D1's dispositions measured one ordinary episode's clip and declared "no
+  # commentary anywhere on this disc", while E03/E04's own clips carried one.
+  #
+  # Same two ways out as below: tag it (commentary: [[n, "..."]]) or reject it with evidence
+  # (notCommentary: [n]). A stream the analysis marks redundantWith another is a copy of that one
+  # and is covered by deciding the one it copies.
+  foreach ($s in @($a.streams)) {
+    if ($s.role -ne 'commentary') { continue }
+    $ci = [int]$s.a
+    if ($tagged -notcontains $ci -and $rejected -notcontains $ci) {
+      $problems += "$(Split-Path $out -Leaf): a:$ci is a COMMENTARY in the evidence and the " +
+                   "manifest drops it without saying so. Keep it - audioTracks gains $ci and " +
+                   "commentary: [[$ci, `"Audio Commentary`"]] - or, if the evidence is wrong, " +
+                   "notCommentary: [$ci]. Friends S3-S8 lost ~20 commentaries this way"
+    }
+  }
+
   if ($a.proposal -and $a.proposal.PSObject.Properties.Name -contains 'commentaryUncertain') {
-    $tagged = @()
-    if ($it.PSObject.Properties.Name -contains 'commentary') {
-      foreach ($e in @($it.commentary)) { $tagged += if ($e -is [array]) { [int]$e[0] } else { [int]$e } }
-    }
-    if ($it.PSObject.Properties.Name -contains 'audioDescription') {
-      foreach ($e in @($it.audioDescription)) { $tagged += if ($e -is [array]) { [int]$e[0] } else { [int]$e } }
-    }
-    $rejected = @()
-    if ($it.PSObject.Properties.Name -contains 'notCommentary') {
-      foreach ($e in @($it.notCommentary)) { $rejected += [int]$e }
-    }
     foreach ($u in @($a.proposal.commentaryUncertain)) {
       $ui = [int]$u
       if ($tagged -notcontains $ui -and $rejected -notcontains $ui) {

@@ -173,6 +173,22 @@ while ($true) {
       }
     }
 
+    # AUDIO FIELDS ARE DERIVED FROM THE EVIDENCE BEFORE THEY ARE AUDITED. A raw Blu-ray clip's
+    # .tracks.json is usually written by _analyse-loop.ps1 AFTER the manifest was gated (Friends S8 D2:
+    # gated ~20:00, evidence 23:30-00:05), so this is the first place a manifest and its evidence meet.
+    # -AudioOnly reads JSON only - cheap on every deferral pass. -Ledger records the derived content's
+    # hash, so a manifest returned to the queue below is still recognised as gated. A derivation that
+    # cannot run (exit 3) changes nothing and the audit below behaves exactly as before.
+    $deriver = 'D:\video\.claude\skills\disc-to-plex\scripts\derive-manifest-fields.ps1'
+    if (Test-Path -LiteralPath $deriver) {
+      $dv = & pwsh -NoProfile -File $deriver -Manifest $claim -AudioOnly -Ledger (Join-Path $Queue '.gated.jsonl') 2>&1
+      $dvChanged = @($dv | ForEach-Object { "$_" } | Where-Object { $_ -match ' -> ' })
+      if ($dvChanged.Count) {
+        Lane-Note $log ("derived {0} audio field change(s) from evidence before the audit" -f $dvChanged.Count)
+        $dvChanged | ForEach-Object { Lane-Note $log ("  " + $_.Trim()) }
+      }
+    }
+
     # AUDIO CLAIMS MUST BE EVIDENCED BEFORE THE GPU IS COMMITTED.
     #
     # A manifest asserting audioTracks / commentary / audioDescription asserts facts about what is

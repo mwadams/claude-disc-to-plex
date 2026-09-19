@@ -50,6 +50,11 @@ if (-not (Test-Path -LiteralPath $Manifest -PathType Leaf)) {
   throw "-Manifest '$Manifest' does not exist. Author it first, then gate it."
 }
 
+# MEASURABLE FIELDS ARE DERIVED BEFORE ANYTHING IS CHECKED - for manifests gated by hand, outside the
+# dispositions loop (which runs the same step itself). Idempotent; exit 2 = the guards below decide.
+$deriver = 'D:/video/.claude/skills/disc-to-plex/scripts/derive-manifest-fields.ps1'
+if (Test-Path -LiteralPath $deriver) { & pwsh -NoProfile -File $deriver -Manifest $Manifest }
+
 # LAYOUT CHECKS FIRST - fail fast, before waiting on a copy.
 #
 # The byte-completeness wait below asks "is the SOURCE ready?". It says nothing about whether the

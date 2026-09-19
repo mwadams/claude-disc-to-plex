@@ -1,4 +1,7 @@
 <#
+.SUPERSEDED 2026-09-19 by derive-manifest-fields.ps1, which absorbs this logic and derives every
+  measurable field; the dispositions loop no longer calls this script. Kept for its tests and history.
+
 .SYNOPSIS
   Correct a manifest's `expectSeconds` to the SOURCE's own container duration, for the small,
   mechanical mismatches only. Exit 0 = manifest now agrees with its sources (or already did).

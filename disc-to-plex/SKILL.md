@@ -294,6 +294,10 @@ This exists because audio was being decided from expectation and corrected later
 tagged `eng`; its `a:1` was assumed a second mix - it is the lossy core. Both were structurally
 perfect and would have shipped.
 
+`derive-manifest-fields.ps1` applies the analyzer's evidence to the manifest (the dispositions loop
+runs it before gating, lane-runner again before `assert-tracks-analysed.ps1`); author only the
+judgement fields.
+
 For a one-off look at a single track, `identify-audio.py` still transcribes on demand:
 
 ```
