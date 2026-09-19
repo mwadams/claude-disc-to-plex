@@ -505,10 +505,17 @@ foreach ($it in $items) {
   # Same two ways out as below: tag it (commentary: [[n, "..."]]) or reject it with evidence
   # (notCommentary: [n]). A stream the analysis marks redundantWith another is a copy of that one
   # and is covered by deciding the one it copies.
+  #
+  # DROPPED means ABSENT FROM audioTracks. A stream the manifest KEEPS is not lost, whatever the
+  # evidence calls it: Friends S09E19 (2026-09-19) - the analyzer inverted the roles (French dub
+  # 'primary', the English 5.1 programme 'commentary'), the manifest rightly kept a:0 as the
+  # programme, and this check refused it for not tagging the programme as a commentary. A mislabel of
+  # a KEPT track is the channel-count check's business above, not this one's.
+  $keptIdx = @(@($it.audioTracks) | ForEach-Object { [int]$_ })
   foreach ($s in @($a.streams)) {
     if ($s.role -ne 'commentary') { continue }
     $ci = [int]$s.a
-    if ($tagged -notcontains $ci -and $rejected -notcontains $ci) {
+    if ($keptIdx -notcontains $ci -and $tagged -notcontains $ci -and $rejected -notcontains $ci) {
       $problems += "$(Split-Path $out -Leaf): a:$ci is a COMMENTARY in the evidence and the " +
                    "manifest drops it without saying so. Keep it - audioTracks gains $ci and " +
                    "commentary: [[$ci, `"Audio Commentary`"]] - or, if the evidence is wrong, " +
