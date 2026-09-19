@@ -106,6 +106,14 @@ foreach ($e in @($d.episodes)) {
 $bad = @($results | Where-Object { -not $_.verified }).Count
 Say ("{0} of {1} episode(s) ripped and verified -> {2}" -f (@($results).Count - $bad), @($results).Count, (Join-Path $ripDir '_rip.json'))
 $code = if ($bad) { 2 } else { 0 }
+# EJECT when every title is ripped and verified - the optical track leaves a recovery disc IN for
+# this rip, so nothing else would (Friends S8 D1 sat in the drive after its rip, 2026-09-19). A short
+# rip is left in: the disc is still needed.
+if ($marker -and -not $bad) {
+  . 'D:/video/.claude/skills/disc-backup/scripts/lib-optical.ps1'
+  $ok = Invoke-DiscEject -DriveLetter ($Source -replace '^dev:', '') -Say { param($m) Say $m }
+  Say $(if ($ok) { 'ejected - swap in the next recovery disc' } else { '*** EJECT FAILED - remove the disc by hand' })
+}
 } finally {
   if ($marker) { Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue }
 }
