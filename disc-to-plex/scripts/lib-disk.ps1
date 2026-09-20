@@ -339,6 +339,25 @@ function Get-UnitStageTargets {
     if (Test-Path -LiteralPath $ripDir -PathType Container) { $targets += $ripDir }
   }
 
+  # A QUALIFIED NAME ('<slug>-angles-mkv') IS **NOT** MATCHED HERE, AND MUST NOT BE.
+  #
+  # 2026-09-12 the Porco Rosso storyboard recovery extracted angle 2 of VTS_05 by hand into
+  # '_stage/porcorosso-angles-mkv'. Nothing read it after its edition was confirmed on 09-18, but
+  # the exact-match loop above looks only for 'porcorosso-mkv', so it survived its own disc's
+  # release and sat alone in _stage for eight days (1.98 GB) until the operator asked why.
+  #
+  # The obvious repair - also match '^<slug>-.+-(suffix)$' - was written, and is WRONG. A slug is
+  # only lowercase-and-strip-spaces (ConvertTo-RipSlug), so HYPHENS SURVIVE INTO IT, and this
+  # pipeline routinely names discs '<LABEL>-<fingerprint>'. Under that pattern the unit
+  # 'GHOST_STORIES_FOR_CHRISTMAS' would match 'ghost_stories_for_christmas-49ed7525-rip' and aim a
+  # DELETE at a different disc's rip intermediate. The slug is a convention, not a record, and a
+  # convention cannot be stretched into evidence of ownership.
+  #
+  # The mechanism for a qualified name already exists and is the branch below: drop a '.unit'
+  # marker in the folder naming its disc. That is a RECORD. What was missing is not matching power
+  # but VISIBILITY - so `_stallwatch.ps1` now reports a suffixed staging directory that no unit
+  # claims, instead of leaving it to be noticed by eye.
+
   # ARTEFACT DIRECTORIES THAT DECLARE THEIR OWN UNIT - see the header section on the slug being a
   # convention rather than a record. Deliberately narrow: an intermediate-suffixed direct child of
   # $Stage, carrying a `.unit` marker whose named unit EQUALS this one. Anything looser could aim a

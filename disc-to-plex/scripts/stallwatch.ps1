@@ -664,6 +664,14 @@ else { Write-Output 'worklist-status.ps1 is MISSING - the work list is not being
 $relaudit = 'D:/video/.claude/skills/disc-to-plex/scripts/audit-release-records.ps1'
 if (Test-Path -LiteralPath $relaudit) { & pwsh -NoProfile -File $relaudit }
 
+# And the opposite failure: staging that no release will EVER take, because no unit can reach it.
+# The per-unit list above cannot see this - it reports an intermediate by what its manifest is doing,
+# which for porcorosso-angles-mkv read "awaiting OCR/publish/confirmation" for eight days after the
+# manifest was done, the outputs confirmed and the disc released. Silent on this board is the whole
+# problem, so it gets its own line. See the script's header for the 1.98 GB that prompted it.
+$stageaudit = 'D:/video/.claude/skills/disc-to-plex/scripts/audit-unclaimed-staging.ps1'
+if (Test-Path -LiteralPath $stageaudit) { & pwsh -NoProfile -File $stageaudit -Stage $Stage -CompletedFile $CompletedFile }
+
 # AND WHETHER THE LINE IS STOPPED FOR SPACE ONLY THE OPERATOR CAN RELEASE.
 #
 # This script printed "no unit is waiting on the operator" for over an hour on 2026-09-01 while the
