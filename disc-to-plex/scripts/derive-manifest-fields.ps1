@@ -530,6 +530,27 @@ foreach ($r in $rows) {
         }
       }
 
+      # 4b. A TITLE WHOSE EVERY STREAM IS SILENT HAS NO AUDIO TO KEEP, AND THAT IS MEASURED, NOT
+      # JUDGED. assert-tracks-analysed refuses a kept stream whose role is 'silent?' ("phantom
+      # track - listen before shipping it") and separately accepts audioTracks [] when every
+      # stream is evidenced silent. Between those two the author has to guess, and on The Man Who
+      # Wasn't There (2026-09-20) they guessed differently for four identical titles: three
+      # barbershop clips kept a:0 at -89 to -91 dB and one dropped it, so the manifest was refused
+      # twice over. A duplicate of a silent stream is silent - analyze-tracks.py proves redundancy
+      # by subtraction and then skips re-measuring the copy, so follow that link rather than read
+      # the skipped measurement as "unknown".
+      $quiet = @{}
+      foreach ($s in @($ev.streams)) { if ($null -ne $s.audioLevelDb -and [double]$s.audioLevelDb -le -60) { $quiet[[int]$s.a] = $true } }
+      foreach ($s in @($ev.streams)) {
+        if ($quiet.ContainsKey([int]$s.a)) { continue }
+        if ($null -ne $s.redundantWith -and $quiet.ContainsKey([int]$s.redundantWith)) { $quiet[[int]$s.a] = $true }
+      }
+      $allQuiet = $false
+      if (@($ev.streams).Count -gt 0 -and $quiet.Count -eq @($ev.streams).Count -and $tracks.Count) {
+        $allQuiet = $true
+        $tracks = [System.Collections.ArrayList]@()
+      }
+
       # 5. languages, positional against the final audioTracks.
       $langs = @(); $langKnown = $true
       foreach ($t in $tracks) {
@@ -548,6 +569,7 @@ foreach ($r in $rows) {
       if ($null -eq $origTracks -or (Show $finalTracks) -ne (Show $origTracks)) {
         if ($null -ne $origTracks) {
           $why = @()
+          if ($allQuiet) { $why += 'every audio stream of this title is silent (measured at or below -60 dB, or proven same-content as one that is) - nothing to keep' }
           if ($remap.Count) { $why += ('redundant ' + (($remap.GetEnumerator() | ForEach-Object { "a:$($_.Key)->a:$($_.Value)" }) -join ', ')) }
           $added = @($finalTracks | Where-Object { $origTracks -notcontains $_ } | ForEach-Object { "a:$_ ($($by[$_].role))" })
           if ($added.Count) { $why += ('added ' + ($added -join ', ')) }

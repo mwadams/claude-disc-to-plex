@@ -158,7 +158,7 @@ while ($true) {
         continue          # nothing to classify: the sidecar exists
       }
       switch ($outcome.Verdict) {
-        'exhausted' { Set-BitmapSubsExhausted -Path $f.FullName }
+        'exhausted' { Set-BitmapSubsExhausted -Path $f.FullName; Write-OcrTerminalLedger -LocalPath $f.FullName -Reason 'OCR ran, no usable text (settled verdict)' -Evidence (@($outcome.Lines) -join ' ') }
         'blocked'   { Set-BitmapSubsBlocked   -Path $f.FullName -Reason $outcome.BlockReason }
       }
       $outcome.Lines | ForEach-Object { "    $_" }

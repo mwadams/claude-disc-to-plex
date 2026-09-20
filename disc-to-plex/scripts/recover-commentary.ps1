@@ -267,7 +267,21 @@ function Invoke-EpisodeRecovery($d, $e) {
   $pd = [double]$pj.format.duration; $bd = [double]$bj.format.duration
   $vEnd = Get-StreamEnd $built 'v:0' $bd
   $cEnd = Get-StreamEnd $built ("a:{0}" -f ($bA.Count - 1)) $bd
-  if ($vEnd -le 0 -or $cEnd -le 0 -or [math]::Abs($cEnd - $vEnd) -gt 1.5) { $why += ("commentary ends {0:N2}s, video {1:N2}s" -f $cEnd, $vEnd) }
+  # THE TWO ENDS ARE NOT SYMMETRIC, AND THIS TEST TREATED THEM AS IF THEY WERE.
+  #   ends EARLY  - the commentary stops before the picture does: coverage is missing, and no
+  #                 amount of proven sync makes that acceptable. Still 1.5 s.
+  #   ends LATE   - the disc's commentary clip simply runs on past the last frame of the episode.
+  #                 The container check below already assumes exactly this ($wantEnd takes the
+  #                 LONGER of the two), so refusing it here contradicted the line underneath.
+  # The overhang is not unbounded: it can be no longer than the door clip itself, which is measured.
+  # Friends S06E15 (2026-09-20) stopped at 2.94 s over, with identity proven, sync offset 42 ms and
+  # 6 of 6 luma windows matched - and its door clip is 1,321.31 s against a 1,318.40 s episode, so
+  # every millisecond of the overhang was accounted for by the clip's own length.
+  $doorEnd = [double]$r.steps['door']['seconds']
+  $lateAllowed = [math]::Max(1.5, ($doorEnd - $vEnd) + 0.5)
+  if ($vEnd -le 0 -or $cEnd -le 0 -or ($cEnd -lt $vEnd - 1.5) -or ($cEnd -gt $vEnd + $lateAllowed)) {
+    $why += ("commentary ends {0:N2}s, video {1:N2}s (door clip {2:N2}s, so at most {3:N2}s of overhang is explained)" -f $cEnd, $vEnd, $doorEnd, $lateAllowed)
+  }
   # The container may GROW to the commentary's own end - the disc's commentary runs ~1.3 s past the
   # last frame, exactly as the one transcode.ps1 shipped for S08E23 from the raw clip (1318.752 s).
   # It must never shrink, and must not grow past the longer of the two.
@@ -334,6 +348,17 @@ try {
         if ($f.FullName.StartsWith([IO.Path]::GetFullPath($RecoveryRoot))) { Remove-Item -LiteralPath $f.FullName -Force }
       }
       Say ("{0}: every episode handed over - door rips released" -f $d.unit)
+      # CLOSE THE DISC'S OWN RECORD. The optical loop writes `<unit>.inserted.json` when the disc
+      # goes in; leaving it open makes a finished disc look like one still in the drive, and the
+      # `.recovered` marker is what tells the next session this unit is settled. Both were being
+      # written by hand after every disc - a manual step in an otherwise self-draining lane.
+      $eps = @(@($d.episodes) | ForEach-Object { "$($_.episode)" }) -join ' + '
+      $doneNote = "$eps handed over $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
+      Set-Content -LiteralPath (Join-Path $RecoveryRoot "$($d.unit).recovered") -Value $doneNote -Encoding UTF8
+      $ins = Join-Path $RecoveryRoot "$($d.unit).inserted.json"
+      if (Test-Path -LiteralPath $ins) {
+        try { Move-Item -LiteralPath $ins -Destination (Join-Path $RecoveryRoot "$($d.unit).inserted.done.json") -Force } catch { }
+      }
     }
   }
   # board-readable summary across every unit

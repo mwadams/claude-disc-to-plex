@@ -222,8 +222,22 @@ foreach ($it in $items) {
               # Silent on the measurement, not on a failure to measure: a stream whose level was
               # never taken (audioLevelDb null, role 'analysis-failed') evidences nothing. Requiring
               # a NUMBER here is what stops "the analyser fell over" from reading as "there is no audio".
-              $measured = @($st | Where-Object { $null -ne $_.audioLevelDb -and [double]$_.audioLevelDb -le -60 })
-              $allSilent = ($st.Count -gt 0 -and $measured.Count -eq $st.Count)
+              $quiet = @{}
+              foreach ($s in $st) { if ($null -ne $s.audioLevelDb -and [double]$s.audioLevelDb -le -60) { $quiet[[int]$s.a] = $true } }
+              # A DUPLICATE OF A SILENT STREAM IS SILENT, AND THE ANALYSER DELIBERATELY DOES NOT
+              # RE-MEASURE IT. analyze-tracks.py proves redundancy by SUBTRACTING one stream from
+              # another ("SAME CONTENT") and then skips transcribing/measuring the copy - so a
+              # title of three identical silent streams presented one measurement and two nulls,
+              # and this check read the nulls as "never measured" and refused. That is a failure to
+              # FOLLOW evidence, not a missing measurement: The Man Who Wasn't There's title 9
+              # (a:0 at -95.0 dB, a:1 and a:2 proven same-content as a:0) was refused on 2026-09-20.
+              # One hop only - redundantWith always names the kept stream, never another copy.
+              foreach ($s in $st) {
+                if ($quiet.ContainsKey([int]$s.a)) { continue }
+                if ($null -eq $s.redundantWith) { continue }
+                if ($quiet.ContainsKey([int]$s.redundantWith)) { $quiet[[int]$s.a] = $true }
+              }
+              $allSilent = ($st.Count -gt 0 -and $quiet.Count -eq $st.Count)
             } catch { $allSilent = $false }
           }
           if ($allSilent) {

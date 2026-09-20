@@ -23,13 +23,79 @@
 function Get-BitmapSubsCachePath {
   param(
     [Parameter(Mandatory)][string]$Path,
-    [string]$CacheDir = (Join-Path $env:LOCALAPPDATA 'disc-to-plex\subcache')
+    [string]$CacheDir = (Join-Path $env:LOCALAPPDATA 'disc-to-plex\subcache'),
+    # THE VERDICT IS A PROPERTY OF THE BYTES, NOT OF WHERE THEY SIT. The OCR track reads the LOCAL
+    # copy and the publish/reclaim gate asks about the NAS copy, so one file had two keys: OCR
+    # recorded 'exhausted' against D:\...\S00E72...mkv, the gate looked up \\NASTEAMV\...\S00E72...
+    # .mkv, found nothing, and held the file as "OCR not finished" for ever - a 2-packet montage
+    # that can never produce a sidecar, blocking the whole Friends reclaim (2026-09-20).
+    # Publish preserves length and mtime exactly (verified: identical ticks on both copies), so
+    # leaf+length+mtime identifies the content across roots while still invalidating on a rewrite.
+    [switch]$ContentKey
   )
   $item = Get-Item -LiteralPath $Path
-  $key  = '{0}|{1}|{2}' -f $item.FullName, $item.Length, $item.LastWriteTimeUtc.Ticks
+  $key  = $(if ($ContentKey) { '{0}|{1}|{2}' -f $item.Name, $item.Length, $item.LastWriteTimeUtc.Ticks }
+            else            { '{0}|{1}|{2}' -f $item.FullName, $item.Length, $item.LastWriteTimeUtc.Ticks })
   $md5  = [Security.Cryptography.MD5]::Create()
   $hash = [BitConverter]::ToString($md5.ComputeHash([Text.Encoding]::UTF8.GetBytes($key))).Replace('-','')
   Join-Path $CacheDir "$hash.txt"
+}
+
+function Write-OcrTerminalLedger {
+  <# PUT THE SETTLED VERDICT WHERE THE GATES CAN READ IT. Set-BitmapSubsExhausted writes a
+     per-user cache under %LOCALAPPDATA%; the publish and reclaim gates read
+     `_ocr-queue-not-applicable.csv` under D:\video instead. The OCR *queue* writes that ledger,
+     the OCR *sweep* did not, so a file the sweep settled was held for ever by a gate that could
+     not see the verdict - Friends S00E72, a 128 s montage with two subtitle packets, blocked the
+     whole Friends reclaim on 2026-09-20 and the cache entry was not even visible from the reclaim
+     loop's process. A file under D:\video is visible to every track; a per-user cache is not.
+     Keyed on the NAS path, because that is what the gates hold. #>
+  param(
+    [Parameter(Mandatory)][string]$LocalPath,
+    [Parameter(Mandatory)][string]$Reason,
+    [string]$Evidence = '',
+    [string]$Ledger  = 'D:\video\_ocr-queue-not-applicable.csv',
+    [string]$LocalRoot = 'D:\video',
+    [string]$NasRoot   = '\\NASTEAMV\Multimedia'
+  )
+  $nas = $LocalPath
+  if ($LocalPath.StartsWith($LocalRoot, [StringComparison]::OrdinalIgnoreCase)) {
+    $nas = Join-Path $NasRoot $LocalPath.Substring($LocalRoot.Length).TrimStart('\', '/')
+  }
+  # Only a path the NAS actually holds belongs in a ledger the release gates act on.
+  if (-not (Test-Path -LiteralPath $nas)) { return $false }
+  try {
+    if (Test-Path -LiteralPath $Ledger) {
+      foreach ($r in (Import-Csv -LiteralPath $Ledger)) { if ("$($r.Path)" -eq $nas) { return $false } }
+    }
+  } catch { }
+  $parts = @($nas.Substring($NasRoot.Length).TrimStart('\', '/') -split '[\\/]')
+  [pscustomobject]@{
+    Kind     = $(if ($parts.Count -ge 1) { $parts[0] } else { '' })
+    Work     = $(if ($parts.Count -ge 2) { $parts[1] } else { '' })
+    Path     = $nas
+    Season   = $(if ($parts.Count -ge 4) { $parts[2] } else { '' })
+    Reason   = $Reason
+    Evidence = ($Evidence -replace '\s+', ' ').Trim()
+    When     = (Get-Date -Format s)
+  } | Export-Csv -LiteralPath $Ledger -Append -NoTypeInformation
+  return $true
+}
+
+function Write-BitmapSubsVerdict {
+  <# Record a settled verdict under BOTH keys - the path key (so existing readers that only know
+     that key keep working) and the content key (so the same bytes under another root resolve to
+     the same verdict). Every writer goes through here; writing only one key is the defect above. #>
+  param(
+    [Parameter(Mandatory)][string]$Path,
+    [Parameter(Mandatory)][string]$Verdict,
+    [string]$CacheDir = (Join-Path $env:LOCALAPPDATA 'disc-to-plex\subcache')
+  )
+  New-Item -ItemType Directory -Path $CacheDir -Force | Out-Null
+  foreach ($c in @((Get-BitmapSubsCachePath -Path $Path -CacheDir $CacheDir),
+                   (Get-BitmapSubsCachePath -Path $Path -CacheDir $CacheDir -ContentKey))) {
+    Set-Content -LiteralPath $c -Value $Verdict
+  }
 }
 
 # THE one place the pipeline's subtitle state distinctions live. Four verdicts:
@@ -62,6 +128,16 @@ function Get-BitmapSubsVerdict {
   if (Test-Path -LiteralPath $cache) {
     $v = (Get-Content -LiteralPath $cache -Raw).Trim()
     if ($v) { return $v }
+  }
+  # Miss on the path key: the same bytes may already have been judged under another root (the OCR
+  # track works on D:, the reclaim gate asks about the NAS). Backfill so the walk happens once.
+  $ck = Get-BitmapSubsCachePath -Path $Path -CacheDir $CacheDir -ContentKey
+  if (Test-Path -LiteralPath $ck) {
+    $v = (Get-Content -LiteralPath $ck -Raw).Trim()
+    if ($v) {
+      try { New-Item -ItemType Directory -Path $CacheDir -Force | Out-Null; Set-Content -LiteralPath $cache -Value $v } catch { }
+      return $v
+    }
   }
 
   # Counting packets means a full pass over the file, so the answer is cached: it can only change
@@ -167,9 +243,7 @@ function Set-BitmapSubsExhausted {
     [Parameter(Mandatory)][string]$Path,
     [string]$CacheDir = (Join-Path $env:LOCALAPPDATA 'disc-to-plex\subcache')
   )
-  $cache = Get-BitmapSubsCachePath -Path $Path -CacheDir $CacheDir
-  New-Item -ItemType Directory -Path $CacheDir -Force | Out-Null
-  Set-Content -LiteralPath $cache -Value 'exhausted'
+  Write-BitmapSubsVerdict -Path $Path -Verdict 'exhausted' -CacheDir $CacheDir
 }
 
 # Record that OCR RAN and hit a defect a retry cannot fix (wrong-language track, dictionary
@@ -182,10 +256,8 @@ function Set-BitmapSubsBlocked {
     [Parameter(Mandatory)][string]$Reason,
     [string]$CacheDir = (Join-Path $env:LOCALAPPDATA 'disc-to-plex\subcache')
   )
-  $cache = Get-BitmapSubsCachePath -Path $Path -CacheDir $CacheDir
-  New-Item -ItemType Directory -Path $CacheDir -Force | Out-Null
   # single line: the verdict reader trims and compares the whole content
-  Set-Content -LiteralPath $cache -Value ('blocked:' + ($Reason -replace '\s+', ' ').Trim())
+  Write-BitmapSubsVerdict -Path $Path -Verdict ('blocked:' + ($Reason -replace '\s+', ' ').Trim()) -CacheDir $CacheDir
 }
 
 # ---------------------------------------------------------------------------------------------

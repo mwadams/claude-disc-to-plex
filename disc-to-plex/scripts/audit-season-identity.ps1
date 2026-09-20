@@ -140,8 +140,18 @@ function Read-DispositionClaims {
   foreach ($l in $Lines) {
     # Two shapes in the wild: "S09E01 Title" and the full library leaf "Friends (1994) - S10E01 -
     # Title" (Friends S10, 2026-09-19 - read as NO claims, all 12 slots flagged as unbacked).
-    if ($l -match '^(t\d+)\|(episode|extra)\|(?:[^|]*?\s-\s)?(S\d{1,2}E\d{1,3})(?:\s+-)?\s+([^|]+)\|') {
-      $claims += [pscustomobject]@{ Row = $Matches[1]; Slot = (Get-SlotFromLeaf $Matches[3]); Title = (Get-ClaimedTitle $Matches[4]) }
+    # A THIRD SHAPE: the double episode, `Friends (1994) - S10E17-E18 - The Last One`. Two aired parts
+    # authored as one title ship as ONE file under a spanning name, and the span was read as no claim
+    # at all - so the finale reported itself as published with NO identity evidence (2026-09-20).
+    # Every slot the span names is claimed by that row.
+    if ($l -match '^(t\d+)\|(episode|extra)\|(?:[^|]*?\s-\s)?(S\d{1,2}E\d{1,3}(?:\s*-\s*(?:S\d{1,2})?E\d{1,3})+|S\d{1,2}E\d{1,3})(?:\s+-)?\s+([^|]+)\|') {
+      $row = $Matches[1]; $span = $Matches[3]; $title = (Get-ClaimedTitle $Matches[4])
+      $season = $(if ($span -match '^S(\d{1,2})') { $Matches[1] } else { '' })
+      foreach ($m in [regex]::Matches($span, '(?i)(?:S(\d{1,2}))?E(\d{1,3})')) {
+        $sn = $(if ("$($m.Groups[1].Value)") { $m.Groups[1].Value } else { $season })
+        if (-not "$sn") { continue }
+        $claims += [pscustomobject]@{ Row = $row; Slot = (Get-SlotKey $sn $m.Groups[2].Value); Title = $title }
+      }
     }
   }
   return $claims
@@ -156,6 +166,12 @@ if ($SelfTest) {
   $lc = @(Read-DispositionClaims @('t03|episode|Friends (1994) - S10E01 - The One After Joey and Rachel Kiss|speech:x', 't04|episode|S09E01 The One Where No One Proposes|speech:y'))
   T 'claims: full-leaf row form is read'  ($lc.Count -eq 2 -and $lc[0].Slot -eq 'S10E01' -and $lc[0].Title -match '^The One After Joey')
   T 'claims: short row form still read'   ($lc[1].Slot -eq 'S09E01' -and $lc[1].Title -match '^The One Where No One')
+  $sp = @(Read-DispositionClaims @('t07|episode|Friends (1994) - S10E17-E18 - The Last One|speech:x'))
+  T 'claims: a double episode claims BOTH slots' ($sp.Count -eq 2 -and $sp[0].Slot -eq 'S10E17' -and $sp[1].Slot -eq 'S10E18')
+  T 'claims: both span slots carry the title'    (@($sp | Where-Object { $_.Title -eq 'The Last One' }).Count -eq 2)
+  $sp2 = @(Read-DispositionClaims @('t02|episode|S01E01-S01E02 Pilot|speech:x'))
+  T 'claims: a spelled-out span is read'         ($sp2.Count -eq 2 -and $sp2[1].Slot -eq 'S01E02')
+  T 'claims: a lone slot still yields ONE claim' (@(Read-DispositionClaims @('t01|episode|S03E02 The Priory School|speech:x')).Count -eq 1)
   T 'leaf slot is found'                ((Get-SlotFromLeaf 'Man In A Suitcase S01E06.mkv') -eq 'S01E06')
   T 'leaf slot normalises the padding'  ((Get-SlotFromLeaf 'Show - S1E6 - Name.mkv') -eq 'S01E06')
   T 'leaf with no slot returns empty'   ((Get-SlotFromLeaf 'O Brother Where Art Thou.mkv') -eq '')
@@ -262,8 +278,30 @@ try {
     $q = [uri]::EscapeDataString($bare)
     $found = Invoke-RestMethod -Uri "$base/library/sections/$Section/all?title=$q&X-Plex-Token=$tok"
     $dirs = @($found.MediaContainer.Directory)
-    $hit = @($dirs | Where-Object { (ConvertTo-ComparableTitle $_.title) -eq (ConvertTo-ComparableTitle $bare) } | Select-Object -First 1)
+    $hit = @($dirs | Where-Object { (ConvertTo-ComparableTitle $_.title) -eq (ConvertTo-ComparableTitle $bare) })
     if (-not $hit.Count -and $dirs.Count -eq 1) { $hit = @($dirs[0]) }
+    # TWO SHOWS CAN SHARE A TITLE, AND THE YEAR THAT TELLS THEM APART IS IN THE FOLDER, NOT THE TITLE.
+    # The library holds both 'Sherlock Holmes (1964)' and 'Sherlock Holmes (1984)' and Plex titles both
+    # of them 'Sherlock Holmes', so taking the first exact match picked the 1964 show, whose season 3
+    # then did not resolve - and the whole title check reported itself unavailable instead of wrong.
+    # The show's own Location is the tie-break: its leaf IS the folder name this audit was asked about.
+    if ($hit.Count -gt 1) {
+      $byFolder = @()
+      foreach ($c in $hit) {
+        try {
+          $meta = Invoke-RestMethod -Uri "$base/library/metadata/$($c.ratingKey)?X-Plex-Token=$tok"
+          $leaves = @(@($meta.MediaContainer.Directory.Location.path) | ForEach-Object { ($_ -replace '/+$', '') -split '[\\/]' | Select-Object -Last 1 })
+          if ($leaves -contains $Show) { $byFolder += $c }
+        } catch { }
+      }
+      if ($byFolder.Count -eq 1) { $hit = @($byFolder[0]) }
+      else {
+        # Fall back to the year in the folder name; ambiguity that survives both is NOT a pass.
+        $yr = $(if ($Show -match '\((19|20)\d{2}\)') { [int]($Matches[0] -replace '[()]', '') } else { 0 })
+        $byYear = @($hit | Where-Object { $yr -and [int]"$($_.year)" -eq $yr })
+        $hit = $(if ($byYear.Count -eq 1) { @($byYear[0]) } else { @() })
+      }
+    }
     $key = $(if ($hit.Count) { $hit[0].ratingKey } else { $null })
     if ($key) {
       $seasons = Invoke-RestMethod -Uri "$base/library/metadata/$key/children?X-Plex-Token=$tok"
