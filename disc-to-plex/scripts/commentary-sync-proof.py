@@ -130,6 +130,9 @@ def main():
     ap.add_argument('--min-video-r', type=float, default=0.60,
                     help='a window counts as matched at this r; low-activity windows (few cuts) sit lower')
     ap.add_argument('--min-video-windows', type=int, default=4)
+    ap.add_argument('--min-luma-r', type=float, default=0.97,
+                    help='a window also passes if the RAW luma sequences correlate this well (same footage '
+                         'tracks at 0.98+; a different episode of the same show sits far below)')
     # 200 ms, MEASURED: on S08E23 the commentary-vs-programme envelope peaks at +100..+110 ms in 5 of
     # 6 windows although the true offset is ZERO (the door commentary against the commentary shipped
     # from the raw clip: r 0.91-0.95 at 0 ms). The commentary's programme bed is not the programme
@@ -160,16 +163,26 @@ def main():
         starts = np.linspace(maxlag_f, n - vwin - maxlag_f - 2, a.windows).astype(int)
         for s in starts:
             r, lag = xcorr(cut_d[s:s + vwin], cut_p[s:s + vwin], maxlag_f)
-            vres.append({'atSeconds': round(s / FPS, 1), 'r': round(r, 3), 'lagFrames': int(lag)})
+            # CUTS ARE A WEAK SIGNAL IN A WINDOW THAT HAS FEW OF THEM. |diff| peaks at shot changes, so a
+            # long dialogue scene gives a small, noisy series and r lands at 0.5-0.6 on footage that IS
+            # the same - Friends S07E23 (2026-09-20) scored 3/6 windows and was refused, while the two
+            # files are frame-identical (SSIM 0.98 at 300s/600s/1000s, and the frames at 600s are the
+            # same shot). The RAW luma sequence is the stronger test: the same footage tracks almost
+            # exactly, different footage does not. A window passes on EITHER measure; both are recorded.
+            rl, lagl = xcorr(lv_d[s:s + vwin], lv_p[s:s + vwin], maxlag_f)
+            vres.append({'atSeconds': round(s / FPS, 1), 'r': round(r, 3), 'lagFrames': int(lag),
+                         'lumaR': round(rl, 3), 'lumaLagFrames': int(lagl)})
     res['video'] = vres
     if not vres:
         res['reasons'].append('video: too few decoded frames to test (%d)' % n)
     else:
-        good = [v for v in vres if v['r'] >= a.min_video_r]
+        good = [v for v in vres if v['r'] >= a.min_video_r or v['lumaR'] >= a.min_luma_r]
         if len(good) < min(a.min_video_windows, len(vres)):
-            res['reasons'].append('video: only %d of %d window(s) reach r %.2f (%s)' % (len(good), len(vres), a.min_video_r,
-                                  ', '.join('%.0fs r=%.2f lag %d' % (v['atSeconds'], v['r'], v['lagFrames']) for v in vres)))
-        lags = [v['lagFrames'] for v in (good or vres)]
+            res['reasons'].append('video: only %d of %d window(s) reach cut r %.2f or luma r %.2f (%s)' % (
+                                  len(good), len(vres), a.min_video_r, a.min_luma_r,
+                                  ', '.join('%.0fs r=%.2f luma=%.2f lag %d' % (v['atSeconds'], v['r'], v['lumaR'], v['lagFrames']) for v in vres)))
+        # The lag of whichever measure matched - a window that passed on luma alone carries the luma lag.
+        lags = [(v['lagFrames'] if v['r'] >= a.min_video_r else v['lumaLagFrames']) for v in (good or vres)]
         if max(lags) - min(lags) > 1:
             res['reasons'].append('video: the lag MOVES between matched windows (%s frames) - drift or a different cut' % lags)
         med = int(np.median(lags))
@@ -193,16 +206,35 @@ def main():
     ares = best[2] if best else []
     res['publishedAudio'] = best[1] if best else None
     res['audio'] = ares
+    # THE AUDIO TEST CORROBORATES; THE PICTURE DECIDES. A commentary is a voice track over the
+    # programme, so its envelope tracks the programme only while the speakers pause. A talk-dense
+    # commentary correlates barely above the control even when it is unquestionably the right one:
+    # Friends S07E23 (2026-09-20) measured 0.235 against a 0.158 control while its picture matched the
+    # published episode in ALL SIX windows at luma r 0.99+ (and SSIM 0.98 over three 20 s spans), and
+    # the two neighbouring episodes reached only one window each. So when the picture is proven
+    # outright, an audio disagreement is RECORDED as a warning rather than refusing a correct build.
+    # It still refuses whenever the picture is anything less than unanimous.
+    audio_reasons = []
     if not ares:
-        res['reasons'].append('audio: no audio could be decoded from one side')
+        audio_reasons.append('audio: no audio could be decoded from one side')
     else:
         inlag = [x for x in ares if abs(x['lagMs']) <= a.audio_lag_tolerance_ms]
         med_r = float(np.median([x['r'] for x in ares])); med_c = float(np.median([x['controlR'] for x in ares]))
         res['audioMedianR'] = round(med_r, 3); res['audioMedianControlR'] = round(med_c, 3)
         if len(inlag) < max(3, int(np.ceil(0.6 * len(ares)))):
-            res['reasons'].append('audio: only %d of %d window(s) peak within %d ms of zero lag' % (len(inlag), len(ares), a.audio_lag_tolerance_ms))
+            audio_reasons.append('audio: only %d of %d window(s) peak within %d ms of zero lag' % (len(inlag), len(ares), a.audio_lag_tolerance_ms))
         if med_r - med_c < a.min_audio_margin:
-            res['reasons'].append('audio: median r %.3f does not beat the control %.3f by %.2f - the commentary does not follow THIS programme' % (med_r, med_c, a.min_audio_margin))
+            audio_reasons.append('audio: median r %.3f does not beat the control %.3f by %.2f - the commentary does not follow THIS programme' % (med_r, med_c, a.min_audio_margin))
+
+    picture_proven = (bool(vres) and res.get('videoMatchedWindows') == len(vres)
+                      and all(v['lumaR'] >= a.min_luma_r for v in vres)
+                      and not any(r.startswith('video:') or r.startswith('durations') for r in res['reasons']))
+    res['pictureProven'] = picture_proven
+    if audio_reasons and picture_proven:
+        res.setdefault('warnings', []).extend(
+            ['%s (NOT refused: the picture matched every window at luma r >= %.2f)' % (r, a.min_luma_r) for r in audio_reasons])
+    else:
+        res['reasons'].extend(audio_reasons)
 
     res['ok'] = not res['reasons']
     txt = json.dumps(res, indent=1)
