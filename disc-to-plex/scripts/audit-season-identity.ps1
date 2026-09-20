@@ -144,7 +144,12 @@ function Read-DispositionClaims {
     # authored as one title ship as ONE file under a spanning name, and the span was read as no claim
     # at all - so the finale reported itself as published with NO identity evidence (2026-09-20).
     # Every slot the span names is claimed by that row.
-    if ($l -match '^(t\d+)\|(episode|extra)\|(?:[^|]*?\s-\s)?(S\d{1,2}E\d{1,3}(?:\s*-\s*(?:S\d{1,2})?E\d{1,3})+|S\d{1,2}E\d{1,3})(?:\s+-)?\s+([^|]+)\|') {
+    # A FOURTH SHAPE: the slot ON ITS OWN, `t01|episode|S01E01|speech:...`. Some shows have no
+    # on-screen episode titles, so the disposition names the slot and stops - and requiring a title
+    # meant the row parsed as NO CLAIM AT ALL. The Owl Service's eight episodes were reported as
+    # published with no identity evidence on 2026-09-20 on the strength of rows that named every
+    # one of them correctly. The title is optional; the SLOT is the claim.
+    if ($l -match '^(t\d+)\|(episode|extra)\|(?:[^|]*?\s-\s)?(S\d{1,2}E\d{1,3}(?:\s*-\s*(?:S\d{1,2})?E\d{1,3})+|S\d{1,2}E\d{1,3})(?:(?:\s+-)?\s+([^|]+))?\|') {
       $row = $Matches[1]; $span = $Matches[3]; $title = (Get-ClaimedTitle $Matches[4])
       $season = $(if ($span -match '^S(\d{1,2})') { $Matches[1] } else { '' })
       foreach ($m in [regex]::Matches($span, '(?i)(?:S(\d{1,2}))?E(\d{1,3})')) {
@@ -172,6 +177,9 @@ if ($SelfTest) {
   $sp2 = @(Read-DispositionClaims @('t02|episode|S01E01-S01E02 Pilot|speech:x'))
   T 'claims: a spelled-out span is read'         ($sp2.Count -eq 2 -and $sp2[1].Slot -eq 'S01E02')
   T 'claims: a lone slot still yields ONE claim' (@(Read-DispositionClaims @('t01|episode|S03E02 The Priory School|speech:x')).Count -eq 1)
+  $nt = @(Read-DispositionClaims @('t01|episode|S01E01|speech:That noise in the ceiling'))
+  T 'claims: a slot with NO title is still a claim' ($nt.Count -eq 1 -and $nt[0].Slot -eq 'S01E01' -and -not "$($nt[0].Title)".Trim())
+  T 'claims: an untitled slot does not eat the next field' (-not ("$($nt[0].Title)" -match 'speech'))
   T 'leaf slot is found'                ((Get-SlotFromLeaf 'Man In A Suitcase S01E06.mkv') -eq 'S01E06')
   T 'leaf slot normalises the padding'  ((Get-SlotFromLeaf 'Show - S1E6 - Name.mkv') -eq 'S01E06')
   T 'leaf with no slot returns empty'   ((Get-SlotFromLeaf 'O Brother Where Art Thou.mkv') -eq '')
@@ -362,6 +370,10 @@ foreach ($slot in ($published.Keys | Sort-Object)) {
   if (-not $plexReachable) { continue }
   $canon = "$($plexTitles[$slot])"
   if (-not $canon) { $noPlexTitle += [pscustomobject]@{ Slot = $slot; Claim = $claim.Title }; continue }
+  # A ROW THAT NAMES NO TITLE STILL BACKS ITS SLOT. There is simply nothing to compare it against,
+  # and an empty string must never be run through the swap test below - it matches nothing, so it
+  # would be reported as "named differently" on every untitled show.
+  if (-not "$($claim.Title)".Trim()) { $agreed++; continue }
   if (Test-TitlesNearlyEqual $claim.Title $canon) { $agreed++; continue }
 
   # THE QUESTION IS "IS THIS FILE IN THE WRONG SLOT?", NOT "DO THE STRINGS MATCH?"

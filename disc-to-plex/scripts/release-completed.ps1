@@ -66,14 +66,28 @@ foreach ($pair in @(@{ n='Stage'; v=$Stage; t='Container' },
   }
 }
 
-# A UNIT NAME NEVER CONTAINS A COMMA. It does when `-File ... -Units A,B` reaches the child as one
-# string: [string[]] keeps it as a SINGLE element, so the loop runs once against a unit that cannot
-# exist and prints 'not staged' - the same misleading line the -Stage spill produces, by a different
+# A COMMA IN A UNIT NAME USUALLY MEANS `-File ... -Units A,B` REACHED THE CHILD AS ONE STRING:
+# [string[]] keeps it as a SINGLE element, so the loop runs once against a unit that cannot exist
+# and prints 'not staged' - the same misleading line the -Stage spill produces, by a different
 # route. Whichever shell mangled it, the answer is the same, so say it once.
+#
+# BUT FILMS HAVE COMMAS IN THEIR TITLES, and a unit is named after its disc. "The Good, The Bad And
+# The Ugly" released all nine of its published files on 2026-09-20 and then had its staging refused
+# on the strength of its own name, leaving the reclaim FAILED with nothing actually wrong. A
+# flattened list names something that was never staged; a real title names a folder that is right
+# there. Ask the disk before refusing, and only distrust the comma when the name is unknown.
 foreach ($u0 in $Units) {
   if ($u0 -match ',') {
-    throw ('-Units contains a comma: [{0}]. The array was flattened into one string on the way in. ' +
-           'Invoke with -Command and an explicit @() array - see the header.') -f $u0
+    $known = (Test-Path -LiteralPath (Join-Path $Stage $u0)) -or
+             (@(Get-Content -LiteralPath $Completed -ErrorAction SilentlyContinue |
+                ForEach-Object { $_.Trim() }) -contains $u0) -or
+             @(Get-ChildItem -LiteralPath $Stage -Directory -ErrorAction SilentlyContinue |
+               Where-Object { $_.Name -like ($u0 + '-*') }).Count -gt 0
+    if (-not $known) {
+      throw ('-Units contains a comma and names nothing this pipeline has staged or completed: [{0}]. ' +
+             'The array was most likely flattened into one string on the way in - invoke with ' +
+             '-Command and an explicit @() array - see the header.') -f $u0
+    }
   }
 }
 

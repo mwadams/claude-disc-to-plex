@@ -1069,6 +1069,28 @@ foreach($it in $items){
       if($sfps){ Write-Output "   stills frame rate $sfps (from source)" }
       else { $sfps = '24'; Write-Output "   stills frame rate 24 (source reported '$rfr', outside 10-60fps - falling back)" }
     }
+    # `stillsHold` IS PER INPUT FRAME, AND THAT IS EASY TO AUTHOR WRONG. The setpts filter below
+    # stretches EVERY input frame by $hold, so the output runs $hold x N. That is right for a
+    # gallery (N stills, a few seconds each) and right for a single card under a score. It is
+    # catastrophically wrong when the author reads "hold" as the TOTAL and the title turns out to
+    # carry more than one still: The Prisoner Disk 6's audio interview declared stillsHold = the
+    # 2,867.81 s audio length over a title with 8 still cells and encoded 6 h 22 m of video -
+    # 573,562 frames, exactly 8x - which the length gate then rejected after 283 s of work.
+    # expectSeconds already states the intended TOTAL, so measure N and divide. Packets, not
+    # frames: a packet count does not decode the title.
+    if ($it.expectSeconds) {
+      $np = "$(& $fp -v error @inspec -select_streams v:0 -count_packets -show_entries stream=nb_read_packets -of csv=p=0 2>$null | Select-Object -First 1)".Trim().TrimEnd(',')
+      if ($np -match '^\d+$' -and [int]$np -gt 0) {
+        $derived = [double]$it.expectSeconds / [int]$np
+        if ([math]::Abs($derived - $hold) -gt 0.25) {
+          Write-Output ("   stillsHold {0:N2}s x {1} still(s) = {2:N1}s, but expectSeconds is {3:N2}s - using {4:N2}s per still so the total matches" -f `
+                        $hold, [int]$np, ($hold * [int]$np), [double]$it.expectSeconds, $derived)
+          $hold = $derived
+        }
+      } else {
+        Write-Output "   stills frame count unavailable ('$np') - keeping the authored stillsHold"
+      }
+    }
     $vf = "setpts=N*$hold/TB,fps=$sfps"
     Write-Output ("   STILLS GALLERY - holding each frame {0:N1}s (setpts+fps)" -f $hold)
   }

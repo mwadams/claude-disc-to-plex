@@ -981,6 +981,16 @@ if (Test-Path -LiteralPath $identityAudit) {
       foreach ($pp in $raw.PSObject.Properties) { $identityCache[$pp.Name] = $pp.Value }
     } catch { $identityCache = @{} }
     $cacheDirty = $false
+    # The other two inputs to every cached verdict, as tick counts (digits survive ConvertFrom-Json
+    # unchanged, unlike an ISO date - see the trap described below). Either moving retires the cache.
+    $identityAuditTicks = 0
+    try { $identityAuditTicks = (Get-Item -LiteralPath $identityAudit -ErrorAction Stop).LastWriteTimeUtc.Ticks } catch { }
+    $dispositionsTicks = 0
+    try {
+      $newest = Get-ChildItem -LiteralPath 'D:/video/_catalogue' -Filter '*.dispositions.txt' -File -ErrorAction Stop |
+                Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+      if ($newest) { $dispositionsTicks = $newest.LastWriteTimeUtc.Ticks }
+    } catch { }
 
     # A CAP, because a board that takes a minute stops being read. Six covers a day's work here.
     foreach ($k in @($todayShows.Keys | Sort-Object | Select-Object -First 6)) {
@@ -993,7 +1003,13 @@ if (Test-Path -LiteralPath $identityAudit) {
       # This is the ConvertFrom-Json [datetime] trap recorded in memory the SAME MORNING, and handled
       # correctly for `at` below while being missed for `key` two lines above it. A string of digits
       # is left alone by ConvertFrom-Json, so it compares exactly.
-      $key = [string]$todayShows[$k].Ticks
+      # THE KEY MUST MOVE WHENEVER THE ANSWER COULD. It was the publish time alone, so a fault that
+      # had since been FIXED - by correcting a disposition row, or by fixing the audit itself - kept
+      # being reported for the rest of the cache window from a stale verdict. On 2026-09-20 the board
+      # printed two SEASON IDENTITY FAULTs (Friends S10, Sherlock S03) that the audit, run by hand at
+      # the same moment, passed. Publishing is only one of three inputs; the other two are the
+      # dispositions the audit reads and the script that reads them.
+      $key = [string]$todayShows[$k].Ticks + '|' + [string]$identityAuditTicks + '|' + [string]$dispositionsTicks
       $hit = $identityCache[$k]
       $fresh = $false
       if ($hit -and "$($hit.key)" -eq $key) {
