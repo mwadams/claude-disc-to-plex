@@ -929,12 +929,20 @@ function Get-MenuStillRows([string]$unit){
       }
       foreach($r in $rows){
         if("$($r.kind)" -ne 'STILLS'){ continue }
-        if("$($r.domain)".ToLowerInvariant() -ne 'menu'){ continue }
+        # `vmgm` CLOSES ITS OBLIGATION THE SAME WAY `menu` DOES. The video-manager menu domain was
+        # unreachable until 2026-09-20, so no manifest could name it and every such gallery stayed
+        # open - that is what held 13 Water Margin discs. A vmgm row has no `vts`, because that
+        # domain has no title set; the dispositions key for those pages is `menu0p<first>-<last>`,
+        # so it joins on vts 0. Without this, a disc could build its gallery natively through
+        # transcode.ps1 and STILL be refused, which would send the next person back to stamping
+        # `shipped:` by hand - the very thing this join exists to stop.
+        $rdom = "$($r.domain)".ToLowerInvariant()
+        if($rdom -notin @('menu','vmgm')){ continue }
         $rsrc = "$($r.src)"
         if(-not $rsrc){ continue }
         if((Split-Path ($rsrc -replace '/', '\') -Leaf) -ne $unit){ continue }
         $rowsOut += [pscustomobject]@{
-          Vts      = [int]("$($r.vts)")
+          Vts      = $(if($rdom -eq 'vmgm'){ 0 } else { [int]("$($r.vts)") })
           Pages    = (Expand-PgcSpec "$($r.pgcs)")
           Out      = "$($r.out)"
           Manifest = $mf.Name
