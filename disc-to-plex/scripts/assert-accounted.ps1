@@ -543,7 +543,22 @@ foreach($id in ($disp.Keys | Sort-Object)){
           if($range -lt $EvidenceMinLumaRange){ $why += ("{0}: featureless (luma range {1})" -f (Split-Path $art -Leaf), [int]$range); continue }
           $legible++
         }
-        if($legible -eq 0){
+        # ART THAT WENT WITH THE STAGING IS NOT A FALSE CITATION. The evidence pack is released
+        # alongside the raw disc - deliberately, and the release log says so - so once a unit is
+        # reclaimed EVERY `frame:`/`card:` citation on it points at a .png that is gone, and this
+        # check called all of them false. Re-running the gate on a released disc therefore always
+        # refused: Reilly Disks 4 and 6 and three Robin of Sherwood discs all read as having faked
+        # their evidence (2026-09-20), which would look like a blocked reclaim to whoever requeued
+        # one. The narrowing is safe because it turns on the SOURCE being gone: at release time -
+        # the moment this gate actually guards - the disc is still staged and the check has its
+        # full force. Only "missing" is excused; blank, featureless or unmeasurable art still
+        # refuses, because those are files that EXIST and show nothing.
+        $sourceGone = -not (Test-Path -LiteralPath "$($cat.discPath)")
+        $allMissing = @($why | Where-Object { $_ -notmatch 'missing from disk$' }).Count -eq 0
+        if($legible -eq 0 -and $sourceGone -and $allMissing -and $why.Count){
+          $evNote += ("t{0:D2}  {1} cited, and its catalogued art went with the staging when this disc was released - the citation cannot be re-checked here, which is expected for a reclaimed unit, not a false claim" -f $id, $cls)
+        }
+        elseif($legible -eq 0){
           $evFalse += ("t{0:D2}  {1} cited, but NONE of the catalogued art for this title can be looked at ({2}) - a frame that exists but shows nothing is not evidence. Capture a frame that SHOWS the card; it is faded in, so try a second either side" -f `
                        $id, $cls, (($why | Sort-Object -Unique) -join '; '))
         }
