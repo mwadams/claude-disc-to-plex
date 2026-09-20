@@ -112,8 +112,12 @@ function Get-ClaimedTitle {
      titles contain one ("Serenity - The 10th Character"). #>
   param([AllowNull()][string]$Text)
   $t = "$Text".Trim()
+  # ' - re-rip for' and ' - already published as' are the two openings the re-rip discs use for their
+  # justification prose ("Nine Dozen Heroes and One Wicked Man - re-rip for QUALITY only (disc 5.86
+  # Mb/s...)"). Specific enough not to cut a real title, which is why neither is a bare ' - '.
   foreach ($cut in ' - dvdvideoTitle', ' - dvdvideo ', ' (byte-proven', '. CONFIDENCE', ' CONFIDENCE ',
-                    ' QUALITY re-rip', ' supersedes ', ' - MakeMKV ', ' - VTS_') {
+                    ' QUALITY re-rip', ' - re-rip for', ' - already published as', ' supersedes ',
+                    ' - MakeMKV ', ' - VTS_') {
     $i = $t.IndexOf($cut, [StringComparison]::OrdinalIgnoreCase)
     if ($i -gt 0) { $t = $t.Substring(0, $i).Trim() }
   }
@@ -149,7 +153,11 @@ function Read-DispositionClaims {
     # meant the row parsed as NO CLAIM AT ALL. The Owl Service's eight episodes were reported as
     # published with no identity evidence on 2026-09-20 on the strength of rows that named every
     # one of them correctly. The title is optional; the SLOT is the claim.
-    if ($l -match '^(t\d+)\|(episode|extra)\|(?:[^|]*?\s-\s)?(S\d{1,2}E\d{1,3}(?:\s*-\s*(?:S\d{1,2})?E\d{1,3})+|S\d{1,2}E\d{1,3})(?:(?:\s+-)?\s+([^|]+))?\|') {
+    # `feature` COUNTS TOO WHEN THE ROW NAMES A SLOT. Some discs write their episodes as feature
+    # rows - The Water Margin's box set does throughout - and restricting the type to episode/extra
+    # read six correctly-identified episodes as having no evidence at all (2026-09-20). This cannot
+    # widen the net wrongly: a feature row for an actual film names no SxxEnn, so it never matches.
+    if ($l -match '^(t\d+)\|(episode|extra|feature)\|(?:[^|]*?\s-\s)?(S\d{1,2}E\d{1,3}(?:\s*-\s*(?:S\d{1,2})?E\d{1,3})+|S\d{1,2}E\d{1,3})(?:(?:\s+-)?\s+([^|]+))?\|') {
       $row = $Matches[1]; $span = $Matches[3]; $title = (Get-ClaimedTitle $Matches[4])
       $season = $(if ($span -match '^S(\d{1,2})') { $Matches[1] } else { '' })
       foreach ($m in [regex]::Matches($span, '(?i)(?:S(\d{1,2}))?E(\d{1,3})')) {
@@ -174,6 +182,11 @@ if ($SelfTest) {
   $sp = @(Read-DispositionClaims @('t07|episode|Friends (1994) - S10E17-E18 - The Last One|speech:x'))
   T 'claims: a double episode claims BOTH slots' ($sp.Count -eq 2 -and $sp[0].Slot -eq 'S10E17' -and $sp[1].Slot -eq 'S10E18')
   T 'claims: both span slots carry the title'    (@($sp | Where-Object { $_.Title -eq 'The Last One' }).Count -eq 2)
+  $ft = @(Read-DispositionClaims @('t00|feature|The Water Margin (1973) - S01E01 - Nine Dozen Heroes and One Wicked Man - re-rip for QUALITY only (disc 5.86 Mb/s)|speech:x',
+                                   't09|feature|O Brother Where Art Thou - the feature|speech:y'))
+  T 'claims: a feature row naming a slot is a claim' ($ft.Count -eq 1 -and $ft[0].Slot -eq 'S01E01')
+  T 'claims: a feature row with no slot is not'      (-not ($ft | Where-Object { $_.Title -match 'Brother' }))
+  T 'claims: the feature row cuts its evidence prose' ($ft[0].Title -eq 'Nine Dozen Heroes and One Wicked Man')
   $sp2 = @(Read-DispositionClaims @('t02|episode|S01E01-S01E02 Pilot|speech:x'))
   T 'claims: a spelled-out span is read'         ($sp2.Count -eq 2 -and $sp2[1].Slot -eq 'S01E02')
   T 'claims: a lone slot still yields ONE claim' (@(Read-DispositionClaims @('t01|episode|S03E02 The Priory School|speech:x')).Count -eq 1)
