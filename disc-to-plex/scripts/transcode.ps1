@@ -721,14 +721,18 @@ foreach($it in $items){
   # them yields plausible garbage (dvd-still-cells.py's own warning). expectPages is the count the
   # dispositions measured; the builder is frame-exact, so a mismatch is a hard fail, not a warning.
   if("$($it.kind)" -eq 'STILLS'){
-    $missing = @('vts','pgcs','domain','expectPages' | Where-Object { -not (Has $it $_) })
+    # `vts` is NOT required for the VIDEO MANAGER's menu domain: that domain has no title set, so
+    # a number here could only ever be ignored, and a number that looks honoured but is not is how
+    # the sector spaces get mixed.
+    $dom = "$($it.domain)".ToLowerInvariant()
+    $need = @('pgcs','domain','expectPages'); if($dom -ne 'vmgm'){ $need = @('vts') + $need }
+    $missing = @($need | Where-Object { -not (Has $it $_) })
     if($missing.Count){
-      Write-Output ("   !! FAILED - kind STILLS requires: {0} (missing: {1})" -f 'vts, pgcs, domain, expectPages', ($missing -join ', '))
+      Write-Output ("   !! FAILED - kind STILLS requires: {0} (missing: {1})" -f ($need -join ', '), ($missing -join ', '))
       $failCount++; continue
     }
-    $dom = "$($it.domain)".ToLowerInvariant()
-    if($dom -notin @('title','menu')){
-      Write-Output "   !! FAILED - domain must be 'title' or 'menu', got '$dom' - the two have separate sector spaces and mixing them yields plausible garbage"
+    if($dom -notin @('title','menu','vmgm')){
+      Write-Output "   !! FAILED - domain must be 'title', 'menu' or 'vmgm', got '$dom' - they have separate sector spaces and mixing them yields plausible garbage"
       $failCount++; continue
     }
     $vts_dir = "$($it.src)"
@@ -742,10 +746,34 @@ foreach($it in $items){
     $stillBuild = Join-Path $PSScriptRoot 'build-still-slideshow.py'
     $carve = @($stillCells, $vts_dir, [string][int]$it.vts, $cellDir, "$($it.pgcs)")
     if($dom -eq 'menu'){ $carve = @($stillCells, '--menu', $vts_dir, [string][int]$it.vts, $cellDir, "$($it.pgcs)") }
+    # The VIDEO MANAGER's menu domain has no vts number - see dvd-still-cells.py's --vmgm.
+    if($dom -eq 'vmgm'){ $carve = @($stillCells, '--vmgm', $vts_dir, $cellDir, "$($it.pgcs)") }
     $co = @(& python @carve 2>&1); $cx = $LASTEXITCODE
     $co | Select-Object -Last 3 | ForEach-Object { Write-Output ("   [cells] " + $_) }
     if($cx -ne 0){ Write-Output "   !! FAILED - dvd-still-cells.py exit $cx"; $failCount++; continue }
-    $shape = if($dom -eq 'menu'){ '--pgcs' } else { '--title-set' }
+    # WHICH SECTOR SPACE and WHAT SHAPE THE PAGES ARE are two different facts, and this took the
+    # second from the first: menu -> one page per PGC, title -> the PGC's cells are the pages. A
+    # menu-domain set can perfectly well be one PGC whose seven cells are the pages, and Timeslip
+    # Story 1's "Introduction to Timeslip" is exactly that - the builder refused it (exit 2) after
+    # the carve had already run, saying so in as many words. The carve has just told us the answer,
+    # so read it off the cells on disk rather than inferring it from the domain.
+    $carved = @(Get-ChildItem -LiteralPath $cellDir -Directory -ErrorAction SilentlyContinue |
+                Sort-Object Name |
+                ForEach-Object { [pscustomobject]@{ Name = $_.Name
+                                                    Cells = @(Get-ChildItem -LiteralPath $_.FullName -Filter '*.vob' -File -EA SilentlyContinue).Count } })
+    $shape = if($dom -eq 'title'){ '--title-set' } else { '--pgcs' }
+    if($carved.Count -eq 1 -and $carved[0].Cells -gt 1){
+      if($shape -ne '--title-set'){
+        Write-Output ("   [stills] one PGC with {0} cells - the pages are CELLS, building as a title-set (manifest said domain '{1}')" -f $carved[0].Cells, $dom)
+      }
+      $shape = '--title-set'
+    }
+    elseif($carved.Count -gt 1 -and @($carved | Where-Object { $_.Cells -ne 1 }).Count -eq 0){
+      if($shape -ne '--pgcs'){
+        Write-Output ("   [stills] {0} PGCs of one cell each - the pages are PGCs, building as --pgcs (manifest said domain '{1}')" -f $carved.Count, $dom)
+      }
+      $shape = '--pgcs'
+    }
     $build = @($stillBuild, $cellDir, "$($it.out)", $shape, "$($it.pgcs)")
     if(Has $it 'dwell'){ $build += @('--dwell', ([double]$it.dwell).ToString([Globalization.CultureInfo]::InvariantCulture)) }
     if(Has $it 'dar'){ $build += @('--dar', "$($it.dar)") }
