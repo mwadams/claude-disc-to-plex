@@ -148,6 +148,18 @@ foreach ($it in $want) {
   $title = "$($it.plexTitle)".Trim()
   $ep = $byFile[$leaf]
   if (-not $ep) {
+    # A MOVIE'S LOCAL EXTRA IS NOT AN EPISODE AND NEVER BECOMES ONE. Plex exposes these under the
+    # film's Extras and takes their title FROM THE FILENAME - they have no library item of their
+    # own for this script to find, so "not indexed yet" is false and waiting is endless. Carrying
+    # them made the pending ledger permanently untrue, and once approve-confirmed started reading
+    # that ledger to decide what is ready to look at (2026-09-20) it held those files back for
+    # ever: the four Whistle (1968) extras were correctly titled in Plex and still reported as
+    # waiting on the titling pass. Proven, not assumed - those extras display their full names in
+    # Plex having never been `set` by this script even once.
+    if ("$($it.out)" -match '(?i)[\\/](Featurettes|Deleted Scenes|Interviews|Trailers|Shorts|Behind The Scenes|Scenes|Other)[\\/]') {
+      Say ("    [plex-title] {0} - a movie local-extra: Plex titles these from the FILENAME, so there is nothing to set and nothing to carry" -f $leaf)
+      continue
+    }
     # Not an error worth failing on, and NOT a reason to forget it either: Plex indexes new files on
     # its own schedule, so this is the expected state immediately after a publish. Carry it.
     $first = if ("$($it.firstSeen)".Trim()) { "$($it.firstSeen)".Trim() } else { (Get-Date).ToString('s') }
