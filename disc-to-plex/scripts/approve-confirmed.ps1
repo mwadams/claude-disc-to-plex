@@ -71,6 +71,7 @@ param(
   [string]$NasRoot = '\\NASTEAMV\Multimedia',
   # Verdicts written by verify-title-cards.ps1. Read-only, and its ABSENCE is reported as
   # "not checked" rather than quietly treated as clean.
+  [string]$PendingTitles = 'D:/video/_plex-titles-pending.tsv',
   [string]$IdentityCsv = 'D:/video/_episode-identity.csv',
   [switch]$WhatIf,
   [switch]$SelfTest
@@ -160,6 +161,19 @@ function Get-FilesOnNas {
   })
 }
 
+# THE TITLING PASS'S OWN CARRY-LIST, read once. apply-plex-titles.ps1 writes every file it could
+# not title yet (Plex has not indexed it) to this TSV and deletes the file when nothing is carried,
+# so its presence is the pipeline's own statement that a title is still outstanding. Unreadable or
+# absent means nothing is pending, which is the same thing the titling pass means by deleting it.
+$pendingTitleLeaves = @{}
+try {
+  if (Test-Path -LiteralPath $PendingTitles -PathType Leaf) {
+    foreach ($row in (Import-Csv -LiteralPath $PendingTitles -Delimiter "`t" -ErrorAction Stop)) {
+      if ("$($row.File)".Trim()) { $pendingTitleLeaves["$($row.File)".Trim()] = $true }
+    }
+  }
+} catch { $pendingTitleLeaves = @{} }
+
 $localWorks = @{}
 foreach ($area in 'Movies', 'Television Shows') {
   $root = Join-Path $VideoRoot $area
@@ -247,7 +261,7 @@ if (-not $Work.Count -and -not $All) {
     # parameter. Assigning an array to it replaced the switch and the next binding of -All died
     # with "Cannot convert System.Object[] to SwitchParameter" - from a line that never mentions it.
     $localFiles = @($localWorks[$p.Work])
-    $fl = @(); $unpub = @()
+    $fl = @(); $unpub = @(); $untitled = @()
     foreach ($f in $localFiles) {
       $rel = $f.FullName -replace [regex]::Escape((Join-Path $VideoRoot '')), ''
       $rel = ($rel -split '\\', 3)[-1]
@@ -255,7 +269,18 @@ if (-not $Work.Count -and -not $All) {
       # \\NASTEAMV\Multimedia\<Kind>\<Work>\... - so the NAS path is the local one with the root
       # swapped. Built from the SAME string that produced $rel, so the two cannot drift apart.
       $onNas = @(Get-FilesOnNas -Files @($f) -VideoRoot $VideoRoot -NasRoot $NasRoot).Count -gt 0
-      if ($onNas) { $fl += [pscustomobject]@{ F = $f; Rel = $rel } }
+      # ON THE NAS IS NOT THE SAME AS READY TO BE LOOKED AT. Plex names a Season 00 extra whatever
+      # its own agent guesses until apply-plex-titles.ps1 sets and LOCKS the real title, and it can
+      # only do that once Plex has indexed the file - so between the copy landing and that pass
+      # there is a window where the episode is in Plex under "Episode 42" or a stray documentary's
+      # name. Offering it for confirmation in that window asks the operator to verify something the
+      # library is not showing yet, and their answer is what releases the local copy. 2026-09-20:
+      # The Prisoner's four galleries were confirmed at 09:58 and titled at 09:59, and the operator
+      # spotted the missing titles first. A file whose title is still carried is NOT ready.
+      if ($onNas -and $pendingTitleLeaves.ContainsKey($f.Name)) {
+        $untitled += [pscustomobject]@{ F = $f; Rel = $rel }
+      }
+      elseif ($onNas) { $fl += [pscustomobject]@{ F = $f; Rel = $rel } }
       else { $unpub += [pscustomobject]@{ F = $f; Rel = $rel } }
     }
     # A FILM WITH NO FEATURE ON THE NAS CANNOT BE IN PLEX, WHATEVER ITS EXTRAS ARE DOING.
@@ -307,6 +332,11 @@ if (-not $Work.Count -and -not $All) {
     foreach ($x in ($fl | Sort-Object Rel)) { Write-Output ("        {0,8:N1} MB  {1}" -f ($x.F.Length / 1MB), $x.Rel) }
     if ($fl.Count) {
       Write-Output ("        ^ CONFIRM THESE {0} file(s) in Plex - not the work as a whole. They are what the reclaim releases." -f $fl.Count)
+    }
+    if ($untitled.Count) {
+      Write-Output ("        !! {0} file(s) are on the NAS but NOT READY TO LOOK AT - Plex has not indexed them yet, so their real titles are not set and locked. They are waiting on the titling pass, not on you:" -f $untitled.Count)
+      foreach ($x in ($untitled | Sort-Object Rel)) { Write-Output ("           {0,8:N1} MB  {1}" -f ($x.F.Length / 1MB), $x.Rel) }
+      Write-Output  '           They will appear here once titled; nothing to do.'
     }
     if ($unpub.Count) {
       Write-Output ("        !! {0} further local file(s) of this work are NOT ON THE NAS - do NOT confirm them; they are waiting on PUBLISH, not on you:" -f $unpub.Count)

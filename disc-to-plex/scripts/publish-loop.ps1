@@ -341,7 +341,15 @@ while ($MaxPasses -le 0 -or $pass -lt $MaxPasses) {
         # Plex has not indexed yet.
         if ($after.Count -gt 0) {
           try {
-            foreach ($mf in @(Get-ChildItem 'D:/video/_queue/done' -File -Filter '*.json' -ErrorAction SilentlyContinue |
+            # `_queue/failed` TOO, AND THAT IS NOT A LOOSENING. A manifest fails as a WHOLE when any
+            # one of its items fails, but the items that succeeded published normally and are on the
+            # NAS. Looking only in `done` meant those files sat in Plex under whatever its agent
+            # guessed, with no way to be titled until the whole manifest eventually passed: The
+            # Prisoner Disk 6's galleries published at 09:32 on 2026-09-20 and stayed untitled until
+            # 09:59, when a re-encode of ONE unrelated item finally moved the manifest to `done` -
+            # and the operator saw the gap before the pipeline closed it. apply-plex-titles.ps1 only
+            # sets titles its own manifest declares, for files that exist, and is idempotent.
+            foreach ($mf in @(Get-ChildItem 'D:/video/_queue/done', 'D:/video/_queue/failed' -File -Filter '*.json' -ErrorAction SilentlyContinue |
                               Where-Object { "$(Get-Content -LiteralPath $_.FullName -Raw -ErrorAction SilentlyContinue)" -like "*$($w.Name)*" })) {
               & pwsh -NoProfile -File 'D:/video/.claude/skills/disc-to-plex/scripts/apply-plex-titles.ps1' -Manifest $mf.FullName 2>&1 |
                 ForEach-Object { Write-Output "$_" }
@@ -421,7 +429,7 @@ while ($MaxPasses -le 0 -or $pass -lt $MaxPasses) {
           # else. A manifest matched by name that turns out to be unrelated costs nothing -
           # apply-plex-titles.ps1 only ever sets titles its own manifest declares, and is idempotent.
           try {
-            foreach ($mf in @(Get-ChildItem 'D:/video/_queue/done' -File -Filter '*.json' -ErrorAction SilentlyContinue |
+            foreach ($mf in @(Get-ChildItem 'D:/video/_queue/done', 'D:/video/_queue/failed' -File -Filter '*.json' -ErrorAction SilentlyContinue |
                               Where-Object {
                                 $_.LastWriteTime -gt (Get-Date).AddHours(-6) -or
                                 ("$(Get-Content -LiteralPath $_.FullName -Raw -ErrorAction SilentlyContinue)" -like "*$($w.Name)*")
