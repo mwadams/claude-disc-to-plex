@@ -174,6 +174,68 @@ try {
   }
 } catch { $pendingTitleLeaves = @{} }
 
+# THE CARRY-LIST IS NOT ENOUGH, AND THE WATER MARGIN GALLERIES PROVED IT THE SAME DAY IT WAS ADDED.
+# `_plex-titles-pending.tsv` lists what the titling pass TRIED and could not finish. A file it never
+# saw at all is not in it - and apply-plex-titles works from manifests, so anything built outside
+# the manifest route (a gallery carved by hand, exactly what the 28 Water Margin items were) is
+# invisible to both. All 28 were offered as ready while Plex showed them as "Episode 1".."Episode
+# 28". Absence of a complaint is not evidence of success, so ASK PLEX what it is showing.
+#
+# One request per season, not per file: fetch the show's episodes once and key them by the basename
+# of their own Part.file, which is the same thing apply-plex-titles matches on. A failure here means
+# "cannot tell", and cannot-tell must not hold a file back - Plex being down is not the operator's
+# problem, and the pending-list check above still runs.
+$plexTitleByLeaf = @{}
+$plexChecked = $false
+function Get-PlexTitlesForShows {
+  param([string[]]$Shows)
+  $tok = [Environment]::GetEnvironmentVariable('PLEX_TOKEN', 'User')
+  $base = [Environment]::GetEnvironmentVariable('PLEX_BASEURL', 'User')
+  if (-not $tok -or -not $base) { return $false }
+  foreach ($show in $Shows) {
+    $bare = ($show -replace '\s*\((19|20)\d{2}\)\s*$', '').Trim()
+    try {
+      $found = Invoke-RestMethod -TimeoutSec 30 -Headers @{ 'X-Plex-Token' = $tok } `
+                 -Uri ("{0}/library/sections/5/all?type=2&title={1}" -f $base, [uri]::EscapeDataString($bare))
+      foreach ($dir in @($found.MediaContainer.Directory)) {
+        $meta = Invoke-RestMethod -TimeoutSec 30 -Headers @{ 'X-Plex-Token' = $tok } `
+                  -Uri ("{0}/library/metadata/{1}" -f $base, $dir.ratingKey)
+        $leaves = @(@($meta.MediaContainer.Directory.Location.path) | ForEach-Object { ($_ -replace '/+$','') -split '[\\/]' | Select-Object -Last 1 })
+        if ($leaves -notcontains $show) { continue }
+        $seasons = Invoke-RestMethod -TimeoutSec 30 -Headers @{ 'X-Plex-Token' = $tok } `
+                     -Uri ("{0}/library/metadata/{1}/children" -f $base, $dir.ratingKey)
+        foreach ($sn in @($seasons.MediaContainer.Directory)) {
+          # Plex prepends an "All episodes" pseudo-season with no ratingKey; asking for its children 404s.
+          if (-not "$($sn.ratingKey)") { continue }
+          $eps = Invoke-RestMethod -TimeoutSec 30 -Headers @{ 'X-Plex-Token' = $tok } `
+                   -Uri ("{0}/library/metadata/{1}/children" -f $base, $sn.ratingKey)
+          foreach ($v in @($eps.MediaContainer.Video)) {
+            foreach ($file in @($v.Media.Part.file)) {
+              if (-not "$file") { continue }
+              $script:plexTitleByLeaf[(($file -replace '/+$','') -split '[\\/]' | Select-Object -Last 1)] = "$($v.title)"
+            }
+          }
+        }
+      }
+    } catch { }
+  }
+  return $true
+}
+$plexCheckedWorks = @{}
+function Test-PlexTitleMissing {
+  # ONLY MEANINGFUL FOR A WORK THAT WAS ACTUALLY LOOKED UP. The map holds section 5 (TV) alone, so
+  # for a FILM every leaf is absent from it - and reading that absence as "untitled" held Twelve
+  # Monkeys and Where There's a Will back on their first run of this check, which is the same
+  # "a check that cannot measure has not found a fault" mistake it exists to fix.
+  param([string]$Leaf, [string]$Work)
+  if (-not $script:plexChecked) { return $false }        # could not ask - do not hold anything back
+  if (-not $plexCheckedWorks.ContainsKey($Work)) { return $false }
+  if (-not $plexTitleByLeaf.ContainsKey($Leaf)) { return $true }   # in the library, not yet in Plex
+  $t = "$($plexTitleByLeaf[$Leaf])".Trim()
+  # Plex's own placeholder for an episode it has no metadata for. That is precisely "not ready".
+  return (-not $t) -or ($t -match '^(Episode|Special)\s+\d+$')
+}
+
 $localWorks = @{}
 foreach ($area in 'Movies', 'Television Shows') {
   $root = Join-Path $VideoRoot $area
@@ -239,6 +301,17 @@ if (-not $Work.Count -and -not $All) {
   # Potter and the Prisoner of Azkaban in Plex?", anyone reasonably checks the film, sees it, and
   # says yes. The confirmation then attaches to evidence nobody looked at, which is precisely the
   # failure a human gate exists to prevent. So print what will be released, and check THOSE.
+  # Asked ONCE, for the TV works actually being offered, before the per-work loop prints anything.
+  # A film's title comes from its own Plex match rather than a per-item titling pass, so section 5
+  # is the whole of this question.
+  $tvShows = @(($pending | ForEach-Object { $_.Work }) | Where-Object {
+                 Test-Path -LiteralPath (Join-Path (Join-Path $VideoRoot 'Television Shows') $_)
+               } | Sort-Object -Unique)
+  if ($tvShows.Count) {
+    $plexChecked = Get-PlexTitlesForShows -Shows $tvShows
+    if ($plexChecked) { foreach ($w in $tvShows) { $plexCheckedWorks[$w] = $true } }
+  }
+
   foreach ($p in ($pending | Sort-Object When)) {
     Write-Output ("   {0,-42} published {1}" -f $p.Work, $p.When)
     # ASK ONLY ABOUT FILES THAT ARE ACTUALLY ON THE NAS.
@@ -277,7 +350,7 @@ if (-not $Work.Count -and -not $All) {
       # library is not showing yet, and their answer is what releases the local copy. 2026-09-20:
       # The Prisoner's four galleries were confirmed at 09:58 and titled at 09:59, and the operator
       # spotted the missing titles first. A file whose title is still carried is NOT ready.
-      if ($onNas -and $pendingTitleLeaves.ContainsKey($f.Name)) {
+      if ($onNas -and ($pendingTitleLeaves.ContainsKey($f.Name) -or (Test-PlexTitleMissing -Leaf $f.Name -Work $p.Work))) {
         $untitled += [pscustomobject]@{ F = $f; Rel = $rel }
       }
       elseif ($onNas) { $fl += [pscustomobject]@{ F = $f; Rel = $rel } }
