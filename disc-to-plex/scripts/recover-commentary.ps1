@@ -343,11 +343,21 @@ try {
       if ($s -notin 'handed-over', 'already-has-commentary') { $allDone = $false }
     }
     if ($allDone) {
+      # -Recurse, BECAUSE THE RIPS ARE A LEVEL DOWN. rip-recovery-titles.ps1 writes each door rip to
+      # `rip/<EPISODE>/<name>.mkv`, and this looked only in `rip/` itself - so it matched nothing,
+      # deleted nothing, and said "door rips released" anyway. Nine discs' worth accumulated at
+      # ~2.4-9.7 GB each until 39.4 GB of finished working set pushed D: below its floor on
+      # 2026-09-20 and stopped the fetch. A cleanup that cannot fail is not a cleanup; COUNT what
+      # went and say so, so the claim is measured rather than asserted.
       $ripDir = Join-Path (Join-Path $RecoveryRoot "$($d.unit)") 'rip'
-      foreach ($f in @(Get-ChildItem -LiteralPath $ripDir -Filter '*.mkv' -File -ErrorAction SilentlyContinue)) {
-        if ($f.FullName.StartsWith([IO.Path]::GetFullPath($RecoveryRoot))) { Remove-Item -LiteralPath $f.FullName -Force }
+      $freed = 0; $gone = 0
+      foreach ($f in @(Get-ChildItem -LiteralPath $ripDir -Filter '*.mkv' -File -Recurse -ErrorAction SilentlyContinue)) {
+        if ($f.FullName.StartsWith([IO.Path]::GetFullPath($RecoveryRoot))) {
+          $freed += $f.Length; $gone++
+          Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue
+        }
       }
-      Say ("{0}: every episode handed over - door rips released" -f $d.unit)
+      Say ("{0}: every episode handed over - {1} door rip(s) released, {2:N2} GB" -f $d.unit, $gone, ($freed / 1GB))
       # CLOSE THE DISC'S OWN RECORD. The optical loop writes `<unit>.inserted.json` when the disc
       # goes in; leaving it open makes a finished disc look like one still in the drive, and the
       # `.recovered` marker is what tells the next session this unit is settled. Both were being
