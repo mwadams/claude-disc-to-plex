@@ -602,6 +602,42 @@ foreach ($r in $rows) {
 
       # ---- write back what changed ----
       $finalTracks = @($tracks | ForEach-Object { [int]$_ })
+
+      # DERIVATION OWNS WHICH TRACKS ARE KEPT. IT DOES NOT OWN THEIR ORDER.
+      #
+      # Everything above decides MEMBERSHIP - drop a silent stream, replace a redundant copy, add one
+      # the author missed - and builds the list in ascending stream order because that is the order it
+      # walks the evidence in. Order, though, is an editorial decision: position 0 becomes the default
+      # audio stream and Plex plays the default.
+      #
+      # 2026-09-21: assert-audio-default-language.ps1 refused DS9 S06E14 for leading with the German
+      # dub. The manifest was corrected to [1,0]/['eng','deu'], and the gate - which runs THIS script
+      # before the asserts - rewrote it straight back to [0,1]/['deu','eng'] and refused again. An
+      # UNSATISFIABLE REFUSAL: the author fixes it, derivation undoes it, the guard refuses, for ever.
+      # Every remaining disc of that programme would have escalated to needs-validation and stopped
+      # the line. Exactly the shape of "a guard that enforces agreement can deadlock", with this
+      # script and that guard as the two parties.
+      #
+      # So when the SET is unchanged, keep the AUTHOR'S sequence verbatim. A reorder is then a
+      # deliberate act that survives, while a genuine membership change still rewrites the row.
+      if ($null -ne $origTracks -and
+          (($finalTracks | Sort-Object) -join ',') -eq (($origTracks | Sort-Object) -join ',') -and
+          (Show $finalTracks) -ne (Show $origTracks)) {
+        $finalTracks = @($origTracks | ForEach-Object { [int]$_ })
+        $tracks = [System.Collections.ArrayList]@($finalTracks)
+        # Rebuild langs against the order actually being kept, or the two stop describing each other.
+        $langs = @(); $langKnown = $true
+        foreach ($t in $finalTracks) {
+          $s = $by[[int]$t]; $code = $null
+          if ($s -and $s.role -eq 'music') { $code = 'zxx' }
+          elseif ($s -and $s.langReliable -and $s.spokenLang) { $code = Get-SpokenCode $s.spokenLang }
+          $auth = if ($langFor.ContainsKey([int]$t)) { $langFor[[int]$t] } else { $null }
+          if ($code) {
+            if ($auth -and (Test-SameLanguage $auth $code)) { $langs += $auth } else { $langs += $code }
+          } elseif ($auth) { $langs += $auth }
+          else { $langKnown = $false; $langs += $null }
+        }
+      }
       if ($null -eq $origTracks -or (Show $finalTracks) -ne (Show $origTracks)) {
         if ($null -ne $origTracks) {
           $why = @()

@@ -161,6 +161,25 @@ if (Test-Path -LiteralPath $pathGuard) {
 # WORK ALREADY PLAYS IN, measured off the published library, and refuses only a row that contradicts
 # it while carrying that language. Swept over 120 recent manifests: 11 hits, every one a real DS9
 # disc, no false positive.
+# A SECOND FILE FOR AN EPISODE THE LIBRARY ALREADY HOLDS.
+#
+# Plex identifies a TV episode by its SxxExx, not by the rest of the filename, so two files carrying
+# the same slot in one season folder are the same episode twice. 2026-09-21, DS9 Season 6: the disc
+# 1-3 manifests wrote `SxxExx - Title.mkv` where the library uses
+# `Star Trek Deep Space Nine (1993) - SxxExx - Title.mkv`, and declared no `supersedes` - so twelve
+# re-ripped episodes published ALONGSIDE the originals they were meant to replace, leaving the
+# superseded Danish-subtitle copies in the library and the retire list none the wiser. Every other
+# gate passed: legal paths, right durations, right titles, right disc. The manifest was internally
+# consistent and simply wrote to the wrong name. Repair cost 9.4 GB of copying and 24 hand-deletions.
+$slotGuard = 'D:/video/.claude/skills/disc-to-plex/scripts/assert-episode-slot-free.ps1'
+if (Test-Path -LiteralPath $slotGuard) {
+  & pwsh -NoProfile -File $slotGuard -Manifest $Manifest
+  if ($LASTEXITCODE -ne 0) {
+    Write-Output ("gate REFUSED: {0} - it would publish a second file for an episode already in the library. Not queued." -f (Split-Path $Manifest -Leaf))
+    exit 2
+  }
+}
+
 $audioGuard = 'D:/video/.claude/skills/disc-to-plex/scripts/assert-audio-default-language.ps1'
 if (Test-Path -LiteralPath $audioGuard) {
   & pwsh -NoProfile -File $audioGuard -Manifest $Manifest

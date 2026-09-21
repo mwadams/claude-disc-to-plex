@@ -53,6 +53,45 @@ param(
 $ErrorActionPreference = 'Stop'
 $findings = @()
 
+# ---- 0. THE CASE THIS SCRIPT WAS WRITTEN FOR, AND MISSED ON ITS FIRST REAL RUN -------------------
+#
+# Written 2026-09-21 to catch "a work the operator confirmed whose staging is still held". It then
+# reported "line consistency OK" while 64 GB of the Whistle disc sat held and the fetch lane was
+# space-blocked beneath its floor - because it only scanned `_reclaim-queue/failed`, and THE
+# DEADLOCK SETTLES AS DONE. Both Whistle confirmations released their own work, refused the shared
+# staging because the other work was not in scope, and were filed DONE at 17:53 on 09-20:
+#
+#     [1968]  staging NOT released: it also delivered 'Whistle ... (2010).mkv'   verdict DONE
+#     [2010]  staging NOT released: it also delivered 'Whistle ... (1968).mkv'   verdict DONE
+#
+# A DONE artefact is never retried, so that staging could not be released by anything. The refusal
+# is recorded in the artefact's OWN result file, in plain words - so read those, not just failed/.
+#
+# The lesson is the one this file already preaches: the store that records the outcome is not the
+# store that records the verdict, and asking only the loud one misses the quiet one.
+$doneDir = Join-Path $ReclaimQueue 'done'
+$stagedNames = @(Get-ChildItem -LiteralPath $Stage -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+$heldByDone = @{}
+foreach ($res in @(Get-ChildItem -LiteralPath $doneDir -File -Filter '*.result.txt' -ErrorAction SilentlyContinue)) {
+  foreach ($line in @(Get-Content -LiteralPath $res.FullName -ErrorAction SilentlyContinue)) {
+    if ($line -notmatch "unit '([^']+)' - staging NOT released:\s*(.*)$") { continue }
+    $u = $Matches[1]; $why = $Matches[2]
+    if ($stagedNames -notcontains $u) { continue }     # already released since: settled history
+    if (-not $heldByDone.ContainsKey($u)) { $heldByDone[$u] = [pscustomobject]@{ Why = $why; From = @() } }
+    $heldByDone[$u].From += $res.Name
+  }
+}
+foreach ($u in $heldByDone.Keys) {
+  $s = (Get-ChildItem -LiteralPath (Join-Path $Stage $u) -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum)
+  $findings += [pscustomobject]@{
+    Kind = 'refused-by-a-DONE-artefact'
+    Head = ("{0} - staging refused by a COMPLETED confirmation, so nothing will ever retry it ({1:N2} GB)" -f $u, ($s.Sum/1GB))
+    Lines = @(("reason : " + $heldByDone[$u].Why),
+              ("recorded in: " + (($heldByDone[$u].From | Sort-Object -Unique) -join '; ')),
+              "Release it with: approve-confirmed.ps1 -StagingOnly -Work '<each work this disc delivered>'")
+  }
+}
+
 # ---- 1. CONFIRMED, STILL STAGED, AND REFUSED FOR A REASON THAT CANNOT CLEAR ITSELF ---------------
 #
 # A reclaim artefact in failed/ IS the record of this: the operator confirmed, the loop tried, a gate

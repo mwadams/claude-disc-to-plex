@@ -672,6 +672,22 @@ if (Test-Path -LiteralPath $relaudit) { & pwsh -NoProfile -File $relaudit }
 $stageaudit = 'D:/video/.claude/skills/disc-to-plex/scripts/audit-unclaimed-staging.ps1'
 if (Test-Path -LiteralPath $stageaudit) { & pwsh -NoProfile -File $stageaudit -Stage $Stage -CompletedFile $CompletedFile }
 
+# AND THE ONE THAT ASKS WHETHER ANYTHING IS STUCK IN A WAY NOTHING WILL EVER CLEAR.
+#
+# Specifically: staging refused by a confirmation that then reached DONE. A DONE artefact is never
+# retried, so that staging is held for ever with no failure anywhere to show for it. Whistle's disc
+# sat like that from 2026-09-20 17:53 until 09-21 19:21 - 64 GB, two confirmations 16 seconds apart
+# each refusing because the other's work was not in scope, both verdict DONE - and it only surfaced
+# because the fetch lane space-blocked and someone went looking. The space audit's own advice in
+# that state was "confirm those in Plex", with nothing to confirm.
+$consistency = 'D:/video/.claude/skills/disc-to-plex/scripts/audit-line-consistency.ps1'
+if (Test-Path -LiteralPath $consistency) {
+  # The awaiting-verification register is not a parameter of this script, so let the audit use its
+  # own default rather than passing an undefined variable - which would silently hand it $null and
+  # make every work look un-pending. (Written that way first; caught before it ran.)
+  & pwsh -NoProfile -File $consistency -VideoRoot 'D:/video' -Stage $Stage
+}
+
 # AND WHETHER THE LINE IS STOPPED FOR SPACE ONLY THE OPERATOR CAN RELEASE.
 #
 # This script printed "no unit is waiting on the operator" for over an hour on 2026-09-01 while the
