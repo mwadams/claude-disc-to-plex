@@ -1,8 +1,8 @@
 # Script index - GENERATED, do not edit
 
-Generated 2026-09-21 14:11 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
+Generated 2026-09-21 16:08 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
 
-**160 scripts under `scripts/`, 57 loop scripts under `D:/video/`. 2 with NO usable header, 60 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
+**161 scripts under `scripts/`, 57 loop scripts under `D:/video/`. 2 with NO usable header, 60 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
 
 Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library` = dot-source, defines functions only; `tests` = a test suite, exit 0 = all passed.
 
@@ -45,6 +45,7 @@ Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library
 | `audit-audio-defaults.ps1` | command | Which published files flag MORE THAN ONE audio stream as `default`? | when: Found 2026-09-01 by an independent validation pass over Babylon 5, not by any gate. | `pwsh -File audit-audio-defaults.ps1` |
 | `audit-audio-tracks.ps1` | command | Identify EVERY audio track on every shipped film, from the audio itself. | when: Zulu shipped with three audio tracks where the disc has two: a:0 and a:1 were the SAME dialogue mix duplicated, and a:2 - the commentary - was left untitled. | - |
 | `audit-bd-titles.ps1` | command | Audit every Blu-ray on the source drive with MakeMKV and compare its longest titles against what we actually shipped. | when: Features were selected by taking the largest .m2ts in BDMV/STREAM and reading it with ffmpeg. | - |
+| `audit-line-consistency.ps1` | command | ONE question, asked across the pipeline's own stores: is anything STUCK in a way no automatic step will ever clear? Read-only. Exit 0 always - this reports, it never gates. | when: 2026-09-21, after the operator said: "It's amazing that so many weeks in the basics still don't work... | `pwsh -File audit-line-consistency.ps1` |
 | `audit-publish-freshness.ps1` | command | Has anything been sitting ENCODED BUT UNPUBLISHED for too long? | when: On 2026-09-01 the user asked "so it has been a couple of hours since anything published." They were right, and nothing had noticed. | `pwsh -File audit-publish-freshness.ps1 [-MaxWaitMin 45] [-Quiet]` |
 | `audit-release-records.ps1` | command | Find discs IN THE CURRENT BATCH that were released without a recorded confirmation. | when: _release-completed.ps1 and _release-published.ps1 both gate on _completed.txt, which is written only after the user confirms a unit in Plex. | `pwsh -File audit-release-records.ps1` |
 | `audit-season-identity.ps1` | command | Does every published episode slot hold the episode its own DISC said it holds? | when: Every expensive mistake in this library passed its structural checks - right file count, plausible durations, matching slots - and held the wrong episode. | `pwsh -File audit-season-identity.ps1 -Show 'Man In A Suitcase'` |
