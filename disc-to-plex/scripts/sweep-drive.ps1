@@ -144,7 +144,26 @@ foreach ($d in $discs) {
     notes = @("swept $(Get-Date -Format 'yyyy-MM-dd') from $Label at minlength=$MinLength")
   } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $recPath -Encoding UTF8
 
-  $class = if ($subTotal -gt 0) { 'has-subtitles' } else { 'NO-SUBTITLES (transcribable)' }
+  # ZERO TITLES IS A FAILED READ, NOT A FINDING - AND IT MUST NOT BORROW THE VOCABULARY OF ONE.
+  #
+  # "This disc offers no subtitles" is a MEASUREMENT: MakeMKV enumerated the titles and none of them
+  # carried a subpicture stream. "MakeMKV enumerated nothing at all" is the absence of a
+  # measurement, and the two were collapsed here because both end at $subTotal -eq 0.
+  #
+  # 2026-09-21, media4: 28 consecutive discs ([152]-[179], The Space Museum through UFO Disk 3) came
+  # back titles=0 subs=0 and were all filed 'NO-SUBTITLES (transcribable)'. Every one is a real
+  # 6-8 GB DVD with a populated VIDEO_TS. Their cached dumps hold a drive listing and nothing else -
+  # MakeMKV started, enumerated the optical drives and never opened the source, the same shape the
+  # project header warns about for mangled `file:` arguments. The run before and the run after
+  # succeeded, so it was a window, not a property of those discs.
+  #
+  # Left alone that would have routed 28 subtitled discs to TRANSCRIPTION - the most expensive
+  # treatment of the three, chosen because the cheap evidence was missing rather than because it said
+  # so. The whole point of sweeping while the drive is attached is that "unknown" stops being
+  # recoverable once it is unplugged, so "unknown" has to be a word this script can say.
+  $class = if ($tl.Count -eq 0) { 'NOT-ENUMERATED (retry: no titles read)' }
+           elseif ($subTotal -gt 0) { 'has-subtitles' }
+           else { 'NO-SUBTITLES (transcribable)' }
   $rows.Add([pscustomobject]@{
     Drive = $Label; Disc = $d.Name; DiscId = $discId
     DiscTitle = $localTitle; Year = $year
@@ -156,11 +175,25 @@ foreach ($d in $discs) {
 }
 
 $rows | Export-Csv -LiteralPath $Report -NoTypeInformation -Encoding UTF8
-$noSubs = @($rows | Where-Object { $_.SubtitleStreams -eq 0 })
+# Counted off the CLASS, not off SubtitleStreams - a not-enumerated disc also has 0, and counting it
+# as "no subtitles" is the same conflation one layer up.
+$unread = @($rows | Where-Object { $_.Class -like 'NOT-ENUMERATED*' })
+$noSubs = @($rows | Where-Object { $_.Class -like 'NO-SUBTITLES*' })
+$withSubs = @($rows | Where-Object { $_.Class -eq 'has-subtitles' })
 Write-Host ''
 Write-Host "discs swept                    : $($rows.Count)"
-Write-Host "carry subtitles (re-rip/OCR)   : $($rows.Count - $noSubs.Count)"
+Write-Host "carry subtitles (re-rip/OCR)   : $($withSubs.Count)"
 Write-Host "NO subtitles (transcribable)   : $($noSubs.Count)"
+if ($unread.Count) {
+  Write-Host ''
+  Write-Host "*** NOT ENUMERATED - NO MEASUREMENT TAKEN : $($unread.Count) disc(s)" -ForegroundColor Yellow
+  Write-Host '    MakeMKV read no titles at all from these, so nothing is known about their subtitles.' -ForegroundColor Yellow
+  Write-Host '    They are NOT transcribable-by-measurement - do not queue them as such. Re-run this' -ForegroundColor Yellow
+  Write-Host '    sweep (it retries any disc whose cached dump has no title records) WHILE THE DRIVE IS' -ForegroundColor Yellow
+  Write-Host '    STILL ATTACHED; the evidence is unrecoverable once it is unplugged.' -ForegroundColor Yellow
+  foreach ($u in ($unread | Select-Object -First 30)) { Write-Host ("      {0}" -f $u.Disc) -ForegroundColor Yellow }
+  if ($unread.Count -gt 30) { Write-Host ("      ... and {0} more" -f ($unread.Count - 30)) -ForegroundColor Yellow }
+}
 Write-Host "register updated               : $Store"
 Write-Host "report                         : $Report"
 Write-Host ''
