@@ -452,6 +452,10 @@ foreach ($r in $rows) {
       # NOT `$x = if (...) { @(...) }`: an `if` used as an expression UNROLLS its output, so a
       # one-element list comes back as a scalar and [0] would compare unequal to [0].
       $origTracks = $null; $origLangs = $null
+      # Reset PER ROW. A leftover from the previous title would attach its reorder evidence to a row
+      # that was never reordered - the same stale-value shape that made one artefact's hold read as
+      # another's silence in _reclaim-loop.ps1.
+      $audioReordered = ''
       if ($names -contains 'audioTracks' -and $null -ne $r.audioTracks) { $origTracks = [int[]]@($r.audioTracks | ForEach-Object { [int]$_ }) }
       if (Has $r 'audioLangs') { $origLangs = [string[]]@($r.audioLangs | ForEach-Object { "$_" }) }
       $origComm = $null; if ($names -contains 'commentary') { $origComm = $r.commentary }
@@ -551,6 +555,38 @@ foreach ($r in $rows) {
         $tracks = [System.Collections.ArrayList]@()
       }
 
+      # 4b. THE FIRST TRACK IS THE ONE THAT PLAYS. PUT ENGLISH THERE.
+      #
+      # `audioTracks` is an ORDERED list: transcode.ps1 muxes in this order, position 0 becomes the
+      # default stream, and Plex plays the default. Everything above decides WHICH streams to keep
+      # and nothing decided which comes FIRST - so the order was whatever the manifest author wrote,
+      # which on a disc whose a:0 is a dub is the dub.
+      #
+      # 2026-09-21, Deep Space Nine: 16 of 51 re-ripped episodes shipped with GERMAN as the default
+      # audio (S02 E01/03/04/06/07/21/22/25, S04 E03/10/11/13/15/16/19/24). English was never lost -
+      # it sat fourth, as the passthrough AC3 - but every one of those episodes PLAYED IN GERMAN, and
+      # eight had already been confirmed and reclaimed before the operator found it. These are
+      # multi-language European discs, which is the same property that put a Danish subtitle stream
+      # in the library in the first place; on such a disc "the first audio track" means nothing.
+      #
+      # AND THIS SCRIPT MUST NOT FIX IT BY PROMOTING ENGLISH. That was written first, and one of this
+      # file's own tests refused it inside a minute: a fixture with spoken French at a:0 and spoken
+      # English at a:1 came back reordered. That is a DUB being promoted over the programme audio.
+      # This library holds Porco Rosso (whose re-rip exists precisely to restore the original
+      # Japanese), Amelie, Black Narcissus - "English first" is not a rule here, it is a bug that
+      # would ship silently on exactly the titles where the original language matters most.
+      #
+      # The distinction between DS9 and a French film is NOT measurable from the streams: both are
+      # "a:0 is not English and an English track exists". What differs is which language the
+      # PROGRAMME was made in, and that is in the dispositions, not in the audio.
+      #
+      # So this is left to the gate, which can say so and stop: see assert-audio-default-language.ps1,
+      # which refuses a manifest whose first kept track is a dub of a work that already publishes in
+      # English, and names both candidates. The author - who has the dispositions - decides. A refusal
+      # an agent resolves costs one gate round-trip; a wrong default costs 16 episodes nobody notices
+      # until the operator plays one.
+      $audioReordered = ''
+
       # 5. languages, positional against the final audioTracks.
       $langs = @(); $langKnown = $true
       foreach ($t in $tracks) {
@@ -574,6 +610,7 @@ foreach ($r in $rows) {
           $added = @($finalTracks | Where-Object { $origTracks -notcontains $_ } | ForEach-Object { "a:$_ ($($by[$_].role))" })
           if ($added.Count) { $why += ('added ' + ($added -join ', ')) }
           if ($finalTracks.Count -and $origTracks.Count -and $finalTracks[0] -ne $origTracks[0]) { $why += "primary a:$($finalTracks[0]) first (default)" }
+          if ($audioReordered) { $why += $audioReordered }
           [void]$changes.Add([ordered]@{ field = 'audioTracks'; from = $origTracks; to = $finalTracks; evidence = "$(Split-Path $evPath -Leaf): " + ($why -join '; ') })
         }
         Set-Field $r 'audioTracks' $finalTracks
