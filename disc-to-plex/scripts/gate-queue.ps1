@@ -137,6 +137,27 @@ if (Test-Path -LiteralPath $pathGuard) {
 # left behind from the truncated Extras 08 it supersedes. ffmpeg then encoded the playlist
 # perfectly (969.109 s, 29,043 frames, exactly matching the source) and transcode.ps1 quarantined
 # that correct output as .wrong-length, failing all ten items. Caught here it costs nothing.
+# A FILM PUBLISHED WITHOUT A YEAR ITS OWN DISPOSITION ALREADY STATES.
+#
+# Plex identifies a movie from its folder name, so an undated folder is an invitation to guess. On
+# the Ghost Stories for Christmas strand it guessed wrong four times running - Whistle matched a
+# 1956 film, A Warning to the Curious a 2013 one, Stigma a 2012 one, The Signalman a 1997 one -
+# and every one was found by the operator looking at Plex days later, then cost a rename, a
+# manifest rewrite, a republish and a hand-deletion on the NAS.
+#
+# Deliberately NOT "refuse every undated folder": 198 of this library's 409 movie folders carry no
+# year and a 2026-09-21 sweep found 61 of the 65 affected films matched correctly anyway. What the
+# four failures share is that the year was ALREADY KNOWN, written in the disc's own `feature`
+# disposition, and simply not carried into the path. So the guard fires only on that contradiction.
+$yearGuard = 'D:/video/.claude/skills/disc-to-plex/scripts/assert-movie-year.ps1'
+if (Test-Path -LiteralPath $yearGuard) {
+  & pwsh -NoProfile -File $yearGuard -Manifest $Manifest
+  if ($LASTEXITCODE -ne 0) {
+    Write-Output ("gate REFUSED: {0} - a movie folder omits a year its own disposition states; Plex will guess. Not queued." -f (Split-Path $Manifest -Leaf))
+    exit 2
+  }
+}
+
 $expectGuard = 'D:/video/.claude/skills/disc-to-plex/scripts/assert-expectations-consistent.ps1'
 if (Test-Path -LiteralPath $expectGuard) {
   & pwsh -NoProfile -File $expectGuard -Manifest $Manifest
