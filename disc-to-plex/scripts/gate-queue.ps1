@@ -149,6 +149,27 @@ if (Test-Path -LiteralPath $pathGuard) {
 # year and a 2026-09-21 sweep found 61 of the 65 affected films matched correctly anyway. What the
 # four failures share is that the year was ALREADY KNOWN, written in the disc's own `feature`
 # disposition, and simply not carried into the path. So the guard fires only on that contradiction.
+# AND THE SAME FAULT ON THE AUDIO AXIS: A DUB AS THE DEFAULT TRACK.
+#
+# `audioTracks` is ORDERED - position 0 becomes the default stream and Plex plays the default -
+# and until 2026-09-21 nothing decided what went first. 20 Deep Space Nine episodes shipped with
+# GERMAN as the default and PLAYED in German; eight were confirmed and reclaimed before the operator
+# pressed play on S04E13. The English track was never missing, it was fourth.
+#
+# Not fixed by auto-promoting English: this library holds Porco Rosso, Amelie, Seven Samurai, and
+# a rule that puts English first would silently wreck exactly those. The guard instead asks what the
+# WORK ALREADY PLAYS IN, measured off the published library, and refuses only a row that contradicts
+# it while carrying that language. Swept over 120 recent manifests: 11 hits, every one a real DS9
+# disc, no false positive.
+$audioGuard = 'D:/video/.claude/skills/disc-to-plex/scripts/assert-audio-default-language.ps1'
+if (Test-Path -LiteralPath $audioGuard) {
+  & pwsh -NoProfile -File $audioGuard -Manifest $Manifest
+  if ($LASTEXITCODE -ne 0) {
+    Write-Output ("gate REFUSED: {0} - the first audio track is a dub; Plex would play it. Not queued." -f (Split-Path $Manifest -Leaf))
+    exit 2
+  }
+}
+
 $yearGuard = 'D:/video/.claude/skills/disc-to-plex/scripts/assert-movie-year.ps1'
 if (Test-Path -LiteralPath $yearGuard) {
   & pwsh -NoProfile -File $yearGuard -Manifest $Manifest
