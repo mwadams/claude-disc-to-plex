@@ -380,6 +380,34 @@ foreach ($r in $rows) {
               $swapped = $true
             }
           }
+          # MEASURE THE RAW CLIP BEFORE ESCALATING. `$richer` counts streams from the CATALOGUE,
+          # which is MakeMKV's enumeration - and MakeMKV lists a DTS-HD MA stream and its lossy DTS
+          # CORE as two entries where ffprobe reports the pair as one. So on any lossless BD the
+          # catalogue count exceeds the rip's by construction, and this escalates a commentary door
+          # that does not exist.
+          #
+          # 2026-09-21, Blake's 7 S1D1: escalated S01E02 twice a pass, every pass, stopping the line
+          # each time. Measured: BDMV/STREAM/00228.m2ts carries exactly TWO audio streams, both
+          # DTS-HD MA 2.0 - the same two the rip already has. The disc's own dispositions had already
+          # ruled on it ("the DTS stream is the lossy CORE ... NOT a commentary"), and the heuristic
+          # had no way to know because it never looked at the source.
+          #
+          # The test is conservative and needs no language tags (raw .m2ts audio is untagged): a
+          # source cannot carry MORE streams than it has. If the raw clip's total audio stream count
+          # does not exceed what the rip already carries, there is no door to open.
+          if ($richer.Count -and -not $swapped -and (Test-Path -LiteralPath $rawClip -PathType Leaf)) {
+            # DISTINCT indexes. A .m2ts carries its streams inside PROGRAMS, and ffprobe emits one
+            # line per stream PER PROGRAM - clip 00228 reports "1,2,1,2": four lines, two streams.
+            # Counting the lines gave 4, which is exactly the inflated figure this check exists to
+            # disprove, so the fix agreed with the bug. Same error one layer down.
+            $rawAud = @(& $ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 $rawClip 2>$null |
+                        ForEach-Object { "$_".Trim() } | Where-Object { $_ } | Sort-Object -Unique).Count
+            if ($rawAud -gt 0 -and $rawAud -le $mine) {
+              [void]$changes.Add([ordered]@{ field = 'src'; from = $src; to = $src
+                evidence = ("no commentary door: the catalogue lists {0} English stream(s) on {1} over clip {2}, but the RAW CLIP carries only {3} audio stream(s) in total - MakeMKV counts a lossless stream and its lossy core separately, ffprobe counts the pair once. The rip's {4} already covers the source." -f (($richer | ForEach-Object { (& $engOf $_) }) -join '/'), (($richer | ForEach-Object { "t{0:D2}" -f [int]$_.title }) -join ','), $clip, $rawAud, $mine) })
+              $richer = @()
+            }
+          }
           if ($richer.Count -and -not $swapped) {
             $unsettled++
             [void]$left.Add([ordered]@{ field = 'src'; reason = ("this is a rip of t{0:D2} ({1}, {2} English audio stream(s)); the SAME clip {3} is also served by {4} with MORE English audio ({5}). The rip cannot carry those streams - a commentary door looks exactly like this. Encode from the raw clip (BDMV/STREAM/{3}) or rip the other playlist; a human decides" -f $ripT, $ct.source, $mine, $clip, (($richer | ForEach-Object { "t{0:D2} {1}" -f [int]$_.title, $_.source }) -join ', '), (($richer | ForEach-Object { (& $engOf $_) }) -join '/')) })
