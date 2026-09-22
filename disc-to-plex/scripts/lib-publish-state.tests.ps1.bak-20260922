@@ -222,36 +222,6 @@ try {
   try { [void](New-PublishBreaker -MaxNoProgress 5 -MaxNoProgressLifetime 3) } catch { $threw = $true }
   Check 'throws' $threw True
 
-  Write-Output '20. A HELD pass never hard-trips, however long the hold (Doctor Who 2026-09-22)'
-  #    publish-work.ps1 exit 2: the gate held the work, no copy was attempted. OCR keeps adding
-  #    sidecars, so the set churns and the soft breaker keeps re-arming - which is right.
-  $b5 = New-PublishBreaker -MaxNoProgress 2 -MaxNoProgressLifetime 5
-  $n = 0; $results = @()
-  for ($i = 1; $i -le 60; $i++) {
-    $fpI = Get-OutstandingFingerprint @((O "Ep$i.eng.srt" 'missing' 7 $null))
-    $v = Get-PublishBreakerVerdict -Breaker $b5 -Work 'Held' -Fingerprint $fpI
-    if ($v.Allow) { $n++; $results += (Register-PublishBreakerAttempt -Breaker $b5 -Work 'Held' -Before $fpI -After $fpI -Held) }
-  }
-  Check 'never hard-tripped'   (Get-PublishBreakerWork $b5 'Held').HardTripped False
-  Check 'lifetime untouched'   (Get-PublishBreakerWork $b5 'Held').NoProgressLifetime 0
-  Check 'still attempted'      ($n -gt 5) True
-  #    ... the SHORT run still counts a held pass, so an unchanging hold goes quiet
-  $b6 = New-PublishBreaker -MaxNoProgress 3 -MaxNoProgressLifetime 10
-  $fpH = Get-OutstandingFingerprint @((O 'Ep.mkv' 'missing' 100 $null))
-  $allowed = 0
-  for ($i = 1; $i -le 8; $i++) {
-    $v = Get-PublishBreakerVerdict -Breaker $b6 -Work 'Static' -Fingerprint $fpH
-    if ($v.Allow) { $allowed++; [void](Register-PublishBreakerAttempt -Breaker $b6 -Work 'Static' -Before $fpH -After $fpH -Held) }
-  }
-  Check 'static hold throttled' $allowed 3
-  Check 'soft-tripped'          (Get-PublishBreakerWork $b6 'Static').Tripped True
-  #    ... and once the hold clears, the NEXT fruitless copy counts toward the lifetime cap as before
-  $fpC = Get-OutstandingFingerprint @((O 'Ep.mkv' 'missing' 100 $null), (O 'Ep.eng.srt' 'missing' 7 $null))
-  $v = Get-PublishBreakerVerdict -Breaker $b6 -Work 'Static' -Fingerprint $fpC
-  Check 're-armed on change'    $v.State 'rearmed'
-  [void](Register-PublishBreakerAttempt -Breaker $b6 -Work 'Static' -Before $fpC -After $fpC)
-  Check 'unheld counts again'   (Get-PublishBreakerWork $b6 'Static').NoProgressLifetime 1
-
   $script:reachedEnd = $true
 }
 catch {

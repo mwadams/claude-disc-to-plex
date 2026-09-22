@@ -140,18 +140,6 @@ function Get-WorkOutstanding {
 # So a loop that finds a way to churn the fingerprint still cannot attempt more than
 # MaxNoProgressLifetime fruitless publishes per process, whatever the bug underneath.
 #
-# A HELD PASS IS NOT A FRUITLESS COPY, so it does not count toward the LIFETIME cap. publish-work.ps1
-# exits 2 when its gate holds the work - a declared output not yet encoded, a sidecar still awaiting
-# OCR - and in that case it never attempted a copy at all. Counting those passes as fruitless meant
-# ANY hold that lasted long enough ended in a hard trip, and a hard trip does not clear when the
-# hold does: the work then needs a human to bounce the track. Doctor Who (1963), 2026-09-22: held
-# for OCR for ~11 h, hard-tripped at 21:19 after 40 held passes, so the hold clearing would have
-# published nothing. Pride and Prejudice (27 attempts, 09-07) and Tales of the Unexpected (40 trips,
-# 09-08) were the same shape; each time the hold's cause was fixed and this counter was not.
-# A held pass still counts toward the short run, so an unchanging hold goes quiet after
-# MaxNoProgress passes and re-arms when the outstanding set changes - a sidecar arriving is exactly
-# that. The lifetime cap keeps its whole job: bounding copies that were attempted and changed nothing.
-#
 # PURE FUNCTIONS OVER A HASHTABLE the caller owns, so the whole policy is testable without a NAS.
 # ---------------------------------------------------------------------------------------------
 
@@ -218,13 +206,11 @@ function Register-PublishBreakerAttempt {
     'ok' | 'tripped' | 'hard-tripped' - the caller reports the latter two LOUDLY.
   #>
   param([Parameter(Mandatory)]$Breaker, [Parameter(Mandatory)][string]$Work,
-        [AllowEmptyString()][string]$Before, [AllowEmptyString()][string]$After,
-        # the publish was REFUSED by its hold gate (publish-work.ps1 exit 2) - no copy was attempted
-        [switch]$Held)
+        [AllowEmptyString()][string]$Before, [AllowEmptyString()][string]$After)
   $w = Get-PublishBreakerWork $Breaker $Work
   $w.Attempts++
   $w.LastFingerprint = $After
-  if ($After -eq $Before) { $w.NoProgress++; if (-not $Held) { $w.NoProgressLifetime++ } }
+  if ($After -eq $Before) { $w.NoProgress++; $w.NoProgressLifetime++ }
   else { $w.NoProgress = 0 }
   if ($w.NoProgressLifetime -ge $Breaker.MaxNoProgressLifetime) {
     $w.HardTripped = $true; $w.Tripped = $true; $w.TrippedAt = Get-Date; $w.SkippedSinceTrip = 0

@@ -212,6 +212,10 @@ while ($MaxPasses -le 0 -or $pass -lt $MaxPasses) {
         "{0,-46} .subtitles-only marker -> publishing sidecars only, leaving the NAS media alone" -f $w.Name
       }
       $out = & pwsh @args 2>&1
+      # CAPTURED AT ONCE: every later native call overwrites $LASTEXITCODE, and the breaker below
+      # needs THIS one - exit 2 is publish-work.ps1's hold gate (not encoded / awaiting OCR), which
+      # attempted no copy and so must not count toward the breaker's lifetime cap.
+      $pubExit = $LASTEXITCODE
       # MATCH THE MESSAGE, NOT THE SOURCE LINE THAT RAISED IT.
       #
       # When _publish.ps1 throws, PowerShell renders the error with the offending SOURCE LINE
@@ -234,12 +238,12 @@ while ($MaxPasses -le 0 -or $pass -lt $MaxPasses) {
       # `-replace '^\s*\|\s*'` drops the leading pipe of PowerShell's error continuation line, which
       # survives the source-line filter above because it carries no line number.
       if ($line) { "{0,-46} {1}" -f $w.Name, ((($line -join ' ') -replace '\s+', ' ') -replace '^\s*\|\s*', '') }
-      elseif ($LASTEXITCODE -ne 0) {
+      elseif ($pubExit -ne 0) {
         # A publish that CRASHES (guard failed to load, robocopy exit >= 8, a throw before the
         # verify) prints neither 'verified' nor 'REFUSING', and this loop used to say NOTHING -
         # the work just silently never reached the NAS, pass after pass. A refusal is expected
         # and quiet; a crash must be loud, with enough of the tail to see why.
-        "{0,-46} PUBLISH CRASHED (exit {1}) - last output:" -f $w.Name, $LASTEXITCODE
+        "{0,-46} PUBLISH CRASHED (exit {1}) - last output:" -f $w.Name, $pubExit
         @($out | Where-Object { "$_" -match '\S' })[-3..-1] | ForEach-Object { "    $_" }
       }
       # ASK THE NAS, DO NOT READ THE CHILD'S ADJECTIVE.
@@ -270,7 +274,7 @@ while ($MaxPasses -le 0 -or $pass -lt $MaxPasses) {
       # THE BREAKER, FED. "Progress" is the outstanding set having changed at all - a file landed,
       # or a new one appeared - measured by the same function that decided there was work to do.
       $afterFp = Get-OutstandingFingerprint $after
-      $trip = Register-PublishBreakerAttempt -Breaker $breaker -Work $w.Name -Before $before -After $afterFp
+      $trip = Register-PublishBreakerAttempt -Breaker $breaker -Work $w.Name -Before $before -After $afterFp -Held:($pubExit -eq 2)
       if ($trip -ne 'ok') {
         $bw = Get-PublishBreakerWork $breaker $w.Name
         Write-PublishBreakerRegister -Breaker $breaker -Path $BreakerRegister
