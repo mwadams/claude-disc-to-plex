@@ -160,6 +160,16 @@ while ($true) {
       switch ($outcome.Verdict) {
         'exhausted' { Set-BitmapSubsExhausted -Path $f.FullName; Write-OcrTerminalLedger -LocalPath $f.FullName -Reason 'OCR ran, no usable text (settled verdict)' -Evidence (@($outcome.Lines) -join ' ') }
         'blocked'   { Set-BitmapSubsBlocked   -Path $f.FullName -Reason $outcome.BlockReason }
+        # NO VERDICT = RETRY, BUT NOT FOR EVER. Register-OcrUnexplainedFailure counts consecutive
+        # failures that STATED a reason this library could not classify, and on the third records
+        # `blocked:` carrying the gate's own words. A failure with no message at all is still an
+        # unbounded retry, which is correct - that is the contended/half-written/crashed case.
+        # Publish stays held either way; what changes is that the reason reaches the verdict store
+        # the board already reads, instead of living only in this log. 2026-09-22: it lived only in
+        # this log for ELEVEN HOURS while 65 finished files waited behind two bad ones.
+        default     { if (Register-OcrUnexplainedFailure -Path $f.FullName -OutputText ($out | Out-String)) {
+                        "    *** BOUNDED - third unexplained failure for this file; recorded a blocked verdict with the gate's own reason. Publish stays held (correct); the OCR track will stop respinning it."
+                      } }
       }
       $outcome.Lines | ForEach-Object { "    $_" }
     }
