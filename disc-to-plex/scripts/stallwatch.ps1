@@ -971,6 +971,25 @@ if (Test-Path -LiteralPath $ocrQ) {
   } catch { }
 }
 
+# See the note on authoringInFlight in the state block below: the dispositions track's OWN registry of
+# live agents, which is what it logs as "live agents N". Read here, after the per-unit scan, so it can
+# only ever RAISE the count the markers found.
+try {
+  $dsPath = Join-Path $VideoRoot '_dispositions-state.json'
+  if (Test-Path -LiteralPath $dsPath) {
+    $ds = Get-Content -LiteralPath $dsPath -Raw | ConvertFrom-Json
+    $liveRuns = 0
+    foreach ($p in @($ds.runs.PSObject.Properties)) {
+      $started = $null
+      if ($p.Value -and $p.Value.PSObject.Properties.Name -contains 'started') { $started = $p.Value.started }
+      # ConvertFrom-Json hands back a real [datetime] here; stringifying it back breaks under en-GB.
+      $age = if ($started -is [DateTime]) { ((Get-Date) - $started).TotalHours } else { 0 }
+      if ($age -le $MarkerStaleHours) { $liveRuns++ }
+    }
+    if ($liveRuns -gt $authoringInFlight) { $authoringInFlight = $liveRuns }
+  }
+} catch { }
+
 $freshaudit = 'D:/video/.claude/skills/disc-to-plex/scripts/audit-publish-freshness.ps1'
 if (Test-Path -LiteralPath $freshaudit) {
   # CAPTURE, don't stream. The audit's prose still prints verbatim, but its anchored
@@ -1229,6 +1248,16 @@ if ($StateFile) {
     # dispositions track was demonstrably working - it had just gated Colony In Space, closed An
     # Unearthly Child and launched an agent for Frontier in Space Disk 1. Nothing was wrong, and the
     # condition would have held for most of the next several days.
+    #
+    # COUNTED FROM THE TRACK'S OWN REGISTRY, not only from the per-unit markers this board happens to
+    # print. The first version of this counter incremented in the two branches above, and two hours
+    # later it read 0 while `_dispositions-loop.ps1` logged "live agents 2" and two manifest agents
+    # were running - because a unit whose agent has just been launched is not yet in either branch.
+    # A half-counted signal is worse than none here: it re-opens the alarm it was added to close, and
+    # does it intermittently, which is harder to diagnose than a condition that is simply always on.
+    # `_dispositions-state.json`'s `runs` is what the loop itself counts, one entry per live agent.
+    # Entries older than the marker-stale window are IGNORED so a dead agent cannot suppress the
+    # alarm for ever - the same staleness rule the marker branch above applies.
     authoringInFlight = [int]$authoringInFlight
     encodersStarved   = [bool]($queued -eq 0 -and $running -eq 0 -and $awaitingAuthoring -gt 0 -and $authoringInFlight -eq 0)
     nothingStaged  = [bool]($units.Count -eq 0 -and -not $busy)

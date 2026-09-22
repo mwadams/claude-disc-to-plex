@@ -157,7 +157,16 @@ function Read-DispositionClaims {
     # rows - The Water Margin's box set does throughout - and restricting the type to episode/extra
     # read six correctly-identified episodes as having no evidence at all (2026-09-20). This cannot
     # widen the net wrongly: a feature row for an actual film names no SxxEnn, so it never matches.
-    if ($l -match '^(t\d+)\|(episode|extra|feature)\|(?:[^|]*?\s-\s)?(S\d{1,2}E\d{1,3}(?:\s*-\s*(?:S\d{1,2})?E\d{1,3})+|S\d{1,2}E\d{1,3})(?:(?:\s+-)?\s+([^|]+))?\|') {
+    # A FIFTH SHAPE: the show name before the slot with NO dash at all,
+    # `t01|episode|Doctor Who (1963) S02E30 The Executioners|speech:...`. The prefix group used to
+    # require " - " (space-dash-space), so a plain space between show and slot matched nothing and the
+    # row claimed no slot. 2026-09-22: The Chase wrote all six of its rows that way, and the audit
+    # reported "*** NO IDENTITY EVIDENCE - 6 slot(s) published with no disposition row claiming them"
+    # for S02E30-E35 - which are the CORRECT slots for that story, named by rows sitting right there
+    # in the file. A false alarm of this shape is expensive twice over: it accuses a correct disc, and
+    # it trains the reader to discount the one real mis-slotting this audit exists to catch.
+    # `\s` subsumes " - " (which ends in a space), so this widening keeps every earlier shape.
+    if ($l -match '^(t\d+)\|(episode|extra|feature)\|(?:[^|]*?\s)?(S\d{1,2}E\d{1,3}(?:\s*-\s*(?:S\d{1,2})?E\d{1,3})+|S\d{1,2}E\d{1,3})(?:(?:\s+-)?\s+([^|]+))?\|') {
       $row = $Matches[1]; $span = $Matches[3]; $title = (Get-ClaimedTitle $Matches[4])
       $season = $(if ($span -match '^S(\d{1,2})') { $Matches[1] } else { '' })
       foreach ($m in [regex]::Matches($span, '(?i)(?:S(\d{1,2}))?E(\d{1,3})')) {

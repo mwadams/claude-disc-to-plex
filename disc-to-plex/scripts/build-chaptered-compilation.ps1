@@ -329,7 +329,10 @@ if ($problems.Count) {
 
 # dvdTitle appearing twice means two chapters would hold identical content - always a spec error,
 # and one that a duration check cannot catch because both copies decode to the right length.
-$dupes = @($items | Group-Object { if ("$($_.file)".Trim()) { "file:$("$($_.file)".ToLowerInvariant())" } else { "dvd:$($_.dvdTitle)" } } |
+# The key includes dvdChapter, because a multi-cell title rebuilt from its own cells names the SAME
+# dvdTitle once per chapter and those are different content - see the dvdChapter note further down.
+# Without the chapter in the key this refusal would block exactly the case it was never aimed at.
+$dupes = @($items | Group-Object { if ("$($_.file)".Trim()) { "file:$("$($_.file)".ToLowerInvariant())" } else { "dvd:$($_.dvdTitle)" + $(if ($null -ne $_.dvdChapter) { ":ch$($_.dvdChapter)" } else { '' }) } } |
             Where-Object { $_.Count -gt 1 })
 if ($dupes.Count) {
   Write-Output "REFUSE - dvdTitle repeated in the spec (the same content would appear twice):"
@@ -383,7 +386,25 @@ foreach ($it in $items) {
     if (-not (Test-Path -LiteralPath "$($it.file)")) { Write-Output "  FAILED - item $n names a file that does not exist: $($it.file)"; exit 1 }
     $inspec = @('-i', "$($it.file)")
   } else {
-    $inspec = @('-f','dvdvideo','-title',[string]$it.dvdTitle,'-i',$disc)
+    $inspec = @('-f','dvdvideo','-title',[string]$it.dvdTitle)
+    # A SINGLE CELL OF A MULTI-CELL TITLE. The dvdvideo demuxer reads only the FIRST cell of such a
+    # title and stops - the failure this script already names two screens down ("this demuxer
+    # truncates the title (multi-cell)"). The standing remedy is to rip with MakeMKV instead, and
+    # that works whenever MakeMKV enumerated the title.
+    #
+    # 2026-09-22, The Aztecs: it had not. dvdvideo title 9 is 76s in SIX cells (15/10/15/14/12/10)
+    # and appears in no MakeMKV row at all, so there was nothing to rip - the transcode produced
+    # 15.00s against a manifest expecting 76.00s and the length guard failed the whole manifest.
+    #
+    # Measured the same day: a chapter RANGE does not help (-chapter_start 1 -chapter_end 6 still
+    # returns 15s) but a SINGLE chapter does - chapter 2 alone decodes 10s, chapter 3 alone 15s,
+    # chapter 6 alone 10s, exactly matching the chapter table. So the cells are individually
+    # addressable and the title can be rebuilt as a compilation of its own chapters, which is what
+    # this script already does for separate titles.
+    if ($null -ne $it.dvdChapter) {
+      $inspec += @('-chapter_start', [string]$it.dvdChapter, '-chapter_end', [string]$it.dvdChapter)
+    }
+    $inspec += @('-i', $disc)
   }
 
   # A title with no audio stream is not an error - it is a silent menu clip. Give it silence, so
