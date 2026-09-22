@@ -123,11 +123,32 @@ foreach ($d in (Get-ChildItem (Join-Path $VideoRoot '_stage') -Directory -EA Sil
 $reclaimGB = [math]::Round($bytes / 1GB + $stageGB, 2)
 
 if ($files -eq 0 -and $stageGB -eq 0) {
+  # THIS IS THE CONJUNCTION'S THIRD CONDITION FAILING, SO IT IS NOT A BLOCK - and this branch used to
+  # say it was. It printed the token `SPACE-BLOCKED` and exited 2, which is the "waiting on you" code,
+  # in the one case where the header above says the opposite in as many words: "Without this the
+  # operator can do nothing and saying so would just be noise."
+  #
+  # The token is not cosmetic. _stallwatch.ps1 sets its state field by `$spaceOut -match 'SPACE-BLOCKED'`,
+  # and _stall-alarm.ps1 opens an EPISODE on that field - so this branch raised an alarm episode
+  # naming the operator, telling them to "confirm published works in Plex", at a moment when there was
+  # nothing published for them to confirm and nothing they could have done.
+  #
+  # 2026-09-22 04:26, on the first batch list big enough to show it: list17 went live with 164 discs,
+  # the fetch loop correctly held at the floor (it reserves space for a rip in flight, so its own
+  # floor rose to 132 GB), and the line was PRODUCING throughout - an optical rip writing since 03:46,
+  # encodes queued behind it, publish held by the plan gate on a Season 00 folder that was still
+  # filling. Nothing was wrong. The episode would have stayed open for as long as 161 discs waited,
+  # which is the exact mechanism that made 2026-09-21's real stall invisible: an alarm that is always
+  # on is an alarm nobody reads. A hold is not a stall - the distinction this project keeps re-learning.
+  #
+  # So: report it, because a full disk with discs waiting is worth seeing on the board, but do NOT
+  # claim the operator is needed and do NOT emit the token the alarm raises on. Exit 0 - not blocked.
   if (-not $Quiet) {
-    Write-Output "*** SPACE-BLOCKED and NOTHING IS RECLAIMABLE - $freeGB GB free, floor $FloorGB, $($left.Count) disc(s) waiting."
-    Write-Output '    No local file is byte-verified on the NAS, so publishing must finish first.'
+    Write-Output "space at the floor, NOT waiting on you - $freeGB GB free, floor $FloorGB, $($left.Count) disc(s) waiting to stage."
+    Write-Output '    Nothing is reclaimable yet: no local file is byte-verified on the NAS, so publishing must finish first.'
+    Write-Output '    The fetch loop holds at the floor by design and resumes itself; this clears without anyone acting.'
   }
-  exit 2
+  exit 0
 }
 
 if (-not $Quiet) {

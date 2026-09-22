@@ -186,22 +186,65 @@ try {
 # "cannot tell", and cannot-tell must not hold a file back - Plex being down is not the operator's
 # problem, and the pending-list check above still runs.
 $plexTitleByLeaf = @{}
+$plexResolvedShows = @{}
 $plexChecked = $false
+# NEVER LOOK A SHOW UP BY ITS FOLDER NAME THROUGH `title=`. Plex's title filter is a substring match
+# against the SHOW'S OWN TITLE, and a library folder is not that title - it is the title made safe for
+# a filesystem, plus whatever Plex needs to tell two editions apart. Both differences are fatal here:
+#
+#   folder `Blakes 7`                        Plex title `Blake's 7`   - "Blakes 7" is not a substring
+#   folder `Blakes 7 {edition-Remastered VFX}`                        - no title ever contains that
+#
+# 2026-09-22: both returned ZERO directories, the bare `catch {}` swallowed the 404 that followed on
+# `/library/metadata/` (an empty result is one $null element, whose ratingKey is ''), and the empty map
+# then read as "Plex has not indexed these" for all eleven Blake's 7 files. The operator had confirmed
+# them; the script answered "NOT READY TO LOOK AT" and refused to offer any of them. The titling pass
+# meanwhile reported "7 already correct, 7 re-locked, 0 not indexed yet" - it was never in doubt.
+#
+# This is not a Blake's 7 fault. Every show whose title carries an apostrophe or a colon is stored under
+# a stripped folder name, so the lookup could never resolve any of them, and any such work reaching this
+# gate would have been held indefinitely on evidence that was never gathered.
+#
+# So join on what the two ends actually share: fetch section 5 ONCE, match on the title with all
+# punctuation removed (`{edition-...}` and a trailing year stripped from the folder first), and then
+# confirm the candidate with the Location-leaf test below, which is the only exact key - it is what
+# distinguishes the two shows both titled "Blake's 7".
+function Get-PlexSection5Shows {
+  param([string]$Token, [string]$Base)
+  try {
+    $all = Invoke-RestMethod -TimeoutSec 60 -Headers @{ 'X-Plex-Token' = $Token } `
+             -Uri ("{0}/library/sections/5/all?type=2" -f $Base)
+    return @($all.MediaContainer.Directory | Where-Object { "$($_.ratingKey)" })
+  } catch { return $null }
+}
+function Get-TitleKey {
+  param([string]$Name)
+  $n = $Name -replace '\s*\{edition-[^}]*\}\s*', ' '
+  $n = $n -replace '\s*\((19|20)\d{2}\)\s*$', ''
+  return (($n -replace '[^A-Za-z0-9]', '').ToLowerInvariant())
+}
 function Get-PlexTitlesForShows {
   param([string[]]$Shows)
   $tok = [Environment]::GetEnvironmentVariable('PLEX_TOKEN', 'User')
   $base = [Environment]::GetEnvironmentVariable('PLEX_BASEURL', 'User')
   if (-not $tok -or -not $base) { return $false }
+  $section = Get-PlexSection5Shows -Token $tok -Base $base
+  if (-not $section -or -not $section.Count) { return $false }
   foreach ($show in $Shows) {
-    $bare = ($show -replace '\s*\((19|20)\d{2}\)\s*$', '').Trim()
+    $key = Get-TitleKey -Name $show
     try {
-      $found = Invoke-RestMethod -TimeoutSec 30 -Headers @{ 'X-Plex-Token' = $tok } `
-                 -Uri ("{0}/library/sections/5/all?type=2&title={1}" -f $base, [uri]::EscapeDataString($bare))
-      foreach ($dir in @($found.MediaContainer.Directory)) {
+      $found = @($section | Where-Object { (Get-TitleKey -Name "$($_.title)") -eq $key })
+      foreach ($dir in $found) {
         $meta = Invoke-RestMethod -TimeoutSec 30 -Headers @{ 'X-Plex-Token' = $tok } `
                   -Uri ("{0}/library/metadata/{1}" -f $base, $dir.ratingKey)
         $leaves = @(@($meta.MediaContainer.Directory.Location.path) | ForEach-Object { ($_ -replace '/+$','') -split '[\\/]' | Select-Object -Last 1 })
         if ($leaves -notcontains $show) { continue }
+        # THE LOCATION LEAF IS THE ONLY EXACT KEY, and it is what tells two shows of the SAME title
+        # apart: `Blakes 7` (rk 19624) and `Blakes 7 {edition-Remastered VFX}` (rk 35648) are both
+        # titled "Blake's 7". Reaching here means this folder IS this Plex show, so the episode map
+        # below is authoritative for it - and the show is RESOLVED, which is a different fact from
+        # "Plex answered". See the caller.
+        $script:plexResolvedShows[$show] = $true
         $seasons = Invoke-RestMethod -TimeoutSec 30 -Headers @{ 'X-Plex-Token' = $tok } `
                      -Uri ("{0}/library/metadata/{1}/children" -f $base, $dir.ratingKey)
         foreach ($sn in @($seasons.MediaContainer.Directory)) {
@@ -262,6 +305,7 @@ $pending = @($pending | Where-Object { $localWorks.ContainsKey($_.Work) })
 # So: partition. Still-owed goes in the list; already-confirmed-but-stuck is reported separately,
 # WITH the reason, because that is a work item for us.
 $confirmedWorks = @{}
+$confirmedCovers = @{}
 $rq = Join-Path $VideoRoot '_reclaim-queue'
 foreach ($a in (Get-ChildItem -LiteralPath $rq -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
   try { $art = Get-Content -LiteralPath $a.FullName -Raw | ConvertFrom-Json } catch { continue }
@@ -271,11 +315,53 @@ foreach ($a in (Get-ChildItem -LiteralPath $rq -Filter '*.json' -File -ErrorActi
     $line = @(Get-Content -LiteralPath $status -ErrorAction SilentlyContinue | Where-Object { $_ -match '^\s*(pending|refused|blocked)\s*:' })
     if ($line.Count) { $why = ($line[-1] -replace '^\s*\w+\s*:\s*', '').Trim() }
   }
-  foreach ($w in @($art.works)) { if ($w) { $confirmedWorks["$w"] = @{ When = $a.LastWriteTime; Why = $why } } }
+  foreach ($w in @($art.works)) {
+    if (-not $w) { continue }
+    $confirmedWorks["$w"] = @{ When = $a.LastWriteTime; Why = $why }
+    # WHAT THAT NOD ACTUALLY COVERED. An artefact written by this script carries `coversOutputs` -
+    # the exact files that were on screen when the operator said yes - so that a LATER publish cannot
+    # widen an earlier confirmation. An artefact from before that field existed carries no such list
+    # and is treated as covering the whole work, which is what it meant at the time.
+    if (-not $confirmedCovers.ContainsKey("$w")) { $confirmedCovers["$w"] = @{ All = $false; Rx = [Collections.ArrayList]@() } }
+    $cov = @($art.coversOutputs | Where-Object { $_ })
+    if (-not $cov.Count) { $confirmedCovers["$w"].All = $true }
+    else { foreach ($r in $cov) { [void]$confirmedCovers["$w"].Rx.Add("$r") } }
+  }
+}
+# A FILE THE ARTEFACT DELIBERATELY EXCLUDED IS STILL OWED, AND SUPPRESSING ITS WORK BURIED IT.
+#
+# These two protections were each correct and together they deadlocked. `coversOutputs` stops an old
+# nod releasing a file published after it - the reclaim says so plainly: "5 file(s) outside this
+# confirmation's scope kept for their own confirmation". "Never ask twice" then suppressed the WHOLE
+# WORK because an artefact named it, so the very files held back for their own confirmation could
+# never be offered for one.
+#
+# 2026-09-22: Blake's 7 was confirmed at 04:05 over the 9 files then on screen. Three more finished
+# encoding afterwards, one of them published and byte-verified - 3.73 GB that audit-space-block.ps1
+# was naming as the reclaim that would clear a space block, while this script printed the work under
+# "ALREADY CONFIRMED - do NOT confirm again". The operator was simultaneously being told to confirm
+# it and told not to. Nothing could move that file either way.
+#
+# So the suppression is PER FILE, not per work: a work is fully answered only when every one of its
+# remaining files is inside some artefact's scope. Anything outside every scope goes back on the list,
+# and the listing below shows ONLY those, so a re-offered work never re-asks about a file already
+# nodded through.
+function Test-FileConfirmed {
+  param([string]$Work, [string]$Leaf)
+  if (-not $confirmedCovers.ContainsKey($Work)) { return $false }
+  $c = $confirmedCovers[$Work]
+  if ($c.All) { return $true }
+  foreach ($rx in $c.Rx) { if ($Leaf -match $rx) { return $true } }
+  return $false
+}
+$confirmedFully = @{}
+foreach ($w in $confirmedWorks.Keys) {
+  $unanswered = @(@($localWorks[$w]) | Where-Object { $_ } | Where-Object { -not (Test-FileConfirmed -Work $w -Leaf $_.Name) })
+  if (-not $unanswered.Count) { $confirmedFully[$w] = $true }
 }
 
-$stuck   = @($pending | Where-Object { $confirmedWorks.ContainsKey($_.Work) })
-$pending = @($pending | Where-Object { -not $confirmedWorks.ContainsKey($_.Work) })
+$stuck   = @($pending | Where-Object { $confirmedFully.ContainsKey($_.Work) })
+$pending = @($pending | Where-Object { -not $confirmedFully.ContainsKey($_.Work) })
 $pendingNames = @($pending | ForEach-Object { $_.Work } | Sort-Object -Unique)
 
 # ---- staging currently held, so the LIST shows the real prize -------------------------------------
@@ -307,9 +393,21 @@ if (-not $Work.Count -and -not $All) {
   $tvShows = @(($pending | ForEach-Object { $_.Work }) | Where-Object {
                  Test-Path -LiteralPath (Join-Path (Join-Path $VideoRoot 'Television Shows') $_)
                } | Sort-Object -Unique)
+  $askable = [Collections.ArrayList]@()
   if ($tvShows.Count) {
     $plexChecked = Get-PlexTitlesForShows -Shows $tvShows
-    if ($plexChecked) { foreach ($w in $tvShows) { $plexCheckedWorks[$w] = $true } }
+    # A SHOW PLEX ANSWERED ABOUT IS NOT THE SAME AS A SHOW WE FOUND. This marked every requested show
+    # as checked the moment the token existed, so a show the lookup could not resolve had every one of
+    # its leaves read as "in the library, not yet in Plex" - an untitled verdict from evidence that was
+    # never gathered, which is exactly the "a check that cannot measure has not found a fault" trap the
+    # film guard in Test-PlexTitleMissing was written to close. Only a show whose Location leaf matched
+    # counts, and an unresolved one is REPORTED rather than silently turned into a hold: it held eleven
+    # Blake's 7 files for hours after the operator confirmed them and said nothing about why.
+    foreach ($w in $tvShows) { if ($plexResolvedShows.ContainsKey($w)) { $plexCheckedWorks[$w] = $true } }
+    $unresolved = @($tvShows | Where-Object { -not $plexResolvedShows.ContainsKey($_) })
+    if ($plexChecked -and $unresolved.Count) {
+      Write-Output ("   (could not locate {0} show(s) in Plex section 5 by folder leaf - NOT holding their files, titles unverified: {1})" -f $unresolved.Count, ($unresolved -join ', '))
+    }
   }
 
   foreach ($p in ($pending | Sort-Object When)) {
@@ -333,7 +431,11 @@ if (-not $Work.Count -and -not $All) {
     # NOT $all - PowerShell variable names are CASE-INSENSITIVE, so `$all` IS the `-All` switch
     # parameter. Assigning an array to it replaced the switch and the next binding of -All died
     # with "Cannot convert System.Object[] to SwitchParameter" - from a line that never mentions it.
-    $localFiles = @($localWorks[$p.Work])
+    # ONLY THE FILES STILL UNANSWERED. A work re-offered because a later publish fell outside an
+    # earlier nod's scope must ask about THOSE files alone - re-listing the ones already confirmed is
+    # how Azkaban got confirmed four times, and it also invites a nod aimed at evidence nobody
+    # re-checked. Test-FileConfirmed is the same scope test the reclaim applies.
+    $localFiles = @(@($localWorks[$p.Work]) | Where-Object { -not (Test-FileConfirmed -Work $p.Work -Leaf $_.Name) })
     $fl = @(); $unpub = @(); $untitled = @()
     foreach ($f in $localFiles) {
       $rel = $f.FullName -replace [regex]::Escape((Join-Path $VideoRoot '')), ''
@@ -405,6 +507,13 @@ if (-not $Work.Count -and -not $All) {
     foreach ($x in ($fl | Sort-Object Rel)) { Write-Output ("        {0,8:N1} MB  {1}" -f ($x.F.Length / 1MB), $x.Rel) }
     if ($fl.Count) {
       Write-Output ("        ^ CONFIRM THESE {0} file(s) in Plex - not the work as a whole. They are what the reclaim releases." -f $fl.Count)
+      # THE HEADER COUNTS WORKS; ONLY SOME OF THEM ACTUALLY ASK ANYTHING. A work whose every file is
+      # still waiting on PUBLISH is listed here on purpose - "check the publish loop for this work" is
+      # a real signal - but it is not a question for the operator, and counting it in "AWAITING YOUR
+      # CONFIRMATION - 3 work(s)" overstates what is owed. 2026-09-22: Doctor Who (1963) was the third
+      # of three, with nothing confirmable at all. This surface is the ONLY human gate in the line, so
+      # an inflated count is the one thing it must not print. Tallied here, reported at the end.
+      [void]$askable.Add([pscustomobject]@{ Work = $p.Work; Files = $fl.Count })
     }
     if ($untitled.Count) {
       Write-Output ("        !! {0} file(s) are on the NAS but NOT READY TO LOOK AT - Plex has not indexed them yet, so their real titles are not set and locked. They are waiting on the titling pass, not on you:" -f $untitled.Count)
@@ -474,7 +583,17 @@ if (-not $Work.Count -and -not $All) {
   Write-Output '   because this writes deriveUnits:true - the staging of every unit of that work whose outputs'
   Write-Output '   are all delivered and byte-verified. That second part is what hand-written artefacts missed.'
   Write-Output ''
-  Write-Output '   pwsh -File approve-confirmed.ps1 -Work ''<name>'' -Note ''<their words>'''
+  # WHAT IS ACTUALLY OWED, after the per-work listing has measured it. See the tally above.
+  if ($askable.Count) {
+    Write-Output ("REALLY OWED BY YOU: {0} work(s), {1} file(s) -" -f $askable.Count, (@($askable | Measure-Object -Property Files -Sum).Sum))
+    foreach ($a in $askable) { Write-Output ("      pwsh -File approve-confirmed.ps1 -Work '{0}' -ExpectFiles {1} -Note '<their words>'" -f $a.Work, $a.Files) }
+    $noAsk = @($pending | Where-Object { $w = $_.Work; -not @($askable | Where-Object { $_.Work -eq $w }).Count } | ForEach-Object { $_.Work })
+    if ($noAsk.Count) {
+      Write-Output ("   Listed above but NOT a question for you - every file still waiting on publish: {0}" -f ($noAsk -join ', '))
+    }
+  } else {
+    Write-Output '   Nothing is confirmable yet - every file listed above is still waiting on publish or titling.'
+  }
   exit 0
 }
 

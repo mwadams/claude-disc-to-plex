@@ -111,6 +111,13 @@ $publishStalled = $false; $publishStallMin = 0; $publishStallFiles = 0
 # UNITS THAT HAVE NOT YET REACHED THE ENCODERS - the input to "encodersStarved" below. Incremented
 # once per unit that still needs dispositions or a manifest, whichever branch it lands in.
 $awaitingAuthoring = 0
+# AND HOW MANY OF THOSE ARE ACTIVELY BEING AUTHORED RIGHT NOW. `awaitingAuthoring` counts units short
+# of the encoders; it says nothing about whether anything is working on them. Idle GPU lanes with an
+# agent mid-brief are this line's DESIGNED steady state - "the one step that costs money is authoring
+# dispositions" - so raising an alarm episode on that is an alarm that is on for days at a time, which
+# is how 2026-09-21's real stall went unread. Same principle the brief branch below already applies:
+# "A BRIEF IS ONLY A STALL WHEN NOTHING WILL RUN IT."
+$authoringInFlight = 0
 # ONE BRIEF READY LINE PER BATCH, NOT PER UNIT (2026-09-04). _dispositions-loop.ps1 briefs the discs
 # of one work to ONE agent and saves the SAME brief under each member's name, so this board saw a
 # brief per unit and printed a "spawn an agent with: Follow the brief at ..." line per unit - two
@@ -230,6 +237,7 @@ foreach ($u in $units) {
           $stalls += "{0,-28} dispositions marker is STALE ({1:N1} h, nothing written) - the agent likely died; inspect {2}, then remove the marker" -f $name, $mAge.TotalHours, $marker
         } else {
           $moving += "{0,-28} dispositions being written (subagent working, {1:N0} min)" -f $name, $mAge.TotalMinutes
+          $authoringInFlight++
         }
       } elseif (Test-Path -LiteralPath $brief) {
         # A BRIEF IS ONLY A STALL WHEN NOTHING WILL RUN IT.
@@ -463,6 +471,7 @@ foreach ($u in $units) {
           $stalls += "{0,-28} manifest marker is STALE ({1:N1} h, nothing written) - the agent likely died; inspect {2}, then remove the marker" -f $name, $mAge2.TotalHours, $marker2
         } else {
           $moving += "{0,-28} manifest being authored (subagent working, {1:N0} min)" -f $name, $mAge2.TotalMinutes
+          $authoringInFlight++
         }
       } elseif (Test-Path -LiteralPath $brief2) {
         # Same rule as the dispositions-phase brief above: queued behind a live track is not stalled.
@@ -1189,7 +1198,13 @@ if ($StateFile) {
     # manifest. The last clause is what keeps this quiet when idleness is CORRECT: once everything
     # staged has been encoded, awaitingAuthoring is 0 and this never fires.
     awaitingAuthoring = [int]$awaitingAuthoring
-    encodersStarved   = [bool]($queued -eq 0 -and $running -eq 0 -and $awaitingAuthoring -gt 0)
+    # `-and $authoringInFlight -eq 0`: STARVED MEANS NOBODY IS FEEDING THEM, not merely that they are
+    # idle. 2026-09-22, minutes after list17 went live with 164 discs: the episode opened while the
+    # dispositions track was demonstrably working - it had just gated Colony In Space, closed An
+    # Unearthly Child and launched an agent for Frontier in Space Disk 1. Nothing was wrong, and the
+    # condition would have held for most of the next several days.
+    authoringInFlight = [int]$authoringInFlight
+    encodersStarved   = [bool]($queued -eq 0 -and $running -eq 0 -and $awaitingAuthoring -gt 0 -and $authoringInFlight -eq 0)
     nothingStaged  = [bool]($units.Count -eq 0 -and -not $busy)
     spaceBlocked   = [bool]$spaceBlocked
     reclaimFailed  = @($reclaimFailed)

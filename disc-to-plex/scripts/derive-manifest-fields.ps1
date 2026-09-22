@@ -728,6 +728,61 @@ foreach ($r in $rows) {
   }
 }
 
+# ---- AN ALTERNATE TV EDITION MUST BE `{edition-...}`, NEVER `(...)` ------------------------------
+#
+# Plex strips a `{edition-...}` tag from a show folder before matching the show, so
+# `Blakes 7 {edition-Remastered VFX}` indexes as Blake's 7 and the episodes land beside the originals.
+# A PARENTHESISED suffix is NOT stripped: `Blakes 7 (Remastered VFX)` is matched as a show of that
+# name, finds nothing, and never indexes at all - the files sit on the NAS looking perfectly healthy
+# and appear nowhere in the library.
+#
+# 2026-09-22: Blake's 7 Series 1 Disc 1 was authored with the parenthesised form, the operator found
+# the episodes missing from Plex, and the folder had to be renamed and the NAS copies deleted BY HAND
+# (this pipeline cannot delete from the NAS, so every one becomes a job only they can do). I then
+# fixed DISC 1'S MANIFEST ONLY. Disc 2 was already running with the same fault and was actively
+# encoding a second pair of files into the same dead folder when this was written - the per-disc
+# repair that this project has now made three times (Friends subtitle ordinals, S1/S2/S3).
+#
+# DERIVED, NOT GUARDED, because the right value is computable: a guard here could only refuse, and
+# the author would have to be told the answer anyway.
+#
+# THE TEST IS NARROW, and deliberately not "a TV folder with brackets". Real show names carry
+# parentheses - `Randall and Hopkirk (Deceased)` - and so does every dated folder, `Doctor Who (1963)`.
+# What marks an EDITION is that THIS MANIFEST writes to both `X` and `X (Y)` under Television Shows:
+# the same disc delivering the same episodes twice, under one name and one name-plus-suffix, is an
+# alternate cut of X and nothing else. A year is excluded outright.
+if (-not $AudioOnly) {
+  $tvRe = '(?i)^(?<root>.*/Television\ Shows)/(?<work>[^/]+)/(?<rest>.*)$'
+  $bases = @{}
+  foreach ($r in $rows) {
+    $o = (Get-Text $r 'out') -replace '\\', '/'
+    if ($o -match $tvRe) { $bases[$Matches['work']] = $true }
+  }
+  foreach ($r in $rows) {
+    $o = (Get-Text $r 'out') -replace '\\', '/'
+    if ($o -notmatch $tvRe) { continue }
+    $work = $Matches['work']; $root = $Matches['root']; $rest = $Matches['rest']
+    if ($work -notmatch '^(?<base>.+?)\s*\((?<ed>[^)]+)\)\s*$') { continue }
+    $base = $Matches['base'].Trim(); $ed = $Matches['ed'].Trim()
+    if ($ed -match '^(19|20)\d{2}$') { continue }            # a year is a date, not an edition
+    if (-not $bases.ContainsKey($base)) { continue }          # no sibling base folder: a real show name
+    # The FILENAME carries the suffix too, and it must go: Plex keys the episode on SxxExx and the
+    # rest is cosmetic, but the originals are named `<base> - SxxExx - <title>.mkv` and the pair
+    # should read as one episode in two editions, not two differently-named things.
+    $leafNew = (Split-Path $rest -Leaf) -replace ([regex]::Escape("$base ($ed)")), $base
+    $restNew = if ((Split-Path $rest -Parent)) { ((Split-Path $rest -Parent) -replace '\\','/') + '/' + $leafNew } else { $leafNew }
+    $newOut = "{0}/{1} {{edition-{2}}}/{3}" -f $root, $base, $ed, $restNew
+    if ($newOut -eq $o) { continue }
+    $totalChanges++
+    Write-Output ("   {0}: out {1} -> {2}   [{3}]" -f (Split-Path $o -Leaf), $o, $newOut,
+      ("this manifest also writes to '{0}', so '{0} ({1})' is an alternate EDITION of it - and Plex strips '{{edition-...}}' before matching a show while a parenthesised suffix is matched as part of the show name, so the parenthesised folder never indexes" -f $base, $ed))
+    Set-Field $r 'out' $newOut
+    $hist = @(); if ($r.PSObject.Properties.Name -contains 'derived' -and $null -ne $r.derived) { $hist = @($r.derived) }
+    Set-Field $r 'derived' (@($hist) + @([pscustomobject][ordered]@{ at = $now; by = 'derive-manifest-fields.ps1'; mode = 'edition-layout'
+      changes = @([ordered]@{ field = 'out'; from = $o; to = $newOut; evidence = "alternate TV edition: '{edition-...}' indexes, '(...)' does not" }) }))
+  }
+}
+
 if ($totalChanges -and -not $WhatIf) {
   $out = switch ($shape) { 'array' { , @($rows) } 'outputs' { $doc.outputs = @($rows); $doc } default { , @($rows) } }
   $json = ConvertTo-Json -InputObject $out -Depth 12
