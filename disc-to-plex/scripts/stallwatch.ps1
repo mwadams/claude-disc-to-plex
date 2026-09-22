@@ -764,6 +764,32 @@ if (Test-Path -LiteralPath $optStatusPath) {
       elseif ($optHandRun.Count -gt 0) { if (-not $Quiet) { $optLines += ("   optical track not running; a hand-run dvdbackup.exe (pid {0}) is reading the drive - {1} partial(s) under {2}, at least one in flight: {3}" -f $optHandRun[0].Id, $optQuar.Count, $optRoot, $optNames) } }
       else { $optLines += ("   optical track NOT running; {0} quarantined partial(s) wait under {1} (start the track and re-insert their disc to finish them by fingerprint): {2}" -f $optQuar.Count, $optRoot, $optNames) }
     }
+    # A FINISHED ARCHIVE THAT CANNOT BE STAGED IS WORK STANDING STILL, AND NOTHING SAID SO.
+    #
+    # The optical track reads a disc to C:, then `stage-optical-archives.ps1` moves it to D:/_stage
+    # where the rest of the line can see it. That move obeys the SAME 70 GB floor the fetch loop
+    # obeys, so while D: is low a completed archive simply sits on C: - the track logs one
+    # "[stage] HOLD" line per pass and this board printed nothing at all.
+    #
+    # 2026-09-22 06:32: Blake's 7 Series 1 Disc 3 finished after a 167-minute read - 383 files,
+    # 39.32 GB, every file present at its disc size - and could not move, because staging it would
+    # leave D: at 65.6 GB against that floor. The board showed the lane as idle and the operator was
+    # told only about the Plex confirmation. Both are the SAME block, and this is the half that also
+    # fills C: - two more discs at Blu-ray size and the optical lane stops for want of archive space.
+    #
+    # ASK THE TOOL THAT OWNS THE DECISION rather than re-deriving the floor here: a second
+    # implementation of "may this be staged" would drift from the first, and the two would disagree
+    # about the one number that matters. -WhatIf moves nothing.
+    $stager = 'D:/video/.claude/skills/disc-to-plex/scripts/stage-optical-archives.ps1'
+    if ((Test-Path -LiteralPath $stager) -and -not $Quiet) {
+      $held = @(& pwsh -NoProfile -File $stager -WhatIf 2>&1 | ForEach-Object { "$_" } | Where-Object { $_ -match '^\s*HOLD\s' })
+      foreach ($h in $held) {
+        $optLines += ("*** OPTICAL ARCHIVE HELD FROM STAGING - {0}" -f ($h -replace '^\s*HOLD\s*', ''))
+      }
+      if ($held.Count) {
+        $optLines += ("    It is READ and verified on {0} ({1} GB free there); it just cannot cross to D: yet. The reclaim that clears the fetch floor clears this too." -f $optQual, $optFreeGB)
+      }
+    }
     foreach ($l in $optLines) { Write-Output $l }
   } catch { Write-Output "   optical status unreadable ($optStatusPath): $($_.Exception.Message)" }
 }
