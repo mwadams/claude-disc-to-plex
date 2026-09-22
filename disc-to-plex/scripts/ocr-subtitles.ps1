@@ -1022,13 +1022,44 @@ foreach ($f in $targets) {
       # Unknown runtime resolves to NOT short, deliberately: that only abstains from a test, whereas
       # the other way round invents a terminal language verdict from a few lines.
       $sourceIsShort = ($durMin -gt 0 -and $durMin -le 5)
-      $shortTrack = ($judgeable.Count -lt 10) -and $sourceIsShort
+      # `-or $lines.Count -lt 10`: A WHOLE TRACK OF THREE CUES HAS NO SAMPLE EITHER, however long the
+      # source runs. The runtime guard above exists to stop a two-hour MUSICAL - thousands of sung
+      # lines, few "judgeable" ones - being judged by a rule calibrated for a 4-line deleted scene.
+      # That case is distinguished by the TOTAL line count, which is in the thousands, so testing the
+      # total keeps the musical on the full gate while admitting a track that is simply tiny.
+      #
+      # 2026-09-22: Doctor Who reconstructions carry 4-5 subtitle packets across 24-26 MINUTES, at
+      # exact 300-second intervals, and every rendered subpicture is blank (3,418-byte identical
+      # renders at two independent cues, using this file's own documented overlay command). OCR got 3
+      # cues from them, the function-word gate scored those 3 at 0% and threw, nothing was recorded
+      # because a language verdict is deliberately never terminal - so the OCR track retried the same
+      # files for ELEVEN HOURS while publish, which refuses a work while any file lacks a sidecar,
+      # held 65 finished files and three confirmed reclaims behind them.
+      $shortTrack = ($judgeable.Count -lt 10) -and ($sourceIsShort -or $lines.Count -lt 10)
       if (($judgeable.Count -lt 10) -and -not $sourceIsShort) {
         Write-Output ("      only $($judgeable.Count) judgeable line(s) but the source runs {0:N1} min - NOT a short track; the function-word rule does not apply to a feature" -f $durMin)
       }
       if ($shortTrack) {
         $why = if ($cuePct -ge 50) { "$cuePct% of lines are bracketed sound descriptions" } else { 'too few lines for a percentage to mean anything' }
         Write-Output "      only $($judgeable.Count) dialogue line(s) to judge ($why) - function-word gate abstains, dictionary gate decides"
+      }
+      elseif ($judgeable.Count -eq 0) {
+        # NOTHING TO JUDGE IS NOT A FAILING SCORE. `$wordPct` is 0 by construction when there are no
+        # dialogue lines (see its `else { 0 }` above), so a track that is ENTIRELY bracketed sound
+        # cues scored 0% and was thrown out - defeating this block's own stated intent five screens
+        # up: "A track that is ENTIRELY sound cues has nothing to judge, so it passes on the strength
+        # of being well-formed SDH." That held while `$judgeable.Count -lt 10` was the whole
+        # short-track test; once the test also required a source under 5 minutes, a LONG track with
+        # zero dialogue lines stopped reaching the abstain branch and fell to the throw.
+        #
+        # 2026-09-22, and it cost eleven hours: Doctor Who "Photo Gallery" (49 MB) and "Give-a-Show
+        # Slides" (147 MB) are galleries whose subtitle tracks are 100% sound cues. Each failed with
+        # "only 0% of dialogue lines contain a common English word ... 100% of lines were bracketed
+        # sound cues, which are exempt" - the message naming, in its own parenthesis, the exemption
+        # that should have applied. The OCR track then retried them forever, and because publish
+        # refuses a WORK while ANY of its files lacks a sidecar, 65 finished files sat unpublished
+        # and three CONFIRMED reclaims retried for ~11 h behind them.
+        Write-Output "      every line is a bracketed sound cue ($cuePct%) - no dialogue to judge; the function-word gate abstains and the dictionary gate decides"
       }
       elseif ($wordPct -lt 15) {
         throw "only $wordPct% of dialogue lines contain a common English word - output is not English text (genuine conversions score 43-77%; $cuePct% of lines were bracketed sound cues, which are exempt)"

@@ -180,10 +180,42 @@ function Get-StreamEnds([string]$src, [double]$dur) {
   }
   return $ends
 }
-function Get-SubtitleLangs([string]$src) {
-  $j = Probe-Json @('-v', 'error', '-select_streams', 's', '-show_entries', 'stream=index:stream_tags=language', '-of', 'json', $src)
+function Get-SubtitleLangs([string]$src, $title = $null) {
+  # A DVD ROW'S SOURCE IS A FOLDER, AND ffprobe CANNOT READ ONE WITHOUT `-f dvdvideo -title N`.
+  # Without the title this probe returned $null for every DVD row, so the whole `else` branch below
+  # - the one that resolves a mis-tagged subtitle ordinal to "eng" - has never once run on a DVD.
+  # A derivation that silently cannot measure looks exactly like a derivation with nothing to fix,
+  # which is why it went unnoticed: the same "a check that cannot measure has not found a fault"
+  # shape as the Plex lookup and the space-block token earlier today. Found 2026-09-22 while fixing
+  # The Curse of Peladon, whose ten rows all carried an out-of-range subTrack.
+  $pre = @()
+  if ($null -ne $title -and "$title".Trim() -and (Test-Path -LiteralPath $src -PathType Container)) {
+    $pre = @('-f', 'dvdvideo', '-title', "$title")
+  }
+  $j = Probe-Json (@('-v', 'error') + $pre + @('-select_streams', 's', '-show_entries', 'stream=index:stream_tags=language', '-of', 'json', $src))
   if ($null -eq $j) { return $null }
   return @(@($j.streams) | ForEach-Object { if ($_.tags -and $_.tags.language) { "$($_.tags.language)".ToLowerInvariant() } else { '' } })
+}
+function Set-SubTrackEngIfOutOfRange($Row, $Langs, [string]$St, $ChangeList) {
+  # AN ORDINAL PAST THE END OF THE LIST IS NOT AN ORDINAL AT ALL - it is almost always the stream's
+  # ABSOLUTE index written where a subtitle-relative one belongs, and ffmpeg cannot tell you that:
+  # `-map 0:s:3` on a title carrying two subtitle streams fails with "Stream map '' matches no
+  # streams" / "Invalid argument" and the item dies in 0 s with exit -22.
+  #
+  # 2026-09-22, The Curse of Peladon: all ten rows carried subTrack 3 (2 on the one-subtitle titles).
+  # The streams are tagged eng at ABSOLUTE indexes 3 and 4 with only TWO subtitle streams per title,
+  # so the manifest had copied the absolute index. All 10 of 10 items failed instantly.
+  #
+  # Resolved by LANGUAGE rather than by picking an ordinal: "eng" is what transcode.ps1 resolves
+  # against the source's own tags, so it is right whichever ordinal the author meant. Returns $true
+  # when it changed the row, so the caller can skip the in-range test that no longer applies.
+  if ($null -eq $Langs -or $Langs.Count -eq 0) { return $false }
+  if ($St -notmatch '^\d+$' -or [int]$St -lt $Langs.Count) { return $false }
+  if (-not @($Langs | Where-Object { $_ -in @('eng', 'en') }).Count) { return $false }
+  [void]$ChangeList.Add([ordered]@{ field = 'subTrack'; from = [int]$St; to = 'eng'
+    evidence = ("s:{0} is past the end - this source carries only {1} subtitle stream(s) ({2}), so the ordinal cannot be a subtitle-relative index and ffmpeg would fail with 'Stream map matches no streams'. Resolved by language instead" -f $St, $Langs.Count, ($Langs -join '/')) })
+  Set-Field $Row 'subTrack' 'eng'
+  return $true
 }
 function Get-UnitEvidenceTitle([string]$src, $title) {
   # DVD row: src is D:/video/_stage/<unit>; disposition-evidence.ps1 measured each dvdvideoTitle.
@@ -423,16 +455,32 @@ foreach ($r in $rows) {
         [void]$changes.Add([ordered]@{ field = 'subTrack'; from = [int]$st; to = 'eng'; evidence = 'raw Blu-ray .m2ts: subtitle streams carry no language tags, so an ordinal is unverifiable; "eng" is resolved by transcode.ps1 from the disc''s CLPI declaration (and aborts if none is English)' })
         Set-Field $r 'subTrack' 'eng'
       } else {
-        $langs = Get-SubtitleLangs $srcWin
-        if ($null -ne $langs -and [int]$st -lt $langs.Count) {
-          $tag = $langs[[int]$st]
-          $englishExists = @($langs | Where-Object { $_ -in @('eng', 'en') }).Count -gt 0
-          if ($tag -and $tag -notin @('eng', 'en', 'und') -and $englishExists) {
-            [void]$changes.Add([ordered]@{ field = 'subTrack'; from = [int]$st; to = 'eng'; evidence = "s:$st is tagged '$tag' on the source; an English-tagged stream exists" })
-            Set-Field $r 'subTrack' 'eng'
+        $langs = Get-SubtitleLangs $srcWin (Get-Text $r 'title')
+        if (-not (Set-SubTrackEngIfOutOfRange $r $langs $st $changes)) {
+          if ($null -ne $langs -and [int]$st -lt $langs.Count) {
+            $tag = $langs[[int]$st]
+            $englishExists = @($langs | Where-Object { $_ -in @('eng', 'en') }).Count -gt 0
+            if ($tag -and $tag -notin @('eng', 'en', 'und') -and $englishExists) {
+              [void]$changes.Add([ordered]@{ field = 'subTrack'; from = [int]$st; to = 'eng'; evidence = "s:$st is tagged '$tag' on the source; an English-tagged stream exists" })
+              Set-Field $r 'subTrack' 'eng'
+            }
           }
         }
       }
+    }
+    # A DVD ROW'S SOURCE IS A FOLDER, SO `$isMedia` IS FALSE AND THE BLOCK ABOVE NEVER SEES IT.
+    # `$isMedia` requires `$isFile` (Test-Path -PathType Leaf), and this file's own header scopes
+    # subTrack derivation to "a numeric ordinal on a raw Blu-ray .m2ts" - so DVD rows were never in
+    # scope rather than being accidentally skipped. Widening `$isMedia` would reach far beyond this
+    # field (it also gates video probing and the rip-pairing block), so the DVD case gets its own
+    # narrow branch, using the same `$isDir -and $hasTitle -and $kind -eq 'DVD'` idiom the
+    # expectSeconds block above already uses.
+    #
+    # ONLY the out-of-range rule applies here, deliberately. An in-range ordinal on a DVD is a real
+    # subtitle-relative index and the author may have chosen it for good reason; an ordinal past the
+    # end cannot be valid under any reading, which is what makes it safe to correct unasked.
+    elseif ($isDir -and $hasTitle -and $kind -eq 'DVD' -and $st -match '^\d+$') {
+      $null = Set-SubTrackEngIfOutOfRange $r (Get-SubtitleLangs $srcWin (Get-Text $r 'title')) $st $changes
     }
   }
 
