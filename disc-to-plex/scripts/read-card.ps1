@@ -144,7 +144,27 @@ foreach($t in ($Titles -split ',' | ForEach-Object { [int]$_.Trim() })){
         $seen++
         if($perfectAt -ge 0 -and ($seen - $perfectAt) -gt 8){ break }
         $base = Join-Path $tmp $f.BaseName
-        & $ts $f.FullName $base --psm 6 -c tessedit_char_whitelist='ABCDEFGHIJKLMNOPQRSTUVWXYZ ' 2>&1 | Out-Null
+        # DIGITS ARE IN THE WHITELIST BECAUSE AN ORDINAL CARD IS OFTEN A NUMERAL. Without them the
+        # ordinal is dropped SILENTLY - the line still reads "EPISODE", which looks like a card that
+        # simply does not name its part. The card-like test below still demands >= 6 ALPHABETIC
+        # characters, so picture noise made of stray digits cannot get in on the strength of this.
+        #
+        # THAT FIX ALONE DID NOT READ THE CARDS IT WAS WRITTEN FOR, and the reason matters more than
+        # the whitelist. 2026-09-22, Doctor Who "Lost in Time" Disk 3: two items were swept at 2s and
+        # again at 1s and both reported only "THE WHEEL". Extracting the frames and LOOKING at them
+        # showed "EPISODE 6" and "EPISODE 3" in large plain numerals at 32s - sampled by the sweep,
+        # and still unread after digits were allowed. A third item on the same disc read "EPISODE
+        # TWO" perfectly at the first attempt.
+        #
+        # The difference is the BACKGROUND, not the glyphs. The Space Pirates card is flat grey with
+        # dark lettering; the Wheel in Space cards are white lettering over the rotating station
+        # against a starfield, so thresholding leaves the frame covered in speckle and the page
+        # segmenter cannot find a text line in it. --psm 6 assumes a uniform block, which that is not.
+        #
+        # So: a NO MATCH from this tool over busy imagery is not evidence that a card is absent, and
+        # the header's "look at a contact sheet before naming it" is the real instruction, not a
+        # fallback. Reading the frame settled all three in under a minute.
+        & $ts $f.FullName $base --psm 6 -c tessedit_char_whitelist='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ' 2>&1 | Out-Null
         # -Raw on an empty file returns $null, not '' - calling .Trim() on it throws.
         $txt = [string]$(if(Test-Path "$base.txt"){ Get-Content "$base.txt" -Raw } else { '' })
         if([string]::IsNullOrWhiteSpace($txt)){ continue }
