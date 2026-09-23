@@ -1,6 +1,6 @@
 # Script index - GENERATED, do not edit
 
-Generated 2026-09-23 16:32 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
+Generated 2026-09-23 21:51 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
 
 **166 scripts under `scripts/`, 60 loop scripts under `D:/video/`. 2 with NO usable header, 63 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
 
@@ -181,7 +181,7 @@ Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library
 
 | Script | Kind | Purpose | Reach for this when... | Invoke |
 |---|---|---|---|---|
-| `_alarm-now.ps1` | command | WHAT HAS THE STALL ALARM ALREADY DECIDED? Read-only, no mutex, safe at any time. | NO TRIGGER IN HEADER | - |
+| `_alarm-now.ps1` | command | WHAT HAS THE STALL ALARM ALREADY DECIDED? Read-only, no mutex, safe at any time. | NO TRIGGER IN HEADER | `pwsh -NoProfile -File D:/video/_alarm-now.ps1 -Watch` |
 | `_analyse-loop.ps1` | command | ANALYSE track: run analyze-tracks.py over any ripped .mkv that lacks its .tracks.json evidence. | when: Manifest audio fields must be DERIVED from measurement, not asserted - assert-tracks-analysed.ps1 refuses to queue a manifest whose audio claims lack (or disagree with) <file>.tracks.json evidence,... | - |
 | `_bounce-track.ps1` | command | Bounce a named pipeline track ONLY when it can be caught between passes, so it picks up code edits without ever being killed mid-work. | when: PowerShell reads a script once at launch, so a running loop cannot see an edit to itself. | `pwsh -File D:/video/_bounce-track.ps1 -Track reclaim` |
 | `_catalogue-loop.ps1` | command | CATALOGUE track: sweep any staged disc that is VERIFIED-COMPLETE and has no current catalogue. | when: Cataloguing was a hand-driven step between fetch and dispositions, and hand-driving it is exactly where the 2026-08-23 drift came from: a disc was swept WHILE STILL COPYING, enumerated 26 titles of... | - |
