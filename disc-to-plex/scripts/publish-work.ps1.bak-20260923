@@ -287,11 +287,7 @@ if (-not $SkipSubtitleCheck) {
     $outs = @()
     foreach ($r in @($rows | Where-Object { $_ -is [pscustomobject] })) {
       $o = "$($r.out)" -replace '/', '\'
-      # ANCHOR ON THE SEPARATOR. A bare prefix test made 'Blakes 7' adopt every output of its sibling work
-      # 'Blakes 7 {edition-Remastered VFX}' (2026-09-23): the edition's six episodes were listed as 'not encoded'
-      # under a phantom top-level folder ' {edition-Remastered VFX}' inside the original work, holding it for ever.
-      # An edition folder is ALWAYS its base name plus a suffix, so every edition pair hits this.
-      if ($o -and $o.StartsWith($workOut + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { $outs += $o }
+      if ($o -and $o.StartsWith($workOut, [StringComparison]::OrdinalIgnoreCase)) { $outs += $o }
     }
     if (-not $outs.Count) { continue }
     $byManifest += [pscustomobject]@{

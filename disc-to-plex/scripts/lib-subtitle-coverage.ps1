@@ -199,9 +199,12 @@ function Get-SubtitleCoverageInventory {
       if ($mediaExt -notcontains $f.Extension.ToLowerInvariant()) { continue }
       $stem = [IO.Path]::GetFileNameWithoutExtension($f.Name)
       $siblings = @($byDir[$f.DirectoryName])
-      $srt  = $siblings | Where-Object { $_.Extension -eq '.srt' -and $_.Name.StartsWith($stem) } |
+      # A SIDECAR IS THE STEM PLUS A DOT (`X.eng.srt`), never merely a name that starts with the stem:
+      # a bare prefix credits `X.mkv` with the subtitles of a sibling `X (Part 2).mkv` - the same
+      # unanchored-prefix fault that made 'Blakes 7' adopt 'Blakes 7 {edition-...}' (2026-09-23).
+      $srt  = $siblings | Where-Object { $_.Extension -eq '.srt' -and $_.Name.StartsWith($stem + '.') } |
               Sort-Object LastWriteTime -Descending | Select-Object -First 1
-      $prov = $siblings | Where-Object { $_.Name -like "$stem*.provenance.json" } |
+      $prov = $siblings | Where-Object { $_.Name.StartsWith($stem + '.') -and $_.Name.EndsWith('.provenance.json') } |
               Sort-Object LastWriteTime -Descending | Select-Object -First 1
       $relParts = $f.FullName.Substring($root.Length).TrimStart('\').Split('\')
       $work = $relParts[0]

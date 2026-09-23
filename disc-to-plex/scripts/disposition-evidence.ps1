@@ -915,7 +915,8 @@ Invoke-Section 'library' {
     $rows = @()
     try {
       $all = Import-Csv -LiteralPath $cov
-      $wf = $(if ($workFolder) { $workFolder.ToLowerInvariant() } else { '' })
+      # ANCHORED ON THE SEPARATOR: a bare prefix makes 'Blakes 7' also collect 'Blakes 7 {edition-Remastered VFX}'.
+      $wf = $(if ($workFolder) { $workFolder.TrimEnd('\').ToLowerInvariant() + [IO.Path]::DirectorySeparatorChar } else { '' })
       foreach ($r in $all) { if (($wf -and "$($r.MkvPath)".ToLowerInvariant().StartsWith($wf)) -or ("$($r.Work)" -eq $chosen.work)) { $rows += [ordered]@{ file = $r.File; category = $r.Category; evidence = $r.Evidence; bitmapProbe = $r.BitmapProbe; audioProbe = $r.AudioProbe; probedAt = $r.ProbedAt; mkvPath = $r.MkvPath } } }
     } catch { Add-Unavailable 'subtitleCoverage' ("could not read " + $cov + ": " + $_.Exception.Message) }
     $lib.subtitleCoverage = [ordered]@{ source = $cov; rows = $rows }
