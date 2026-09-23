@@ -975,7 +975,10 @@ if (Test-Path -LiteralPath $ocrQ) {
 # live agents, which is what it logs as "live agents N". Read here, after the per-unit scan, so it can
 # only ever RAISE the count the markers found.
 try {
-  $dsPath = Join-Path $VideoRoot '_dispositions-state.json'
+  # THE PARAMETER, not a `$VideoRoot` this script never defines. Written that way on 2026-09-22, the
+  # Join-Path threw on every run, the empty catch below swallowed it, and live agents were never
+  # counted - so `encoders-starved` fired while two authoring agents were working (2026-09-23 16:26).
+  $dsPath = $DispositionsState
   if (Test-Path -LiteralPath $dsPath) {
     $ds = Get-Content -LiteralPath $dsPath -Raw | ConvertFrom-Json
     $liveRuns = 0
@@ -988,7 +991,10 @@ try {
     }
     if ($liveRuns -gt $authoringInFlight) { $authoringInFlight = $liveRuns }
   }
-} catch { }
+} catch {
+  # A COUNT THAT FAILS MUST SAY SO. Silence here reads as "no agents" and raises a false starved alarm.
+  Write-Output ("WARNING: could not read live authoring runs from {0}: {1}" -f $DispositionsState, $_.Exception.Message)
+}
 
 $freshaudit = 'D:/video/.claude/skills/disc-to-plex/scripts/audit-publish-freshness.ps1'
 if (Test-Path -LiteralPath $freshaudit) {
