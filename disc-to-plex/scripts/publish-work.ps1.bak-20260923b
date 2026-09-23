@@ -662,10 +662,3 @@ if (-not $NoIndex) {
     }
   }
 }
-
-# THE SUCCESS PATH EXITS 0 EXPLICITLY. Falling off the end left $LASTEXITCODE as whatever native
-# command ran last - robocopy (whose exit 2 means "extra files at the destination", a SUCCESS),
-# ffprobe, or the Plex index child - and _publish.ps1 passes this script's code on to
-# _publish-loop.ps1, where 2 means "held by the plan gate". A leftover 2 would make a real copy look
-# like a hold. So: 2 = held (the three exits above), 0 = done, a throw = 1.
-exit 0
