@@ -48,6 +48,17 @@ $cmp  = Join-Path $here 'compare-branch-clips.py'
 
 function Say([string]$m) { Write-Output $m }
 
+# SINGLE-INSTANCE, MACHINE-WIDE. _dispositions-loop.ps1 fire-and-forgets this every pass (~2 min), and
+# its comment promised "single-instance on its own mutex" - true of prebuild-disposition-packs.ps1,
+# never of this one. One Blu-ray's comparison takes far longer than a pass (Blake's 7 S1 Disc 6,
+# 2026-09-23: ~1 h 45 min for 4 pairs), and until its report is written every new launch sees no report
+# and starts the SAME comparison: TEN copies ran 11:55-14:00, each decoding the same clips, starving
+# the catalogue track that the whole line was waiting on. A second copy now leaves at once.
+$script:Mutex = New-Object System.Threading.Mutex($false, 'Global\video-prebuild-branch-comparison')
+$got = $false
+try { $got = $script:Mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $got = $true }
+if (-not $got) { Say 'another prebuild-branch-comparison is already running - leaving it to finish'; exit 0 }
+
 $units = if ($Unit) { @($Unit) } else {
   @(Get-ChildItem -LiteralPath $Stage -Directory -ErrorAction SilentlyContinue |
     Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'BDMV/PLAYLIST') } |
