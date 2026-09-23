@@ -235,9 +235,7 @@ try {
   Check 'never hard-tripped'   (Get-PublishBreakerWork $b5 'Held').HardTripped False
   Check 'lifetime untouched'   (Get-PublishBreakerWork $b5 'Held').NoProgressLifetime 0
   Check 'still attempted'      ($n -gt 5) True
-  #    ... nor the SHORT run: an UNCHANGING hold is evaluated every pass and never trips, so the gate
-  #    keeps refreshing its hold record (a tripped held work went stale and raised a false PUBLISH
-  #    STALLED - Blake's 7 Remastered VFX, 2026-09-23)
+  #    ... the SHORT run still counts a held pass, so an unchanging hold goes quiet
   $b6 = New-PublishBreaker -MaxNoProgress 3 -MaxNoProgressLifetime 10
   $fpH = Get-OutstandingFingerprint @((O 'Ep.mkv' 'missing' 100 $null))
   $allowed = 0
@@ -245,14 +243,14 @@ try {
     $v = Get-PublishBreakerVerdict -Breaker $b6 -Work 'Static' -Fingerprint $fpH
     if ($v.Allow) { $allowed++; [void](Register-PublishBreakerAttempt -Breaker $b6 -Work 'Static' -Before $fpH -After $fpH -Held) }
   }
-  Check 'static hold evaluated every pass' $allowed 8
-  Check 'never tripped'                   (Get-PublishBreakerWork $b6 'Static').Tripped False
-  Check 'run untouched'                   (Get-PublishBreakerWork $b6 'Static').NoProgress 0
-  #    ... and once the hold clears, a fruitless COPY counts toward both limits exactly as before
+  Check 'static hold throttled' $allowed 3
+  Check 'soft-tripped'          (Get-PublishBreakerWork $b6 'Static').Tripped True
+  #    ... and once the hold clears, the NEXT fruitless copy counts toward the lifetime cap as before
   $fpC = Get-OutstandingFingerprint @((O 'Ep.mkv' 'missing' 100 $null), (O 'Ep.eng.srt' 'missing' 7 $null))
+  $v = Get-PublishBreakerVerdict -Breaker $b6 -Work 'Static' -Fingerprint $fpC
+  Check 're-armed on change'    $v.State 'rearmed'
   [void](Register-PublishBreakerAttempt -Breaker $b6 -Work 'Static' -Before $fpC -After $fpC)
-  Check 'unheld counts toward the run'      (Get-PublishBreakerWork $b6 'Static').NoProgress 1
-  Check 'unheld counts toward the lifetime' (Get-PublishBreakerWork $b6 'Static').NoProgressLifetime 1
+  Check 'unheld counts again'   (Get-PublishBreakerWork $b6 'Static').NoProgressLifetime 1
 
   $script:reachedEnd = $true
 }

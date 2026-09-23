@@ -148,12 +148,9 @@ function Get-WorkOutstanding {
 # for OCR for ~11 h, hard-tripped at 21:19 after 40 held passes, so the hold clearing would have
 # published nothing. Pride and Prejudice (27 attempts, 09-07) and Tales of the Unexpected (40 trips,
 # 09-08) were the same shape; each time the hold's cause was fixed and this counter was not.
-# And it counts toward the SHORT run neither (changed 2026-09-23 10:50). The first version let a held
-# pass trip the short run "so an unchanging hold goes quiet" - but a tripped breaker stops invoking
-# publish-work.ps1, the hold record it writes goes stale, and audit-publish-freshness.ps1 (which only
-# trusts a recently-refreshed record) then reported the held files as READY and raised PUBLISH STALLED
-# on work that was correctly waiting for a sibling disc. A held work must keep being evaluated every
-# pass. Both limits keep their whole job: bounding copies that were attempted and changed nothing.
+# A held pass still counts toward the short run, so an unchanging hold goes quiet after
+# MaxNoProgress passes and re-arms when the outstanding set changes - a sidecar arriving is exactly
+# that. The lifetime cap keeps its whole job: bounding copies that were attempted and changed nothing.
 #
 # PURE FUNCTIONS OVER A HASHTABLE the caller owns, so the whole policy is testable without a NAS.
 # ---------------------------------------------------------------------------------------------
@@ -227,12 +224,7 @@ function Register-PublishBreakerAttempt {
   $w = Get-PublishBreakerWork $Breaker $Work
   $w.Attempts++
   $w.LastFingerprint = $After
-  # A HELD PASS COUNTS TOWARD NEITHER LIMIT (see the header): it attempted no copy, and a trip here
-  # stops publish-work.ps1 running, which stops the hold record being refreshed, which makes the
-  # freshness audit distrust the hold and raise a false PUBLISH STALLED (Blake's 7 Remastered VFX,
-  # 2026-09-23 10:45 - two files the plan gate was correctly holding reported as "ready").
-  if ($Held) { }
-  elseif ($After -eq $Before) { $w.NoProgress++; $w.NoProgressLifetime++ }
+  if ($After -eq $Before) { $w.NoProgress++; if (-not $Held) { $w.NoProgressLifetime++ } }
   else { $w.NoProgress = 0 }
   if ($w.NoProgressLifetime -ge $Breaker.MaxNoProgressLifetime) {
     $w.HardTripped = $true; $w.Tripped = $true; $w.TrippedAt = Get-Date; $w.SkippedSinceTrip = 0
