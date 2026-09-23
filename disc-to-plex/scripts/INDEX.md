@@ -1,8 +1,8 @@
 # Script index - GENERATED, do not edit
 
-Generated 2026-09-23 03:10 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
+Generated 2026-09-23 09:08 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
 
-**165 scripts under `scripts/`, 60 loop scripts under `D:/video/`. 2 with NO usable header, 62 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
+**166 scripts under `scripts/`, 60 loop scripts under `D:/video/`. 2 with NO usable header, 63 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
 
 Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library` = dot-source, defines functions only; `tests` = a test suite, exit 0 = all passed.
 
@@ -10,6 +10,7 @@ Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library
 
 | Script | Kind | Purpose | Reach for this when... | Invoke |
 |---|---|---|---|---|
+| `analyze-tracks-tagconfirm.tests.py` | python | Tests for tag_confirm_verdict (analyze-tracks.py) - the forced-decode check that may overrule a wrong language detection ONLY in favour of the disc's own tag. Run: python analyze-tracks-tagconfirm.tests.py | NO TRIGGER IN HEADER | - |
 | `analyze-tracks.py` | python | Decide a rip's AUDIO manifest fields from CONTENT, and write the evidence down. | when: Audio selection was being authored from EXPECTATION and corrected later, which is the same defect class as confirming a rip from a grep of anticipated strings: the check can only find what it alrea... | `python analyze-tracks.py "D:/video/_stage/x/Film_t00.mkv" [--offsets 1800 3600] [--model base]` |
 | `apply-plex-titles.ps1` | command | Set (and LOCK) the Plex episode title for every published item whose manifest declared a `plexTitle`. Runs after a publish; takes its names from the MANIFEST, never from a guess. | when: fix-plex-extras.ps1 sets Plex titles from THE FILENAME, and says so: "our filenames are the source of truth". | - |
 | `apply-proof.py` | python | Rewrite a catalogue.json onto the mapping proved by prove-dvd-mapping.py. | NO TRIGGER IN HEADER | - |

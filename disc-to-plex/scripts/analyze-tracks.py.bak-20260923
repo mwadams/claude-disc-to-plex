@@ -420,78 +420,6 @@ def transcribe(model, src, track, offsets, dur):
 
 
 
-# A RELIABLE-LOOKING LANGUAGE CALL CAN STILL BE WRONG - CONFIRM A TAG MISMATCH BEFORE ASSERTING IT.
-#
-# whisper decides the language from the first 30 s of each window, and on old British archive audio
-# it calls English "cy" (Welsh) with high confidence: Blake's 7 S1 Disc 4 t09 (Lesley Judd's Blue
-# Peter make, plainly English) came back cy 0.93 agreed at two offsets and was REFUSED at the gate;
-# The Aztecs t08 (an English designer interview) came back cy and shipped NAMED "Welsh-Language
-# Retrospective Documentary", audio tagged cym (2026-09-23, the operator: "completely wrong").
-#
-# The second measurement: decode the same speech FORCED to the tag's language and FORCED to the
-# detected one, and compare whisper's own mean avg_logprob. Measured with the medium model:
-#   Blake's 7 t09   en beats cy by 1.10 / 0.56 / 0.69       The Aztecs t08   en beats cy by 0.62 / 0.80 / 0.56
-# But FORCED DECODING TRANSLATES: made to output English, whisper renders Dutch as fluent English,
-# and on genuine Dutch (Winter in Wartime) English scored within 0.27 of Dutch, once AHEAD of it.
-# So this may only CONFIRM THE DISC'S OWN TAG, never invent a language, and only on a wide margin:
-# the tag must win by TAG_CONFIRM_MARGIN in TAG_CONFIRM_WINDOWS speech windows and lose in NONE.
-# On the Dutch known-negative that rule confirms nothing, which is the point of it.
-TAG_CONFIRM_MODEL = 'medium'
-TAG_CONFIRM_MARGIN = 0.4
-TAG_CONFIRM_WINDOWS = 2
-TAG_CONFIRM_MIN_WORDS = 8
-TAG_CONFIRM_SECONDS = 30
-
-ISO3TO2 = {v: k for k, v in ISO2TO3.items()}
-ISO3TO2.update({'fre': 'fr', 'ger': 'de', 'dut': 'nl', 'cze': 'cs', 'gre': 'el', 'chi': 'zh', 'rum': 'ro'})
-
-
-def tag_confirm_verdict(windows, margin=None, need=None, min_words=None):
-    """PURE. windows: [{'lpTag','lpDetected','wordsTag','wordsDetected'}]. Returns (confirmed, why).
-
-    A window counts only when BOTH decodes produced min_words - an empty decode scores 0.0, the
-    best possible logprob, so counting it would hand silence to whichever language it landed on.
-    """
-    margin = TAG_CONFIRM_MARGIN if margin is None else margin
-    need = TAG_CONFIRM_WINDOWS if need is None else need
-    min_words = TAG_CONFIRM_MIN_WORDS if min_words is None else min_words
-    speech = [w for w in windows if w['wordsTag'] >= min_words and w['wordsDetected'] >= min_words]
-    lost = [w for w in speech if w['lpTag'] < w['lpDetected']]
-    won = [w for w in speech if w['lpTag'] - w['lpDetected'] >= margin]
-    if lost:
-        return False, '%d speech window(s) fit the DETECTED language better - the mismatch stands' % len(lost)
-    if len(won) >= need:
-        return True, 'tag language out-fits the detected one by >= %.2f in %d of %d speech window(s)' % (margin, len(won), len(speech))
-    return False, 'only %d speech window(s) (need %d) out-fit by >= %.2f - not enough to overrule' % (len(won), need, margin)
-
-
-_TAG_MODEL = []
-
-def forced_decode_windows(src, track, offsets, lang_tag2, lang_det2):
-    """Decode each window forced to both languages; returns the list tag_confirm_verdict takes."""
-    if not _TAG_MODEL:
-        import os as _os
-        sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
-        from whisper_device import load_model
-        _TAG_MODEL.append(load_model(TAG_CONFIRM_MODEL, verbose=False)[0])
-    model = _TAG_MODEL[0]
-    out = []
-    with tempfile.TemporaryDirectory() as td:
-        for off in offsets:
-            wav = Path(td) / f'tc{track}_{off}.wav'
-            run([FFMPEG, '-y', '-hide_banner', '-v', 'error', '-ss', str(off)] + SRC_OPTS + ['-i', src,
-                 '-t', str(TAG_CONFIRM_SECONDS), '-map', f'0:a:{track}', '-ac', '1', '-ar', '16000', str(wav)])
-            if not wav.exists() or wav.stat().st_size < 1000:
-                continue
-            w = {'offset': off}
-            for key, lg in (('Tag', lang_tag2), ('Detected', lang_det2)):
-                segs = list(model.transcribe(str(wav), beam_size=1, language=lg)[0])
-                w['words' + key] = sum(len(x.text.split()) for x in segs)
-                w['lp' + key] = round(sum(x.avg_logprob for x in segs) / len(segs), 3) if segs else 0.0
-            out.append(w)
-    return out
-
-
 def content_tokens(text):
     """Lowercase alphabetic tokens, minus the filler that dominates shouted action audio."""
     stop = {'the','a','an','and','or','but','is','it','to','of','in','on','at','i','you','he',
@@ -820,33 +748,6 @@ def main():
             else:
                 print(f"  a:{s['a']} still unreliable ({lang2 or 'none'} {prob2:.2f}) - "
                       f"genuinely a score, a phantom or an empty track")
-
-    # CONFIRM EVERY TAG MISMATCH BEFORE IT IS ASSERTED (see tag_confirm_verdict above). Fires only
-    # for a stream whose reliable detection disagrees with the disc's tag - on a healthy disc, none.
-    for s in streams:
-        if not s.get('tagMismatch'):
-            continue
-        tag2 = ISO3TO2.get((s.get('langTag') or '').lower()[:3])
-        det2 = (s.get('spokenLang') or '')[:2]
-        if not tag2 or not det2 or tag2 == det2:
-            continue
-        wins = sorted(set(offsets + [int(dur_total * 0.8)]))
-        print(f"\nconfirming a:{s['a']} tag={s['langTag']} vs detected {det2}: forced-decoding "
-              f"{len(wins)} window(s) with the {TAG_CONFIRM_MODEL} model")
-        wlist = forced_decode_windows(src, s['a'], wins, tag2, det2)
-        ok, why = tag_confirm_verdict(wlist)
-        s['forcedDecode'] = {'tag': tag2, 'detected': det2, 'model': TAG_CONFIRM_MODEL,
-                             'margin': TAG_CONFIRM_MARGIN, 'windows': wlist, 'confirmedTag': ok, 'why': why}
-        for w in wlist:
-            print(f"  @{w['offset']}s forced {tag2} {w['lpTag']} ({w['wordsTag']} words)  vs  "
-                  f"forced {det2} {w['lpDetected']} ({w['wordsDetected']} words)")
-        if ok:
-            s['spokenLangDetected'] = s['spokenLang']
-            s['spokenLang'] = tag2
-            s['tagMismatch'] = False
-            print(f"  a:{s['a']} TAG CONFIRMED - {why}; spoken language is {tag2}, the detector's {det2} was wrong")
-        else:
-            print(f"  a:{s['a']} mismatch STANDS - {why}")
 
     cand = [s for s in streams if s['role'] is None and s['langReliable'] and s['spokenLang']]
 
