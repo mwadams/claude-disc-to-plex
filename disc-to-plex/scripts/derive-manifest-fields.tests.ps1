@@ -183,6 +183,27 @@ try {
   Check 'REAL known-negative: an UNRELIABLE language never overrides the author''s code on a single [0] track' ((J $x[12].audioLangs) -eq '["jpn"]' -and $null -eq $x[12].derived -and $r.Text -notmatch 'JPN\.mkv: LEFT') $r.Text
   Check 'REAL: a score-only title with no primary is NOT an alarm, and its language becomes zxx' ((J $x[11].audioLangs) -eq '["zxx"]' -and $r.Text -notmatch 'SCORE\.mkv: LEFT audio') $r.Text
 
+  # ============================================================================ entry shape + alternateMix
+  Write-Host 'commentary: bare [idx,"Title"] pair, and a commentary measured as alternateMix'
+  $srcs2 = @{}
+  foreach ($n in 'altmix', 'baredub') { $srcs2[$n] = Make "$n.mkv" '-f lavfi -i color=c=black:s=320x240:r=25 -t 1 -c:v libx264 -preset ultrafast' }
+  Start-Sleep -Milliseconds 1100
+  # REAL CASE: The Time Warrior Part 3 (2026-09-24) - sparse commentary called alternateMix on two windows.
+  Write-Evidence $srcs2.altmix @((S 0 2 'primary' 'en'), (S 1 2 'alternateMix' 'en')) ([ordered]@{ audioTracks = @(0, 1); audioLangs = @('eng', 'eng') })
+  Write-Evidence $srcs2.baredub @((S 0 6 'primary' 'en'), (S 1 2 'dub' 'it')) ([ordered]@{ audioTracks = @(0); audioLangs = @('eng') })
+  Write-Manifest @(
+    @{ out = 'x/ALTMIX.mkv'; src = $srcs2.altmix; kind = 'MKV'; audioTracks = @(0, 1); audioLangs = @('eng', 'eng'); commentary = @(1, 'Commentary') },   # 0 REAL: bare pair on an alternateMix
+    @{ out = 'x/BAREDUB.mkv'; src = $srcs2.baredub; kind = 'MKV'; audioTracks = @(0, 1); audioLangs = @('eng', 'eng'); commentary = @(1, 'Commentary') }  # 1 known-negative: a dub stays stripped
+  )
+  $r = Run @('-AudioOnly')
+  $x = $r.Rows
+  Check 'REAL Time Warrior: bare pair normalised to [[1,"Commentary"]] and KEPT on an alternateMix' ((J $x[0].commentary) -eq '[[1,"Commentary"]]') (J $x[0])
+  Check 'REAL Time Warrior: the kept tag is reported, not silent' ($r.Text -match 'ALTMIX\.mkv: LEFT commentary - a:1 measures as alternateMix') $r.Text
+  Check 'REAL Time Warrior: the shape change is recorded in derived' ((J $x[0].derived) -match 'entry-shape') (J $x[0].derived)
+  Check 'known-negative: a bare pair on a measured DUB is still stripped (Thunderball holds)' ($x[1].PSObject.Properties.Name -notcontains 'commentary') (J $x[1])
+  $r2 = Run @('-AudioOnly')
+  Check 'a second run changes nothing' ($r2.Text -match '0 field change\(s\)') $r2.Text
+
   # ============================================================================ rip of a door-shadowed playlist
   Write-Host 'src: a rip that cannot carry the commentary door (report only)'
   $catDir = Join-Path $root 'cat'; New-Item -ItemType Directory -Force -Path $catDir | Out-Null

@@ -420,7 +420,10 @@ foreach ($it in $items) {
     foreach ($e in @($it.commentary)) {
       $ci = if ($e -is [array]) { [int]$e[0] } else { [int]$e }
       $s = $byIdx[$ci]
-      if ($s -and $s.role -notin @('commentary', 'commentary?')) {
+      # 'alternateMix' is accepted: same language, same dialogue - never a dub - and on a few sampled
+      # windows a sparse commentary is indistinguishable from one (The Time Warrior Part 3,
+      # 2026-09-24). derive-manifest-fields.ps1 keeps the author's tag in exactly this case.
+      if ($s -and $s.role -notin @('commentary', 'commentary?', 'alternateMix')) {
         $problems += "$(Split-Path $out -Leaf): a:$ci tagged as commentary but the analysis " +
                      "calls it '$($s.role)' - a dub labelled 'Audio Commentary' is how " +
                      "Thunderball nearly shipped"

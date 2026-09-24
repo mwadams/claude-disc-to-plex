@@ -253,6 +253,28 @@ function ConvertTo-PairList($entries, [string]$default) {
 # --------------------------------------------------------------------------------------------------
 $now = Get-Date -Format 'yyyy-MM-ddTHH:mm:ss'
 $totalChanges = 0; $unsettled = 0
+# ---- commentary / audioDescription SHAPE: a bare pair [idx,"Title"] -> [[idx,"Title"]] -----------
+# Get-Entries reads a bare pair as ONE entry, but assert-tracks-analysed.ps1 and transcode.ps1 walk
+# the array element by element and cast each to [int] - so "Title" is read as a second ordinal and
+# throws. The Time Warrior (2026-09-24) was refused before encoding on `"commentary": [1, "Commentary"]`
+# after this script had passed it through as "0 field change(s)". The meaning is unambiguous (a
+# string is never an ordinal), so this is DERIVED here, once, and every reader downstream sees the
+# canonical nested form - rather than teaching each reader a second vocabulary.
+foreach ($r in $rows) {
+  foreach ($fld in @('commentary', 'audioDescription')) {
+    if (-not ($r.PSObject.Properties.Name -contains $fld) -or $null -eq $r.$fld) { continue }
+    $items = @($r.$fld)
+    if (-not ($items.Count -eq 2 -and $items[0] -isnot [array] -and $items[1] -is [string])) { continue }
+    $was = Show $r.$fld
+    $pairs = ConvertTo-PairList @(Get-Entries $r.$fld) ''
+    $totalChanges++
+    Write-Output ("   {0}: {1} {2} -> {3}   [a bare [idx,""Title""] pair is ONE entry; readers that iterate it cast ""Title"" to an ordinal]" -f (Split-Path (Get-Text $r 'out') -Leaf), $fld, $was, (Show $pairs))
+    Set-Field $r $fld $pairs
+    $hist = @(); if ($r.PSObject.Properties.Name -contains 'derived' -and $null -ne $r.derived) { $hist = @($r.derived) }
+    Set-Field $r 'derived' (@($hist) + @([pscustomobject][ordered]@{ at = $now; by = 'derive-manifest-fields.ps1'; mode = 'entry-shape'
+      changes = @([ordered]@{ field = $fld; from = $was; to = (Show $pairs); evidence = 'bare [idx,"Title"] pair normalised to the nested pair list' }) }))
+  }
+}
 foreach ($r in $rows) {
   $changes = New-Object System.Collections.ArrayList
   $left = New-Object System.Collections.ArrayList
@@ -575,7 +597,17 @@ foreach ($r in $rows) {
         $s = $by[$e.Idx]
         if (-not $s -or $s.role -in @('commentary', 'commentary?')) { if (-not ($newComm | Where-Object { $_.Idx -eq $e.Idx })) { [void]$newComm.Add($e) } }
         elseif ($s.role -eq 'audioDescription') { [void]$newAd.Add([pscustomobject]@{ Idx = $e.Idx; Title = '' }) }
-        # any other measured role (dub, primary, music, alternateMix, silent?): the label goes.
+        elseif ($s.role -eq 'alternateMix') {
+          # AN ALTERNATE MIX AND A SPARSE COMMENTARY LOOK THE SAME ON A FEW WINDOWS: a commentary IS
+          # the programme mix with voices over it, and where the speakers are quiet the transcript is
+          # the programme's own dialogue. The Time Warrior Part 3 (2026-09-24): two windows, similarity
+          # 0.53, called alternateMix - and window 2 opens with a commentator talking over the scene.
+          # Same language, same dialogue, so this is never the dub Thunderball's guard exists for.
+          # The author's label wins (operator decision 2026-09-24); assert-tracks-analysed.ps1 agrees.
+          if (-not ($newComm | Where-Object { $_.Idx -eq $e.Idx })) { [void]$newComm.Add($e) }
+          [void]$left.Add([ordered]@{ field = 'commentary'; reason = "a:$($e.Idx) measures as alternateMix (similarity $($s.similarityToPrimary)); the author's commentary tag is KEPT - a sparse commentary reads as the programme's mix between remarks" })
+        }
+        # any other measured role (dub, primary, music, silent?): the label goes.
       }
       foreach ($e in $ad) {
         $s = $by[$e.Idx]

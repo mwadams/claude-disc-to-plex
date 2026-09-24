@@ -87,6 +87,15 @@
                                2494s) - a wrong cut otherwise ships looking perfectly normal.
     expectFrames (int, opt.)   Same guard on the OUTPUT's video packet count (tolerance 25 - a
                                cell-seam discontinuity legitimately drops a frame or two).
+    startSeconds (num, opt.)   Discard the item's first N seconds - EVERY mapped stream is cut at
+                               the same point (an OUTPUT-side -ss, after -i: input seek on a DVD
+                               source destroys alignment), so sync is kept. For a carve whose
+                               opening pictures cannot be decoded: a single-cell trailer cut from
+                               open-GOP video starts video 0.28 s after its audio, and the CFR
+                               frame check rightly reports the empty timeline as a seam gap
+                               (The Silurians D2 S00E241, 2026-09-24). Set it to the MEASURED first
+                               video pts. expectSeconds/expectFrames stay the SOURCE's figures -
+                               the length guards subtract the trim themselves.
     subTrack (int|str, opt.)   Which source subtitle to keep. Either a 0-based ordinal, or a
                                LANGUAGE TAG such as "eng" — prefer the tag. Disc subtitle order is
                                arbitrary and often merely alphabetical (dan,eng,fin,nor,swe puts
@@ -1391,6 +1400,8 @@ foreach($it in $items){
   #
   # Scoped to stillsHold: an ordinary encode produces video and audio in step and needs no buffering.
   if($it.stillsHold){ $a += @('-max_interleave_delta','0') }
+  # startSeconds: output-side seek, so every stream is cut at the same instant (see the field docs).
+  if(Has $it 'startSeconds'){ $a += @('-ss', ([double]$it.startSeconds).ToString([Globalization.CultureInfo]::InvariantCulture)) }
   $a += @('-max_muxing_queue_size','1024',$it.out)
 
   if($env:TRANSCODE_DEBUG){ Write-Output ("   CMD: " + ($a -join ' ')) }
@@ -1440,6 +1451,8 @@ foreach($it in $items){
   if($itemOk -and (Has $it 'expectSeconds')){
     $gd = 0.0; [void][double]::TryParse("$(& $fp -v error -show_entries format=duration -of csv=p=0 $it.out 2>$null)".Trim().TrimEnd(','), [ref]$gd)
     $want  = [double]$it.expectSeconds
+    # expectSeconds is the SOURCE's length; a startSeconds trim shortens the output by exactly that.
+    if(Has $it 'startSeconds'){ $want -= [double]$it.startSeconds }
     # THE RULE LIVES IN lib-length-tolerance.ps1, not here - see its header. It was written twice
     # and the two copies disagreed within the hour, which is what sent four correct Sherlock films
     # back to _queue\failed a second time.
@@ -1509,6 +1522,12 @@ foreach($it in $items){
     $gf = 0; [void][int]::TryParse($gfTxt, [ref]$gf)
     $wantF = [int]$it.expectFrames
     $wantS = if(Has $it 'expectSeconds'){ [double]$it.expectSeconds } else { 0.0 }
+    # Same trim adjustment as the seconds guard, at the manifest's own frame rate (their ratio).
+    if((Has $it 'startSeconds') -and $wantS -gt 0){
+      $trim = [double]$it.startSeconds
+      $wantF = [int][Math]::Round($wantF * ($wantS - $trim) / $wantS)
+      $wantS -= $trim
+    }
     # Probe the output's own rate ONLY when the manifest gives no seconds to divide by - otherwise
     # the manifest's two figures describe the same title and their ratio is the authority.
     $fps = 0.0
