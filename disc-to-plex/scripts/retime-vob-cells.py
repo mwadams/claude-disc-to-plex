@@ -13,7 +13,8 @@ dropped as "duplicates". No encode-side flag fixes that reliably, because the in
 are genuinely ambiguous to a single-pass reader.
 
 THE FIX IS DETERMINISTIC, NOT HEURISTIC: two passes over the carve.
-  Pass 1 finds cell boundaries (SCR backward jump > 5 s - every DVD pack carries SCR, and a
+  Pass 1 finds cell boundaries (SCR backward jump > 5 s, or ANY backward step where the NAV
+  pack's VOB_ID/CELL_ID changes - see RESET_TICKS - every DVD pack carries SCR, and a
   cell's packs are contiguous), COUNTS THE CODED PICTURES in each cell, and records each cell's
   first/last video DTS together with WHICH PICTURE each of those timestamps belongs to.
   Pass 2 adds a per-cell constant to every SCR, PTS and DTS, chosen so cell k's video begins
@@ -87,6 +88,15 @@ import sys, os
 SECTOR = 2048
 PACK_START = b"\x00\x00\x01\xba"
 RESET_TICKS = 5 * 90000            # a backward SCR/DTS jump beyond 5 s = new cell
+# ...OR any backward SCR step at a NAV pack whose (VOB_ID, CELL_ID) differs from the cell's - see
+# nav_cell(). A cell SHORTER than 5 s resets the clock by less than 5 s, so the threshold alone
+# merges it with its successor: The Time Warrior VTS_02 PGC1 angle 2 (2026-09-24) has a 3.00 s
+# angle cell (VOB_ID 11) before a 169.56 s cell (VOB_ID 12); the reset between them is ~3 s, the
+# two read as ONE cell whose DTS chain spans 75 pictures fewer than it holds, and this script
+# refused the carve as "timestamp chain and picture chain DISAGREE". The refusal was right; the
+# boundary was wrong. The NAV id is exact (it is what dvd-angle-cells.py selects VOBUs by), and
+# requiring the backward step too keeps a cell change with CONTINUOUS timestamps merged exactly
+# as before - that needs no seam, and splitting it would change nothing but the report.
 PIC_START = b"\x00\x00\x01\x00"    # picture_start_code
 SEQ_START = b"\x00\x00\x01\xb3"    # sequence_header_code
 MARKER_OK = True
@@ -138,6 +148,19 @@ def write_ts(buf, off, val):
     buf[off + 2] = (((val >> 15) & 0x7F) << 1) | 0x01
     buf[off + 3] = (val >> 7) & 0xFF
     buf[off + 4] = ((val & 0x7F) << 1) | 0x01
+
+
+def nav_cell(pack):
+    """(vob_idn, c_idn) from a NAV pack's DSI, else None. Mirrors dvd-angle-cells.py nav_info():
+    DSI = private stream 2 (0xBF) substream 0x01; DSI_GI starts after the substream byte, and
+    vobu_vob_idn / vobu_c_idn sit at DSI_GI+24 (2 bytes) / DSI_GI+27."""
+    for off, sid in pes_iter(pack):
+        if sid == 0xBF and off + 7 + 28 <= SECTOR and pack[off + 6] == 0x01:
+            g = off + 7
+            return ((pack[g + 24] << 8) | pack[g + 25], pack[g + 27])
+        if sid not in (0xBB, 0xBE, 0xBF):
+            return None
+    return None
 
 
 def pes_iter(pack):
@@ -233,6 +256,7 @@ def scan(path):
     gtails = {}                    # rolling 3-byte tails for that independent count
     tails = {}                     # rolling 3-byte tails, RESET at every cell boundary
     last_scr = None
+    cur_nav = None                 # (VOB_ID, CELL_ID) of the current cell's NAV packs
     prev_dts = None
     pending = None                 # a DTS awaiting the picture it belongs to
     orphan_ts = 0                  # timestamps that never reached a picture (diagnostic)
@@ -248,7 +272,12 @@ def scan(path):
             scr = read_scr(pack)
             if scr is None:
                 raise SystemExit(f"ERROR: pack {pi} has no parseable SCR - refusing (exit 2)")
-            if last_scr is None or scr < last_scr - RESET_TICKS:
+            nav = nav_cell(pack)
+            short_reset = (nav is not None and cur_nav is not None and nav != cur_nav
+                           and scr < last_scr)
+            if nav is not None:
+                cur_nav = nav
+            if last_scr is None or scr < last_scr - RESET_TICKS or short_reset:
                 cells.append({"start": pi, "firstV": None, "lastV": None,
                               "firstIdx": None, "lastIdx": None, "npics": 0,
                               "scr0": scr, "scrN": scr})
