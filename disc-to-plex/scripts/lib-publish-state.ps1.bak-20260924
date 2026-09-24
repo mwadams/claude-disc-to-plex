@@ -245,37 +245,6 @@ function Register-PublishBreakerAttempt {
   return 'ok'
 }
 
-function Get-HeldDirsFromOutput {
-  # PURE. The top-level folders publish-work.ps1 says it is holding THIS pass, read from its own
-  # output ("REFUSING - HOLDING 'Season 06' only (not the whole work): ..."). The gate prints one such
-  # line per held folder, so its words are the record of what it held - no second implementation of
-  # the plan rule is needed to know.
-  param([string[]]$Lines)
-  return @(@($Lines) | ForEach-Object { [regex]::Matches("$_", "HOLDING '([^']+)' only") | ForEach-Object { $_.Groups[1].Value } } |
-           Where-Object { $_ } | Sort-Object -Unique)
-}
-
-function Test-OutstandingAllHeld {
-  # PURE. True when EVERY outstanding file lies inside a folder the gate is holding - i.e. the pass had
-  # nothing it was allowed to ship, so "nothing changed" is not a fruitless copy.
-  #
-  # 2026-09-24 01:59: Doctor Who (1963) held Seasons 00/01/06 for discs still encoding, while Season 15
-  # (already on the NAS) was re-verified in the same pass - "verified 8/8", exit 0, not the held exit 2.
-  # The breaker measures progress on the WHOLE outstanding set, held files included, so five such passes
-  # tripped it, publish-work stopped running, the hold record went stale, and the freshness audit raised
-  # a false PUBLISH STALLED for 20 files that were correctly held. A file at the work ROOT has no folder
-  # and is never covered by a season hold (only a whole-work hold, which is exit 2).
-  param([object[]]$Outstanding, [string[]]$HeldDirs)
-  $items = @(@($Outstanding) | Where-Object { $null -ne $_ })
-  $held = @(@($HeldDirs) | Where-Object { $_ })
-  if (-not $items.Count -or -not $held.Count) { return $false }
-  foreach ($o in $items) {
-    $parts = @("$($o.Name)" -split '[\\/]')
-    if ($parts.Count -lt 2 -or $held -notcontains $parts[0]) { return $false }
-  }
-  return $true
-}
-
 function Write-PublishBreakerRegister {
   # The durable, operator-visible record: one line per tripped work (rewritten whole, so a re-arm
   # drops its line). Always written, header included, so "no file" and "nothing tripped" differ.

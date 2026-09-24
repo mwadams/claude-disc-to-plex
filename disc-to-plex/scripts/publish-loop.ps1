@@ -274,7 +274,12 @@ while ($MaxPasses -le 0 -or $pass -lt $MaxPasses) {
       # THE BREAKER, FED. "Progress" is the outstanding set having changed at all - a file landed,
       # or a new one appeared - measured by the same function that decided there was work to do.
       $afterFp = Get-OutstandingFingerprint $after
-      $trip = Register-PublishBreakerAttempt -Breaker $breaker -Work $w.Name -Before $before -After $afterFp -Held:($pubExit -eq 2)
+      # HELD = the gate held the whole work (exit 2) OR everything still outstanding sits in a folder it
+      # is holding this pass - a pass that re-verified some other, complete folder exits 0 but could not
+      # have shipped any of these files (Test-OutstandingAllHeld, lib-publish-state.ps1).
+      $heldDirsNow = Get-HeldDirsFromOutput @($out | ForEach-Object { "$_" })
+      $heldPass = ($pubExit -eq 2) -or (Test-OutstandingAllHeld -Outstanding $after -HeldDirs $heldDirsNow)
+      $trip = Register-PublishBreakerAttempt -Breaker $breaker -Work $w.Name -Before $before -After $afterFp -Held:$heldPass
       if ($trip -ne 'ok') {
         $bw = Get-PublishBreakerWork $breaker $w.Name
         Write-PublishBreakerRegister -Breaker $breaker -Path $BreakerRegister

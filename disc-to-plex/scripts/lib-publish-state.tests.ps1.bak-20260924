@@ -254,21 +254,6 @@ try {
   Check 'unheld counts toward the run'      (Get-PublishBreakerWork $b6 'Static').NoProgress 1
   Check 'unheld counts toward the lifetime' (Get-PublishBreakerWork $b6 'Static').NoProgressLifetime 1
 
-  Write-Output '21. held folders are read from publish-work.ps1''s own words (the real 2026-09-24 01:59 line)'
-  $line = "WARNING: REFUSING - HOLDING 'Season 00' only (not the whole work): 8 declared output(s) neither local nor on the NAS, 0 awaiting OCR. WARNING: REFUSING - HOLDING 'Season 06' only (not the whole work): 5 declared output(s) neither local nor on the NAS, 0 awaiting OCR. verified 8/8"
-  Check 'parsed'        ((Get-HeldDirsFromOutput @($line)) -join ',') 'Season 00,Season 06'
-  Check 'no holds'      @(Get-HeldDirsFromOutput @('verified 8/8')).Count 0
-
-  Write-Output '22. every outstanding file in a held folder = a HELD pass, whatever the exit code'
-  $inHeld = @((O 'Season 06\The Invasion (1).mkv' 'missing' 100 $null), (O 'Season 00\Invasion Animation.mkv' 'missing' 7 $null))
-  Check 'all held'      (Test-OutstandingAllHeld -Outstanding $inHeld -HeldDirs @('Season 00','Season 06')) True
-  #    NEGATIVES - each of these is a copy that could have shipped, so it must still count
-  $oneOut = $inHeld + @((O 'Season 15\Fang Rock (1).mkv' 'size' 10 5))
-  Check 'one outside'   (Test-OutstandingAllHeld -Outstanding $oneOut -HeldDirs @('Season 00','Season 06')) False
-  Check 'root file'     (Test-OutstandingAllHeld -Outstanding @((O 'Film.mkv' 'missing' 1 $null)) -HeldDirs @('Season 00')) False
-  Check 'no holds'      (Test-OutstandingAllHeld -Outstanding $inHeld -HeldDirs @()) False
-  Check 'nothing owed'  (Test-OutstandingAllHeld -Outstanding @() -HeldDirs @('Season 00')) False
-
   $script:reachedEnd = $true
 }
 catch {
