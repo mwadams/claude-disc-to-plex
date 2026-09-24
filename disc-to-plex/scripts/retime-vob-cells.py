@@ -97,6 +97,11 @@ RESET_TICKS = 5 * 90000            # a backward SCR/DTS jump beyond 5 s = new ce
 # boundary was wrong. The NAV id is exact (it is what dvd-angle-cells.py selects VOBUs by), and
 # requiring the backward step too keeps a cell change with CONTINUOUS timestamps merged exactly
 # as before - that needs no seam, and splitting it would change nothing but the report.
+# The step must exceed JITTER_TICKS, the same ~1 s mux-jitter bound the self-check below allows: an
+# ALREADY-RETIMED carve legitimately steps SCR back a little at a seam (0.179 s entering The Time
+# Warrior PGC3's 0.48 s tail cell), and counting that as a reset made transcode.ps1's "is this
+# carve retimed?" check see 2 cells in every retimed file and fail all four CGI parts (2026-09-24).
+JITTER_TICKS = 90000               # ~1 s: SCR mux jitter at a seam, never a reset
 PIC_START = b"\x00\x00\x01\x00"    # picture_start_code
 SEQ_START = b"\x00\x00\x01\xb3"    # sequence_header_code
 MARKER_OK = True
@@ -274,7 +279,7 @@ def scan(path):
                 raise SystemExit(f"ERROR: pack {pi} has no parseable SCR - refusing (exit 2)")
             nav = nav_cell(pack)
             short_reset = (nav is not None and cur_nav is not None and nav != cur_nav
-                           and scr < last_scr)
+                           and scr < last_scr - JITTER_TICKS)
             if nav is not None:
                 cur_nav = nav
             if last_scr is None or scr < last_scr - RESET_TICKS or short_reset:
@@ -517,7 +522,7 @@ def main():
             if not pack:
                 break
             scr = read_scr(pack)
-            if last is not None and scr < last - 90000:   # allow ~1s mux jitter, never a reset
+            if last is not None and scr < last - JITTER_TICKS:   # allow ~1s mux jitter, never a reset
                 raise SystemExit("ERROR: rewritten SCR clock steps backwards - refusing (exit 2)")
             last = scr
     print("  self-check OK: size unchanged, SCR clock monotonic")
