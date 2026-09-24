@@ -49,6 +49,18 @@ check('eng', at.ISO3TO2.get('eng'), 'en')
 check('ger', at.ISO3TO2.get('ger'), 'de')
 check('dut', at.ISO3TO2.get('dut'), 'nl')
 
+print('SHORT OF SPEECH - may more windows settle it? (tag_confirm_short_of_speech)')
+# REAL: The Web Planet Part One (2026-09-24, measured): 501 s 4/8 words, 860 s 1/0, 1146 s 107/59 English wins.
+wp = [W(-0.634, -0.594, 4, 8), W(-0.827, 0.0, 1, 0), W(-0.240, -0.771, 107, 59)]
+check('REAL Web Planet: verdict alone is not confirmed', at.tag_confirm_verdict(wp)[0], False)
+check('REAL Web Planet: short of speech -> sample more', at.tag_confirm_short_of_speech(wp), True)
+check('REAL Web Planet + one more English speech window -> confirmed', at.tag_confirm_verdict(wp + [W(-0.30, -0.95, 60, 40)])[0], True)
+check('known-negative: a LOST window is final - more windows never help (Winter in Wartime)',
+      at.tag_confirm_short_of_speech([W(-0.540, -0.328), W(-0.330, -0.597), W(-0.592, -0.593)]), False)
+check('known-negative: enough speech already - nothing to add', at.tag_confirm_short_of_speech([W(-0.3, -0.9), W(-0.3, -0.5)]), False)
+check('known-negative: Web Planet + a speech window where the tag LOSES -> stands',
+      at.tag_confirm_verdict(wp + [W(-0.9, -0.3, 60, 40)])[0], False)
+
 print('')
 if fails:
     print('%d test(s) FAILED' % fails); sys.exit(1)

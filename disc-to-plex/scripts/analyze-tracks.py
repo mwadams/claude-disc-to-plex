@@ -465,6 +465,26 @@ def tag_confirm_verdict(windows, margin=None, need=None, min_words=None):
     return False, 'only %d speech window(s) (need %d) out-fit by >= %.2f - not enough to overrule' % (len(won), need, margin)
 
 
+def tag_confirm_short_of_speech(windows, need=None, min_words=None):
+    """PURE. True when the verdict failed ONLY for lack of speech: no speech window went against the
+    tag, but fewer than `need` windows carried speech at all. More windows can then settle it; a
+    window that LOST can never be outvoted, so no amount of sampling changes that verdict.
+
+    The Web Planet Part One (2026-09-24): whisper heard the Zarbi soundscape as Nynorsk ('nn' 0.65).
+    Of the three fixed windows, 501 s held 4 English words and 860 s held 1 - noise, not speech -
+    and the only real speech window (1146 s, 107 words) fit English -0.24 against Nynorsk -0.77.
+    "only 1 speech window (need 2)" was a sampling shortfall, not evidence, and it failed the disc.
+    """
+    need = TAG_CONFIRM_WINDOWS if need is None else need
+    min_words = TAG_CONFIRM_MIN_WORDS if min_words is None else min_words
+    speech = [w for w in windows if w['wordsTag'] >= min_words and w['wordsDetected'] >= min_words]
+    if any(w['lpTag'] < w['lpDetected'] for w in speech):
+        return False
+    return len(speech) < need
+
+
+TAG_CONFIRM_EXTRA_FRACTIONS = (0.2, 0.35, 0.5, 0.65, 0.9, 0.1)   # tried in order, one at a time
+
 _TAG_MODEL = []
 
 def forced_decode_windows(src, track, offsets, lang_tag2, lang_det2):
@@ -835,6 +855,18 @@ def main():
               f"{len(wins)} window(s) with the {TAG_CONFIRM_MODEL} model")
         wlist = forced_decode_windows(src, s['a'], wins, tag2, det2)
         ok, why = tag_confirm_verdict(wlist)
+        # SHORT OF SPEECH, NOT OVERRULED: sample further windows, one at a time, until the verdict
+        # settles either way or the candidates run out. Same margin, same count, same "none lost".
+        for frac in TAG_CONFIRM_EXTRA_FRACTIONS:
+            if ok or not tag_confirm_short_of_speech(wlist):
+                break
+            off = int(dur_total * frac)
+            if any(abs(off - u) < TAG_CONFIRM_SECONDS for u in wins):
+                continue
+            wins.append(off)
+            print(f"  short of speech ({why}) - adding a window @{off}s")
+            wlist += forced_decode_windows(src, s['a'], [off], tag2, det2)
+            ok, why = tag_confirm_verdict(wlist)
         s['forcedDecode'] = {'tag': tag2, 'detected': det2, 'model': TAG_CONFIRM_MODEL,
                              'margin': TAG_CONFIRM_MARGIN, 'windows': wlist, 'confirmedTag': ok, 'why': why}
         for w in wlist:
