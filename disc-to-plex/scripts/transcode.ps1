@@ -782,6 +782,15 @@ foreach($it in $items){
       }
       $shape = '--title-set'
     }
+    elseif($carved.Count -gt 1 -and @($carved | Where-Object { $_.Cells -gt 1 }).Count -gt 0){
+      # SEVERAL PGCs, SOME MULTI-CELL: each PGC is a subject and its cells are that subject's
+      # pages. The Avengers 1967 Disk 2's Biographies (2026-09-25): PGCs 57-60 = Macnee 2 pages,
+      # Steed 3, Rigg 2, Peel 2 - nine distinct text pages, read by eye. --pgcs refuses a multi-cell
+      # PGC outright; --title-set takes every cell of each PGC in the order given. expectPages
+      # still has to match, so a blank transition cell cannot slip through unnoticed.
+      Write-Output ("   [stills] {0} PGCs, {1} of them multi-cell - every cell is a page, building as a title-set over all of them (manifest said domain '{2}')" -f $carved.Count, @($carved | Where-Object { $_.Cells -gt 1 }).Count, $dom)
+      $shape = '--title-set'
+    }
     elseif($carved.Count -gt 1 -and @($carved | Where-Object { $_.Cells -ne 1 }).Count -eq 0){
       if($shape -ne '--pgcs'){
         Write-Output ("   [stills] {0} PGCs of one cell each - the pages are PGCs, building as --pgcs (manifest said domain '{1}')" -f $carved.Count, $dom)
