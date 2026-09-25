@@ -956,9 +956,14 @@ function Get-MenuStillRows([string]$unit){
         $rsrc = "$($r.src)"
         if(-not $rsrc){ continue }
         if((Split-Path ($rsrc -replace '/', '\') -Leaf) -ne $unit){ continue }
+        # A row with `cells` (2026-09-25) builds its pages out of ONE PGC's cells, and the dispositions
+        # key such a gallery by that CELL range (UFO Disk 4: `menu1p3-19` = PGC 3 cells 3-19, row
+        # `"pgcs":"3","cells":"3-19"`). Joining on `pgcs` there gave Pages=[3], covered no key, and
+        # refused the staging release of Disks 4 and 8 with every gallery built and on the NAS.
+        $spec = $(if("$($r.cells)".Trim()){ "$($r.cells)" } else { "$($r.pgcs)" })
         $rowsOut += [pscustomobject]@{
           Vts      = $(if($rdom -eq 'vmgm'){ 0 } else { [int]("$($r.vts)") })
-          Pages    = (Expand-PgcSpec "$($r.pgcs)")
+          Pages    = (Expand-PgcSpec $spec)
           Out      = "$($r.out)"
           Manifest = $mf.Name
         }

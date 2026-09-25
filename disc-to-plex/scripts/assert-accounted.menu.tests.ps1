@@ -223,6 +223,19 @@ $n='caseU'; $o = New-Case $n @('menu1p12-14|extra|Sam Neill Biography, 3 pages|m
 New-StillsManifest 'reilly-u.json' $n 1 '12,13,14' 'menu' $outG
 Check 'a comma-separated pgcs spec closes it' 0 (RunPhase $n $o 'release') 'same parse as build-still-slideshow.py'
 
+# 24. REAL (UFO Disk 4, 2026-09-25): a gallery built from CELLS of one PGC. The key is the cell
+#     range; the row is `"pgcs":"3","cells":"3-19"`. Joining on pgcs gave Pages=[3] and refused the
+#     staging release with every gallery built and published.
+$n='caseV'; $o = New-Case $n @('menu1p3-19|extra|The SHADO Dossier 2, 17 pages|card')
+@{ outputs = @(@{ kind='STILLS'; domain='menu'; vts=1; pgcs='3'; cells='3-19'; src="D:/video/_stage/$n"; expectPages=17; out=$outG }) } |
+  ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $mroot 'ufo-v.json') -Encoding UTF8
+Check 'REAL UFO Disk 4: a cells row closes the cell-range key' 0 (RunPhase $n $o 'release') 'cells are the pages, not pgcs'
+# 25. Known-negative: a cells row that does NOT cover the key still refuses.
+$n='caseW'; $o = New-Case $n @('menu1p3-19|extra|The SHADO Dossier 2, 17 pages|card')
+@{ outputs = @(@{ kind='STILLS'; domain='menu'; vts=1; pgcs='3'; cells='20-37'; src="D:/video/_stage/$n"; expectPages=18; out=$outG }) } |
+  ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $mroot 'ufo-w.json') -Encoding UTF8
+Check 'a cells row for OTHER cells does not close it' 2 (RunPhase $n $o 'release') 'coverage still required'
+
 Write-Output ''
 Write-Output ("{0} passed, {1} failed" -f $pass, $fail)
 Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
