@@ -101,7 +101,30 @@ foreach ($r in $rows) {
   if (-not $src) { $skipped++; continue }
   if (-not (Test-Path -LiteralPath $src -PathType Leaf)) { $skipped++; continue }   # folder, or gone
 
-  $raw = "$(& $ffprobe -v error -show_entries format=duration -of csv=p=0 $src 2>$null)".Trim()
+  # A `.txt` src is an ffmpeg CONCAT-DEMUXER LIST, read by transcode.ps1 as `-f concat -safe 0 -i`
+  # (seamless-branching BD features; the Avengers menu-trivia compilations, 2026-09-25). Probed as a
+  # plain file, ffprobe "measured" the TEXT - 0.280 s against a 221.04 s, 19-card compilation - and
+  # refused a correct row. Probe it the way it will be encoded.
+  # [string[]], not a bare `if` expression: assigning the else-branch's one-element array UNROLLS it
+  # to a plain string, and splatting a string passes nothing usable - every non-concat row then
+  # read as "not measurable" (caught on the first run against a .vob manifest, 2026-09-25).
+  [string[]]$inspec = if ($src -match '(?i)\.txt$') { @('-f', 'concat', '-safe', '0', '-i', $src) } else { @($src) }
+  $raw = "$(& $ffprobe -v error -show_entries format=duration -of csv=p=0 @inspec 2>$null)".Trim()
+  # The concat demuxer reports format=duration as N/A, which would make this row silently
+  # UNMEASURABLE - a skip, not a pass. Its timeline is the listed files laid end to end at their
+  # own durations, so measure exactly that: the sum of each listed file's container duration. Any
+  # file that cannot be read leaves the row unmeasured, as before.
+  if ($src -match '(?i)\.txt$') {
+    $sum = 0.0; $n = 0; $ok = $true
+    foreach ($ln in (Get-Content -LiteralPath $src)) {
+      if ($ln -notmatch "^\s*file\s+'(.+)'\s*$") { continue }
+      $d = "$(& $ffprobe -v error -show_entries format=duration -of csv=p=0 $Matches[1] 2>$null)".Trim()
+      $dv = 0.0
+      if (-not [double]::TryParse($d, [ref]$dv) -or $dv -le 0) { $ok = $false; break }
+      $sum += $dv; $n++
+    }
+    $raw = $(if ($ok -and $n -gt 0) { '{0}' -f $sum } else { 'N/A' })
+  }
   $act = 0.0
   # ffprobe returns the STRING 'N/A' when the header carries no duration, and [double]'N/A' throws.
   if (-not [double]::TryParse($raw, [ref]$act) -or $act -le 0) { $skipped++; continue }
@@ -120,11 +143,11 @@ foreach ($r in $rows) {
     # avg_frame_rate, NOT r_frame_rate: Friends S5 D2's Season 5 Overview (bb, 2026-09-17) reports
     # r_frame_rate 60000/1001 - the FIELD rate - and avg 30000/1001, so a test on r_frame_rate missed it.
     # ONE LINE: a BD .m2ts lists each stream once per PROGRAM, so ffprobe prints the answer twice.
-    $fo = "$(& $ffprobe -v error -select_streams v:0 -show_entries stream=field_order -of csv=p=0 $src 2>$null | Select-Object -First 1)".Trim().TrimEnd(',')
+    $fo = "$(& $ffprobe -v error -select_streams v:0 -show_entries stream=field_order -of csv=p=0 @inspec 2>$null | Select-Object -First 1)".Trim().TrimEnd(',')
     if ($fo -notmatch '^(tt|bb|tb|bt)$') { $fo = '' }
     $rfr = 0.0
     foreach ($key in 'avg_frame_rate', 'r_frame_rate') {
-      $v = "$(& $ffprobe -v error -select_streams v:0 -show_entries stream=$key -of csv=p=0 $src 2>$null | Select-Object -First 1)".Trim().TrimEnd(',')
+      $v = "$(& $ffprobe -v error -select_streams v:0 -show_entries stream=$key -of csv=p=0 @inspec 2>$null | Select-Object -First 1)".Trim().TrimEnd(',')
       if ($v -match '^(\d+)/(\d+)$' -and [double]$Matches[2] -ne 0 -and [double]$Matches[1] -gt 0) { $rfr = [double]$Matches[1] / [double]$Matches[2]; break }
     }
     $rate = $expFrames / $act
@@ -168,13 +191,13 @@ foreach ($r in $rows) {
     # "container - 120 s" lands past the end and finds nothing. Both refused a correct S09E14 row on
     # 2026-09-19 while printing the true end (5592.4 - 4198.0 = 1394.4 s) as "last A/V packet".
     $st0 = 0.0
-    $stTxt = "$(& $ffprobe -v error -show_entries format=start_time -of csv=p=0 $src 2>$null | Select-Object -First 1)".Trim()
+    $stTxt = "$(& $ffprobe -v error -show_entries format=start_time -of csv=p=0 @inspec 2>$null | Select-Object -First 1)".Trim()
     if ($stTxt -match '^[0-9]+(\.[0-9]+)?$') { $st0 = [double]$stTxt }
     $vExtent = 0.0; $aExtent = 0.0
     $tailFrom = $st0 + [math]::Max(0, [math]::Min($act, $expSec) - 120)
     foreach ($sel in 'v:0', 'a:0') {
       $pts = @(& $ffprobe -v error -select_streams $sel -read_intervals ("{0}%+#100000" -f [int]$tailFrom) `
-                 -show_entries packet=pts_time -of csv=p=0 $src 2>$null |
+                 -show_entries packet=pts_time -of csv=p=0 @inspec 2>$null |
                Where-Object { $_ -match '^[0-9]+(\.[0-9]+)?$' })
       if ($pts.Count) { if ($sel -eq 'v:0') { $vExtent = [double]$pts[-1] - $st0 } else { $aExtent = [double]$pts[-1] - $st0 } }
     }

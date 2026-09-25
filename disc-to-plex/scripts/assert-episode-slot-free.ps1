@@ -54,7 +54,13 @@ function Get-EpisodeSlots {
      Returned uppercase so comparison is case-insensitive by construction. #>
   param([Parameter(Mandatory)][string]$Name)
   $slots = @()
-  foreach ($m in [regex]::Matches($Name, '(?i)S(\d{1,2})E(\d{1,3})(?:\s*-\s*(?:S\d{1,2})?E(\d{1,3}))?')) {
+  # ONLY THE FIRST SxxExx IS THE SLOT - it is the one Plex's scanner reads. A later token is part of
+  # the TITLE, and this library names Season 00 extras after the episodes they accompany:
+  # "The Avengers (1961) - S00E95 - Did You Know - Trivia (S05E01-03).mkv". Reading every token
+  # (2026-09-25) refused that row as a second S05E01, "already" held by the four S00E49-52 galleries -
+  # none of which is in slot S05E01 either. A span in the slot token itself (S01E01-E02) is still
+  # expanded below, because it is part of the same first match.
+  foreach ($m in @([regex]::Match($Name, '(?i)S(\d{1,2})E(\d{1,3})(?:\s*-\s*(?:S\d{1,2})?E(\d{1,3}))?') | Where-Object { $_.Success })) {
     $s = [int]$m.Groups[1].Value
     $a = [int]$m.Groups[2].Value
     $b = if ($m.Groups[3].Success) { [int]$m.Groups[3].Value } else { $a }
@@ -78,6 +84,8 @@ if ($SelfTest) {
   T 'short name matches' (((Get-EpisodeSlots -Name 'S06E01 - A Time to Stand.mkv') -join ',') -eq 'S06E01')
   T 'no slot'            ((Get-EpisodeSlots -Name 'Some Featurette.mkv').Count -eq 0)
   T 'case insensitive'   (((Get-EpisodeSlots -Name 'show - s06e07 - x.mkv') -join ',') -eq 'S06E07')
+  T 'title token is not a slot' (((Get-EpisodeSlots -Name 'The Avengers (1961) - S00E95 - Did You Know - Trivia (S05E01-03).mkv') -join ',') -eq 'S00E95')
+  T 'gallery title token is not a slot' (((Get-EpisodeSlots -Name 'The Avengers (1961) - S00E53 - Set Pictures Gallery (S05E19-22).mkv') -join ',') -eq 'S00E53')
   if ($fail) { "SELFTEST FAILED - $fail case(s)"; exit 1 }
   'SELFTEST OK'; exit 0
 }
