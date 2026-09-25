@@ -68,6 +68,12 @@ USAGE
                   dir whose CELLS are the pages, taken in cell order. Several PGC dirs may be
                   given (`--title-set 38,39,40`) when the disc splits one gallery across several
                   title sets; the pages of each follow the pages of the last, in the order given.
+    --cells       with `--title-set` of exactly ONE PGC: take only these cells as the pages, in
+                  the order given (same range syntax, e.g. `20-37,45-47`). For a disc that authors
+                  SEVERAL galleries as cell ranges of one PGC - UFO Disk 4's VTSM PGC 3 holds 47
+                  cells: a 2-page index, Dossier 2 (3-19), Production Stills (20-37 then 45-47) and
+                  Behind the Scenes (38-44). The whole PGC is still carved and still checked as a
+                  contiguous 1..N run; a named cell that does not exist, or is named twice, is refused.
     --dar         the DISPLAY aspect the disc's IFO declares for this set, e.g. `16:9`. The output
                   SAR is computed from it and the measured geometry, INSTEAD of the SAR the cells
                   declare. Use it only when the IFO and the cells disagree and the IFO is right -
@@ -206,7 +212,7 @@ def main():
     if len(a) < 2:
         raise SystemExit(__doc__.strip().rsplit('USAGE', 1)[-1].strip())
     cells_dir, out = a[0], a[1]
-    spec = tspec = dwell = dar = None
+    spec = tspec = dwell = dar = cspec = None
     fps = 25.0
     drop_term = allow_dup = dry = False
     keep = None
@@ -216,6 +222,8 @@ def main():
             spec = a[i + 1]; i += 2
         elif a[i] == '--title-set':
             tspec = a[i + 1]; i += 2
+        elif a[i] == '--cells':
+            cspec = a[i + 1]; i += 2
         elif a[i] == '--dwell':
             dwell = float(a[i + 1]); i += 2
         elif a[i] == '--fps':
@@ -254,9 +262,22 @@ def main():
     # Club Disk 2's storyboard gallery is three title sets of 99/99/72 cells and all THREE end in a
     # black cell. Treating the combination as one chain would drop only the last of the three and
     # ship two black pages in the middle of the gallery.
+    if cspec and (not tspec or len(pgcs) != 1):
+        raise SystemExit('--cells selects pages out of ONE title-set PGC - give it with '
+                         '--title-set <one pgc> (exit 2)')
     chains = []
     for pgc in pgcs:
-        if tspec:
+        if tspec and cspec:
+            allp = title_set_pages(cells_dir, pgc)          # still asserts the full 1..N run
+            want = parse_pgcs(cspec)
+            if not want or len(set(want)) != len(want):
+                raise SystemExit('--cells %r is empty or names a cell twice (exit 2)' % cspec)
+            missing = [c for c in want if c < 1 or c > len(allp)]
+            if missing:
+                raise SystemExit('--cells names cell(s) %s but pgc%d has %d cell(s) (exit 2)'
+                                 % (','.join(str(c) for c in missing), pgc, len(allp)))
+            chains.append([allp[c - 1] for c in want])
+        elif tspec:
             chains.append(title_set_pages(cells_dir, pgc))
         else:
             chains.append([('pgc%d' % pgc, cell_path(cells_dir, pgc))])

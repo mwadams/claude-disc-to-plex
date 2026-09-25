@@ -16,7 +16,7 @@
                                existed they had to be built by hand, which is how The Sweeney's
                                "Sweeney!" gallery was identified and then not shipped, and how
                                H.M.S. Defiant's two still sets were lost with their staging.
-                               Required with it: vts, pgcs, domain, expectPages. Optional: dwell, dar.
+                               Required with it: vts, pgcs, domain, expectPages. Optional: dwell, dar, cells.
                                  vts         (int)    VTS number, e.g. 6
                                  pgcs        (string) PGC selection, same syntax as
                                              build-still-slideshow.py: "2", "12,14", "23-57"
@@ -33,6 +33,11 @@
                                              3.45 s, Fairport 9 pages at 6.75 s, The Sweeney's
                                              13 cast-credit lobby cards at 6.0 s.
                                  dar         (string) only when the IFO and the cells disagree.
+                                 cells       (string) pages = only these CELLS of ONE PGC, in the order
+                                             given ("20-37,45-47"). For a disc that authors several
+                                             galleries as cell ranges of one PGC (UFO Disk 4 VTSM PGC 3:
+                                             index 1-2, Dossier 3-19, Production Stills 20-37+45-47,
+                                             Behind the Scenes 38-44). pgcs names that one PGC.
                                BD = H.264 m2ts (1080p); DVD = MPEG-2 via dvdvideo demuxer (SD PAL);
                                MKV = a MakeMKV-ripped SD .mkv (same SD treatment as DVD — deinterlace
                                + preserve DAR — but read as a plain file). Use MKV when the dvdvideo
@@ -786,6 +791,10 @@ foreach($it in $items){
     $build = @($stillBuild, $cellDir, "$($it.out)", $shape, "$($it.pgcs)")
     if(Has $it 'dwell'){ $build += @('--dwell', ([double]$it.dwell).ToString([Globalization.CultureInfo]::InvariantCulture)) }
     if(Has $it 'dar'){ $build += @('--dar', "$($it.dar)") }
+    if(Has $it 'cells'){
+      if($shape -ne '--title-set'){ Write-Output "   !! FAILED - 'cells' selects pages out of ONE multi-cell PGC, but the carve is shaped $shape"; $failCount++; continue }
+      $build += @('--cells', "$($it.cells)")
+    }
     $bo = @(& python @build 2>&1); $bx = $LASTEXITCODE
     $bo | Select-Object -Last 4 | ForEach-Object { Write-Output ("   [stills] " + $_) }
     if($bx -ne 0){ Write-Output "   !! FAILED - build-still-slideshow.py exit $bx"; $failCount++; continue }
