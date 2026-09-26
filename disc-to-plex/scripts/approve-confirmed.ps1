@@ -82,7 +82,14 @@ function Get-ArtefactName {
   <# Unique by construction: date, time to the minute, and a slug of what is being approved. #>
   param([Parameter(Mandatory)][string[]]$Works, [datetime]$Now = (Get-Date))
   $slug = (($Works | ForEach-Object { ($_ -replace '[^A-Za-z0-9]', '').ToLowerInvariant() }) -join '-')
-  if ($slug.Length -gt 30) { $slug = $slug.Substring(0, 30) }
+  # A TRUNCATED SLUG IS NOT UNIQUE: "Examen d'entree INSAS - Bruxelles, film 1 (1967)" and "... film 2"
+  # share their first 30 characters, so confirming both in one minute (2026-09-26 15:57) named the same
+  # file and the second nod was refused. Keep the readable prefix, add a short hash of the whole slug.
+  if ($slug.Length -gt 30) {
+    $sha = [Security.Cryptography.SHA1]::Create()
+    $h = -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($slug))[0..3] | ForEach-Object { $_.ToString('x2') })
+    $slug = $slug.Substring(0, 25) + '-' + $h
+  }
   if (-not $slug) { $slug = 'none' }
   return ('confirmed-{0}-{1}.json' -f $Now.ToString('yyyy-MM-dd-HHmm'), $slug)
 }
@@ -106,6 +113,7 @@ if ($SelfTest) {
   T 'name joins several works'  ((Get-ArtefactName -Works @('Spaced','Sleepy Hollow') -Now $now) -eq 'confirmed-2026-09-07-0245-spaced-sleepyhollow.json')
   T 'name strips punctuation'   ((Get-ArtefactName -Works @('Doctor Who (1963)') -Now $now) -eq 'confirmed-2026-09-07-0245-doctorwho1963.json')
   T 'name is capped'            ((Get-ArtefactName -Works @('A'*80) -Now $now).Length -lt 70)
+  T 'long names sharing a prefix differ' ((Get-ArtefactName -Works @("Examen d'entree INSAS - Bruxelles, film 1 (1967)") -Now $now) -ne (Get-ArtefactName -Works @("Examen d'entree INSAS - Bruxelles, film 2 (1967)") -Now $now))
   T 'two different minutes differ' ((Get-ArtefactName -Works @('X') -Now $now) -ne (Get-ArtefactName -Works @('X') -Now $now.AddMinutes(1)))
   T 'pending name accepted'     ($null -eq (Test-WorkIsPending -Name 'Spaced' -Pending @('Spaced','Porridge')))
   T 'unknown name refused'      ((Test-WorkIsPending -Name 'Spacd' -Pending @('Spaced')) -match 'not awaiting confirmation')
