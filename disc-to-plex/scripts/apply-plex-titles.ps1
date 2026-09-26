@@ -94,6 +94,25 @@ if ($Manifest) {
   if (-not (Test-Path -LiteralPath $Manifest -PathType Leaf)) { Say "apply-plex-titles: no manifest at $Manifest"; exit 0 }
   try { $items = @(Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json) } catch { Say "apply-plex-titles: unreadable manifest ($($_.Exception.Message))"; exit 0 }
   $want = @($items | Where-Object { $_.PSObject.Properties.Name -contains 'plexTitle' -and "$($_.plexTitle)".Trim() })
+  # A NAMED SEASON 00 ITEM CARRIES ITS TITLE IN `out`, AND NOTHING WAS APPLYING IT.
+  #
+  # assert-season00-titles-declared.ps1 passes a named Season 00 output without `plexTitle`, on the
+  # stated basis that "fix-plex-extras.ps1 parses the title out of the filename". True - but nothing
+  # RUNS fix-plex-extras.ps1; it is a hand tool, and _idlewatch only reports the gap. 2026-09-26: 52
+  # new Deep Space Nine specials (S00E96-E148) published 09-25 ~22:40 and sat in Plex as "Episode 96"
+  # .. "Episode 148" for ten hours, and the operator read two of them as duplicates before a human ran
+  # it. So the title such an item already declares - the same segment fix-plex-extras.ps1 parses,
+  # same pattern - is applied here, on the publish path that already runs. Still the manifest's own
+  # word, never a guess: an item whose `out` has no title segment is left alone, as before.
+  foreach ($it in $items) {
+    if ($it.PSObject.Properties.Name -contains 'plexTitle' -and "$($it.plexTitle)".Trim()) { continue }
+    $o = "$($it.out)"
+    if ($o -notmatch '(?i)[\\/]Season 0*0[\\/]') { continue }
+    $leafName = [IO.Path]::GetFileName($o)
+    if ($leafName -match ' - S\d+E\d+(?:-E\d+)? - (.+)\.[^.]+$') {
+      $want += [pscustomobject]@{ out = $o; plexTitle = $Matches[1].Trim() }
+    }
+  }
 }
 if ($Tsv) {
   if (-not (Test-Path -LiteralPath $Tsv -PathType Leaf)) { Say "apply-plex-titles: no TSV at $Tsv"; exit 0 }

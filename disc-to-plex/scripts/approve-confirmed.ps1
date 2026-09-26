@@ -275,8 +275,17 @@ function Test-PlexTitleMissing {
   if (-not $plexCheckedWorks.ContainsKey($Work)) { return $false }
   if (-not $plexTitleByLeaf.ContainsKey($Leaf)) { return $true }   # in the library, not yet in Plex
   $t = "$($plexTitleByLeaf[$Leaf])".Trim()
-  # Plex's own placeholder for an episode it has no metadata for. That is precisely "not ready".
-  return (-not $t) -or ($t -match '^(Episode|Special)\s+\d+$')
+  if (-not $t) { return $true }
+  # Plex's own placeholder for an episode it has no metadata for. That is precisely "not ready" -
+  # FOR A SEASON 00 ITEM, whose real title is set by the titling pass (apply-plex-titles.ps1).
+  #
+  # NOT for a regular episode. Nothing in this pipeline titles those: the agent does, and for a show
+  # whose metadata source has no episode names "Episode 17" IS the final title and never changes.
+  # 2026-09-26: every episode of The Killing (2007) reads "Episode N" in Plex, so S01E17-E20 -
+  # published and indexed 09-24 - were reported "NOT READY TO LOOK AT ... waiting on the titling
+  # pass" for two days, a wait on a pass that would never touch them, while the alarm stayed clear.
+  if ($Leaf -notmatch '(?i)S0*0E\d') { return $false }
+  return ($t -match '^(Episode|Special)\s+\d+$')
 }
 
 $localWorks = @{}
