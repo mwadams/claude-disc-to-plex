@@ -160,7 +160,11 @@ function Get-PlanHold {
       # Reclaimed locally but published: the sidecar is small and ships first, so look there too.
       if ($NasRoot -and "$($rec.workRoot)" -match '(?i)\\(Television Shows|Movies)\\') {
         $rel = "$($rec.workRoot)".Substring("$($rec.workRoot)".IndexOf($Matches[1]))
-        $nasSrt = [IO.Path]::ChangeExtension((Join-Path (Join-Path $NasRoot $rel) (Join-Path "$($item.dir)" "$($item.leaf)")), $null) + 'eng.srt'
+        # A FILM's item has dir '' (the file sits in the work root), and `Join-Path '' <leaf>` throws
+        # "Cannot bind argument to parameter 'Path' because it is an empty string" - which killed the
+        # whole board section on 2026-09-26 for L'Enfant aime (1971), held awaiting OCR.
+        $child = $(if ("$($item.dir)") { Join-Path "$($item.dir)" "$($item.leaf)" } else { "$($item.leaf)" })
+        $nasSrt = [IO.Path]::ChangeExtension((Join-Path (Join-Path $NasRoot $rel) $child), $null) + 'eng.srt'
         if (Test-Path -LiteralPath $nasSrt) { return $true }
       }
       return $false
