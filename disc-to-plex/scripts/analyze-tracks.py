@@ -534,6 +534,20 @@ def similarity(a_text, b_text):
     return len(A & B) / float(len(A | B))
 
 
+def quiet_programme(streams, cand, hinted):
+    """The programme track of a near-wordless film, or None. See the call site in main().
+
+    Only when EVERY speech candidate carries commentary cues: then the earliest-authored track that
+    is outside the vote (no reliable speech), is not a copy of another and is not yet classified.
+    """
+    if not cand or not hinted or len(hinted) != len(cand):
+        return None
+    firstHinted = min(s['a'] for s in hinted)
+    quiet = [s for s in streams if s['a'] < firstHinted and s['redundantWith'] is None
+             and s['role'] is None and s not in cand]
+    return min(quiet, key=lambda s: s['a']) if quiet else None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('src')
@@ -914,8 +928,30 @@ def main():
                   f"weak: {', '.join(sorted(weak)) or 'none'}]")
         cand = [s for s in cand if s not in hinted]
 
+    # ...AND WHEN EVERY SPEECH TRACK TALKS ABOUT THE FILM, THE FILM IS THE ONE THAT DOES NOT SPEAK.
+    #
+    # The exclusion above refuses to empty the candidate list, so a disc whose ONLY reliable speech
+    # is a commentary elected that commentary. That is the near-wordless film: Chantal Akerman's
+    # Saute ma ville (1968, BFI Blu-ray 2026-09-26) - a:0 is the film's mono PCM, humming and
+    # kitchen noise, too little speech for whisper to trust its language (langProb 0.42); a:1 is a
+    # 2.0 commentary, dense analytical English. a:1 was elected primary, a:0 became `commentary?`,
+    # and assert-tracks-analysed.ps1 then refused the CORRECT manifest (a:0 film, a:1 commentary),
+    # accepting only the inverted one - the deadlock the authoring-order rule below already records.
+    #
+    # So when every candidate carries commentary cues and an EARLIER-authored track sits outside the
+    # vote (no reliable speech, not a copy of another, not already classified - music is the separate
+    # silent-film case), that earlier track is the programme: authored first, and the only track NOT
+    # talking about the film. Narrow on purpose - one un-hinted speech track anywhere and the normal
+    # election runs unchanged.
+    programme = quiet_programme(streams, cand, hinted)
+    if programme is not None:
+        print(f"  every speech track talks ABOUT the film - a:{programme['a']} (authored first, "
+              f"no reliable speech) is the programme, not a:{min(s['a'] for s in hinted)}")
+
     primary = None
-    if cand:
+    if programme is not None:
+        primary = programme
+    elif cand:
         counts = {}
         for s in cand:
             counts[s['spokenLang']] = counts.get(s['spokenLang'], 0) + 1
