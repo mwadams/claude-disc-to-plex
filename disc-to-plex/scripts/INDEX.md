@@ -1,6 +1,6 @@
 # Script index - GENERATED, do not edit
 
-Generated 2026-09-26 15:58 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
+Generated 2026-09-26 21:15 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
 
 **167 scripts under `scripts/`, 60 loop scripts under `D:/video/`. 2 with NO usable header, 64 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
 
@@ -205,7 +205,7 @@ Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library
 | `_ocr-loop.ps1` | command | CPU track: keep OCR running over every encoded file that still needs a sidecar. | NO TRIGGER IN HEADER | - |
 | `_ocr-queue-loop.ps1` | command | OCR QUEUE-DRAIN track: convert real disc-authored bitmap subtitle streams (PGS/VOBSUB) that are already sitting inside ALREADY-PUBLISHED library files, most of which this pipeline never produced. | NO TRIGGER IN HEADER | - |
 | `_optical-loop.ps1` | command | NO HEADER - purpose unknown | NO TRIGGER IN HEADER | - |
-| `_optical-loop.recovery.tests.ps1` | tests | Tests for the PROPOSED recovery-directive change to _optical-loop.ps1 - run against the LIVE loop with the proposed hunks applied to a scratch copy, so the suite proves both that the diff still applies and that the pa... | NO TRIGGER IN HEADER | `pwsh -NoProfile -File D:/video/_optical-loop.recovery.tests.ps1      (exit 0 = all passed)` |
+| `_optical-loop.recovery.tests.ps1` | tests | Tests for the LIVE recovery-disc behaviour in _optical-loop.ps1 (added 2026-09-19, at the "5b" section between the fingerprint being computed and "6. ALREADY ARCHIVED?"). | NO TRIGGER IN HEADER | - |
 | `_optical-loop.tests.ps1` | tests | Tests for the OPTICAL track (_optical-loop.ps1 + lib-optical.ps1). Run: pwsh -File D:/video/_optical-loop.tests.ps1 (exit 0 = all passed) | NO TRIGGER IN HEADER | - |
 | `_prune-empty.ps1` | command | Remove empty folders left behind by reclaims. | NO TRIGGER IN HEADER | - |
 | `_publish-all.ps1` | command | Publish every local work to the NAS, SERIALLY. | NO TRIGGER IN HEADER | - |

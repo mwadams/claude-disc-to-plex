@@ -96,7 +96,7 @@ New-Item -ItemType Directory -Force $OutDir, $frameDir | Out-Null
 
 # ---- 1. ENUMERATE with MakeMKV, the authority on what a disc contains -------------------------
 Write-Output "enumerating $discName (MakeMKV, minlength=$MinLength) ..."
-$info = & $makemkv -r --cache=1 "--minlength=$MinLength" info "file:$Disc" 2>&1
+$info = & $makemkv -r --cache=1 "--minlength=$MinLength" --noscan info "file:$Disc" 2>&1
 $byId = @{}     # NOT $T/$t - PowerShell variables are CASE-INSENSITIVE and that pair collapses
 foreach ($line in $info) {
   if ("$line" -match '^TINFO:(\d+),9,0,"([^"]+)"') {

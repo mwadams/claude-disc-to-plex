@@ -134,7 +134,7 @@ foreach ($d in $Discs) {
   # ffmpeg's title N, and any filtering breaks that alignment: at --minlength=60 MakeMKV hides the
   # short titles ffmpeg still numbers, so t3 in one tool is t5 in the other and the "differences"
   # are nonsense. Enumerate everything and let the comparison do the judging.
-  $info = & $MakeMkv -r --cache=1 --minlength=1 info "file:$src" 2>&1
+  $info = & $MakeMkv -r --cache=1 --minlength=1 --noscan info "file:$src" 2>&1
   $mk = @()
   foreach ($line in $info) {
     if ($line -match '^TINFO:(\d+),9,0,"(\d+):(\d\d):(\d\d)"') {

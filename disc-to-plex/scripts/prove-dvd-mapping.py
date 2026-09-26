@@ -323,7 +323,7 @@ def run_makemkv(disc_dir, minlength):
     # LIST ARGS, NEVER A SHELL STRING. A `file:D:\...` argument handed to a shell (Git Bash in
     # particular) gets rewritten, MakeMKV then sees no source, falls back to "can't find any usable
     # optical drives" and EXITS 0 having written nothing. subprocess with a list bypasses the shell.
-    cmd = [exe, '-r', '--cache=1', f'--minlength={minlength}', 'info',
+    cmd = [exe, '-r', '--cache=1', f'--minlength={minlength}', '--noscan', 'info',
            'file:' + os.path.abspath(disc_dir)]
     p = subprocess.run(cmd, capture_output=True, text=True, errors='replace')
     if 'TINFO:' not in p.stdout:

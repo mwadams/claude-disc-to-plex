@@ -175,7 +175,7 @@ if($mkvRip.Count){
   $info = @()
 } else {
   Write-Output ("cataloguing $discName (minlength=$MinLength){0} ..." -f $(if($isIso){' [ISO]'}else{''}))
-  $info = & $MakeMkv -r --cache=1 --minlength=$MinLength info $source 2>&1
+  $info = & $MakeMkv -r --cache=1 --minlength=$MinLength $(if ("$source" -like 'file:*') { '--noscan' }) info $source 2>&1
 }
 
 $byId = @{}

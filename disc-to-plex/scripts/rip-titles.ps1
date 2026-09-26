@@ -52,7 +52,10 @@ $ffprobe = Join-Path (Split-Path $tp.ffmpeg) 'ffprobe.exe'
 
 # ---- 1. ENUMERATE (MakeMKV is the authority on what the disc contains) ---------------------
 Write-Output "enumerating $discName ..."
-$info = & $MakeMkv -r --cache=1 --minlength=10 info "file:$Disc" 2>&1
+# --noscan: a folder source never needs the optical drive, and WITHOUT it every call probes it through
+# MakeMKV's CdRom arbiter. 2026-09-26: this info call on "Who Dares Wins" hung on a disc spinning up
+# in F:, held the drive locked (no eject, no media arrival in Windows) and stalled the optical track.
+$info = & $MakeMkv -r --cache=1 --minlength=10 --noscan info "file:$Disc" 2>&1
 $dur = @{}; $size = @{}
 foreach ($line in $info) {
   if ($line -match '^TINFO:(\d+),9,0,"([^"]+)"')  { $p = $Matches[2] -split ':'; $dur[[int]$Matches[1]]  = [int]$p[0]*3600 + [int]$p[1]*60 + [int]$p[2] }
