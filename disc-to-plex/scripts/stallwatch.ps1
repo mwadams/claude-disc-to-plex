@@ -145,6 +145,43 @@ if ($dispTrackAlive) {
   try { $dispRunnerOk = [bool]((Get-Content -LiteralPath $DispositionsState -Raw -ErrorAction Stop | ConvertFrom-Json).auth.ok) } catch { $dispRunnerOk = $false }
 }
 
+# MANIFEST CONTENT, READ ONCE PER RUN - NOT ONCE PER UNIT (2026-09-27).
+#
+# The two blocks below used to run INSIDE the per-unit loop: once per unit, list all six manifest
+# directories and Get-Content -Raw every file in them to test that one unit's regex, then separately
+# re-list _queue/{root,running,done,failed} for their bare names. Neither result depends on which
+# unit is being looked at - only the REGEX tested against the cached content differs - so with ~1255
+# files across _manifests/_pending/_queue/done (measured 2026-09-27) and ~19 staged units, the board
+# was doing ~23,800 file opens to answer the same six directory listings nineteen times over. Profiled
+# with instrumented timestamps (scratchpad copy, same day): the per-unit loop took 62.0 s of a 244.7 s
+# total run, and 52.7 s of that 62.0 s was this one scan. Under the concurrent NAS/disk load recorded
+# that afternoon (publish robocopy + OCR extraction + an encode lane), a run that should take ~6 s
+# (per CLAUDE.md) took minutes, and _stall-alarm.ps1 - which runs this board as its own child process
+# every pass - fell to 6-11 minutes between passes as a direct result.
+#
+# So: list and READ every manifest file exactly ONCE here, and hold it as {Name, FullName,
+# LastWriteTime, Content}. Every per-unit match below becomes an in-memory regex test against cached
+# text instead of a fresh file read - same files, same content, same verdicts, a fraction of the I/O.
+# A file that appears or changes mid-run is invisible to this snapshot either way it would have been
+# split across units under the old per-unit reads too, so this is not a new inconsistency, only a
+# single one instead of nineteen.
+$manifestDirs = @("$Manifests/*.json", "$Pending/*.json", "$Queue/*.json", "$Queue/running/*.json",
+                  "$Queue/done/*.json", "$Queue/failed/*.json")
+$manifestFileCache = @(Get-ChildItem $manifestDirs -ErrorAction SilentlyContinue | ForEach-Object {
+  $content = ''
+  try { $content = Get-Content -LiteralPath $_.FullName -Raw -ErrorAction Stop } catch { $content = '' }
+  [pscustomobject]@{ Name = $_.Name; FullName = $_.FullName; LastWriteTime = $_.LastWriteTime; Content = $content }
+})
+
+# SAME REASONING FOR THE BARE-NAME QUEUE LISTINGS FURTHER DOWN (the FAILED/DONE/QUEUED/RUNNING
+# classification): none of the four depend on the unit either, so they too are computed once here
+# instead of once per unit that reaches that branch (measured 5.4 s over 12 calls, folded into the
+# same 62.0 s).
+$inQueue  = @(Get-ChildItem "$Queue/*.json" -ErrorAction SilentlyContinue).Name
+$inRun    = @(Get-ChildItem "$Queue/running/*.json" -ErrorAction SilentlyContinue).Name
+$inDone   = @(Get-ChildItem "$Queue/done/*.json" -ErrorAction SilentlyContinue).Name
+$inFailed = @(Get-ChildItem "$Queue/failed/*.json" -ErrorAction SilentlyContinue).Name
+
 foreach ($u in $units) {
   $name = $u.Name
 
@@ -296,11 +333,9 @@ foreach ($u in $units) {
   # this the monitor reported four discs as "needs MANIFEST" while their manifests sat in _pending,
   # every four minutes. A monitor that cries wolf gets ignored, which is the one failure it cannot
   # afford.
-  $manifestDirs = @("$Manifests/*.json", "$Pending/*.json", "$Queue/*.json", "$Queue/running/*.json",
-                    "$Queue/done/*.json", "$Queue/failed/*.json")
+  # $manifestDirs / $manifestFileCache are built ONCE, above the loop - see the comment there.
   $pathRx = '_stage[\\/]' + [regex]::Escape($name) + '(?=["\\/])'
-  $mentioned = @(Get-ChildItem $manifestDirs -ErrorAction SilentlyContinue |
-                 Where-Object { (Get-Content -LiteralPath $_.FullName -Raw) -match $pathRx })
+  $mentioned = @($manifestFileCache | Where-Object { $_.Content -match $pathRx })
 
   # A DISC THAT LEGITIMATELY SHIPS NOTHING IS CLOSED, NOT WAITING ON A MANIFEST.
   #
@@ -444,8 +479,9 @@ foreach ($u in $units) {
     # computed, makes that class of drift structurally impossible instead of merely documented."
     # This line re-derived it by hand twelve lines below the dot-source, and drifted anyway.
     $slug = ConvertTo-RipSlug -Name $name
-    $viaRip = @(Get-ChildItem $manifestDirs -ErrorAction SilentlyContinue | Where-Object {
-      $raw = Get-Content -LiteralPath $_.FullName -Raw
+    # Same cache as $mentioned above - no fresh listing or read per unit.
+    $viaRip = @($manifestFileCache | Where-Object {
+      $raw = $_.Content
       foreach ($sfx in @('-rip', '-x', '-main', '-mkv')) {
         if ($raw -match ('_stage[\\/]' + [regex]::Escape($slug + $sfx) + '(?=["\\/])')) { return $true }
       }
@@ -498,10 +534,7 @@ foreach ($u in $units) {
   # gate, and never re-queued - while this tool called it queued. A trigger that misreports a
   # blocked unit as moving is worse than no trigger, because the operator then decides by feel
   # instead of by signal. Report where the manifest ACTUALLY is.
-  $inQueue  = @(Get-ChildItem "$Queue/*.json" -ErrorAction SilentlyContinue).Name
-  $inRun    = @(Get-ChildItem "$Queue/running/*.json" -ErrorAction SilentlyContinue).Name
-  $inDone   = @(Get-ChildItem "$Queue/done/*.json" -ErrorAction SilentlyContinue).Name
-  $inFailed = @(Get-ChildItem "$Queue/failed/*.json" -ErrorAction SilentlyContinue).Name
+  # $inQueue / $inRun / $inDone / $inFailed are built ONCE, above the loop - see the comment there.
   $mNames   = @($mentioned.Name)
   $failed   = @($mNames | Where-Object { $inFailed -contains $_ })
   $done     = @($mNames | Where-Object { $inDone   -contains $_ })
