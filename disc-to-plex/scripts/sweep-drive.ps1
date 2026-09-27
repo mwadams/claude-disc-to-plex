@@ -46,6 +46,33 @@ foreach ($d in $Cache, $Store) { if (-not (Test-Path -LiteralPath $d)) { New-Ite
 # property of the disc.
 function Safe([string]$n) { ($n -replace '[\\/:*?"<>|]', '_') }
 
+# THE CACHE IS KEYED BY FOLDER NAME, BUT MUST BE VALID FOR THE DISC, NOT THE NAME. Two different
+# discs on two different drives can share a folder name ("The Prisoner Disk 1" - the 1967 series on
+# media0, the 2009 remake on media5), and a name-keyed cache reused across drives silently hands the
+# WRONG disc's enumeration to the new one; nothing downstream can tell, because the dump itself never
+# said which disc it came from. So every dump now carries a leading '# source-identity: <sig>' line,
+# and is reused only when that signature matches the disc being swept right now. A dump without that
+# line, or with a mismatching one, is UNVERIFIED and is re-enumerated - cheap, because --noscan never
+# touches the optical drive for a folder source. The signature itself must be cheap to compute WITHOUT
+# calling MakeMKV (that is the whole point - it gates whether MakeMKV even runs): prefer the disc's own
+# dvdid.xml <ID> when present, else a folder fingerprint of file count + total bytes, which is enough
+# to tell two different discs apart even when their folder names collide.
+#
+# Readers of these dumps (disposition-evidence.ps1, audit_commentary.py) parse line-by-line with
+# anchored regexes ('^TINFO:...', '^SINFO:...', '^MSG:...') and simply skip any line that doesn't
+# match, so a leading '#' comment line is inert to them - confirmed by reading both parsers.
+function Get-DiscSignature([System.IO.DirectoryInfo]$d) {
+  $idFile = Get-ChildItem -LiteralPath $d.FullName -Filter *.dvdid.xml -File -EA SilentlyContinue | Select-Object -First 1
+  if ($idFile) {
+    $m = [regex]::Match((Get-Content -LiteralPath $idFile.FullName -Raw), '<ID>(.*?)</ID>')
+    if ($m.Success -and $m.Groups[1].Value.Trim()) { return 'dvdid:' + $m.Groups[1].Value.Trim() }
+  }
+  $files = @(Get-ChildItem -LiteralPath $d.FullName -Recurse -File -EA SilentlyContinue)
+  $bytes = ($files | Measure-Object -Property Length -Sum).Sum
+  if (-not $bytes) { $bytes = 0 }
+  return ('fp:{0}:{1}' -f $files.Count, $bytes)
+}
+
 $discs = @(Get-ChildItem -LiteralPath $Drive -Directory | Sort-Object Name)
 Write-Host "sweeping $($discs.Count) disc(s) on $Drive [$Label]"
 $rows = New-Object System.Collections.Generic.List[object]
@@ -53,17 +80,23 @@ $i = 0
 
 foreach ($d in $discs) {
   $i++
+  $sig = Get-DiscSignature $d
   $dump = Join-Path $Cache ((Safe $d.Name) + '.txt')
   $lines = $null
   if (Test-Path -LiteralPath $dump) {
-    $lines = @(Get-Content -LiteralPath $dump)
-    if (@($lines | Where-Object { $_ -match '^TINFO:\d+,9,' }).Count -eq 0) { $lines = $null }
+    $existing = @(Get-Content -LiteralPath $dump)
+    if ($existing.Count -gt 0 -and $existing[0] -match '^#\s*source-identity:\s*(.+?)\s*$' -and $Matches[1] -eq $sig) {
+      $lines = $existing
+      if (@($lines | Where-Object { $_ -match '^TINFO:\d+,9,' }).Count -eq 0) { $lines = $null }
+    }
+    # else: no signature line (legacy dump) or a mismatching one - unverified, re-enumerate below.
   }
   if (-not $lines) {
     # --noscan: a folder source never needs the optical drive; without it every call probes F: through
     # MakeMKV's CdRom arbiter and can hang holding the drive (2026-09-26, rip-titles.ps1).
     $o = & $MakeMkv -r --cache=1 --minlength=$MinLength --noscan info ('file:' + $d.FullName) 2>&1
-    $lines = @($o | ForEach-Object { "$_" })
+    $body = @($o | ForEach-Object { "$_" })
+    $lines = @("# source-identity: $sig") + $body
     Set-Content -LiteralPath $dump -Value $lines -Encoding UTF8
   }
 
