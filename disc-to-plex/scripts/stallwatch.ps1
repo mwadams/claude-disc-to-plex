@@ -1227,6 +1227,35 @@ if ($awaitingConfirmation.Count) {
   Write-Output  '   pwsh -File D:/video/.claude/skills/disc-to-plex/scripts/approve-confirmed.ps1 -Work ''<name>'' -Note ''<their words>'''
 }
 
+# AND ANY DISC IDENTITY COLLISION THE FETCH GATE HAS FLAGGED - a source folder name that matches
+# something already fetched/completed, but whose CONTENT does not (lib-disc-identity.ps1, added
+# 2026-09-27: media0's 1967 'The Prisoner Disk 1/2' vs media5's 2009 remake, same folder names). The
+# gate never fetches into one of these; only a human can say which disc is which.
+$fetchCollisionNames = @()
+$fetchCollisionsFile = 'D:/video/_fetch-collisions.json'
+if (Test-Path -LiteralPath $fetchCollisionsFile) {
+  try {
+    $fcRaw = Get-Content -LiteralPath $fetchCollisionsFile -Raw -ErrorAction Stop
+    if ($fcRaw -and $fcRaw.Trim()) {
+      $fc = $fcRaw | ConvertFrom-Json -ErrorAction Stop
+      foreach ($p in $fc.PSObject.Properties) {
+        $row = $p.Value
+        # A DECIDED collision is no longer a question. Removing the entry cannot close it - the fetch
+        # loop re-flags the name on its next pass while the colliding disc is on the source drive - so
+        # the operator's decision is recorded IN the entry ("decision": what was decided and why) and
+        # the disc stays held out of the fetch. First case: The Prisoner (2009), 2026-09-27.
+        if ("$($row.decision)".Trim()) {
+          Write-Output ("   disc identity collision DECIDED: '{0}' - {1} (held out of the fetch)" -f $p.Name, "$($row.decision)".Trim())
+          continue
+        }
+        Write-Output ("*** DISC IDENTITY COLLISION: '{0}' - source identity {1} does not match the recorded identity ({2}: {3}). Refused, not fetched. Once decided, record it as a ""decision"" field in its entry in {4} (removing the entry does not work: the fetch re-flags it)." -f `
+                      $p.Name, "$($row.sourceIdentityRaw)", "$($row.recordedSource)", "$($row.recordedDetail)", $fetchCollisionsFile)
+        $fetchCollisionNames += $p.Name
+      }
+    }
+  } catch { Write-Output "   fetch-collisions file unreadable ($fetchCollisionsFile): $($_.Exception.Message)" }
+}
+
 # THE STATE FILE - last, so it carries every verdict above. See the -StateFile parameter.
 if ($StateFile) {
   $stateDoc = [ordered]@{
@@ -1282,6 +1311,7 @@ if ($StateFile) {
     briefsReady    = @($briefsReady)
     briefBatches   = @($briefBatchDocs)
     dischargePending = @($dischargePendingNames)
+    fetchCollisions  = @($fetchCollisionNames)
   }
   try { ($stateDoc | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $StateFile -Encoding UTF8 } catch { }
 }

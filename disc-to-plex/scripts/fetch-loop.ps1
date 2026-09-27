@@ -77,6 +77,18 @@ if (-not $mutex.WaitOne(0)) {
   exit 0
 }
 
+# DISC IDENTITY GATE (2026-09-27). See D:/video/lib-disc-identity.ps1's header - two different discs
+# can share a source folder name across drive swaps (media0's 1967 'The Prisoner' vs media5's 2009
+# remake, same folder names, both already in _completed.txt). $script:fetchIdentityCache lives for
+# the life of THIS PROCESS (the while loop below never re-execs pwsh), so a 5-minute poll over ~170
+# names reads E: for identity only on the first sighting of each (drive, name) pair - never per poll.
+. (Join-Path $PSScriptRoot 'lib-disc-identity.ps1')
+if (-not (Get-Command Invoke-FetchIdentityAudit -ErrorAction SilentlyContinue)) {
+  Write-Output "lib-disc-identity.ps1 failed to load - refusing to run the fetch loop without the identity gate"
+  exit 1
+}
+$script:fetchIdentityCache = @{}
+
 # LOG FOR YOURSELF - never depend on how you were launched.
 #
 # This loop was started as `pwsh -File _fetch-loop.ps1` with NO redirection, so everything it
@@ -125,6 +137,50 @@ while ($true) {
   # thing entitled to retire a disc from the list. Re-entering _fetch-one.ps1 on a partial folder
   # is safe and is the point: robocopy resumes it, and the name is appended only once it matches.
   $left = @($all | Where-Object { $done -notcontains $_ -and $complete -notcontains $_ })
+
+  # GATE 3b - AUDIT EVERY DONE/COMPLETE NAME EVER RECORDED AGAINST WHAT E: HOLDS RIGHT NOW.
+  #
+  # A name in $done/$complete is excluded from $left above and silently never fetched again - correct
+  # for the normal case (this IS that disc, already verified), wrong when a DIFFERENT disc on the
+  # current drive happens to share the name (see lib-disc-identity.ps1's header: The Prisoner
+  # Disk 1/2, 1967 vs 2009). This never changes $left for a done/complete name - it only decides
+  # whether a mismatch gets WRITTEN DOWN, so a human notices instead of the disc being fetched-and-
+  # skipped forever with nobody told.
+  #
+  # SCOPED TO THE FULL done+complete REGISTERS, NOT JUST $all (this list). build-batch-list.ps1
+  # already drops a done/complete name from a freshly-proposed list by design (that IS the point of
+  # $done/$fetched there), so The Prisoner Disk 1/2 never appear as list18.txt LINES at all even
+  # though the 2009 remake sits on E: right now under those exact folder names - auditing only
+  # $doneNamesInList would miss precisely the case this gate exists for. Cheap regardless of how many
+  # thousand names have ever been completed: ONE shallow listing of $SrcRoot decides which of them are
+  # even worth comparing, and the per-(drive,name) cache above means a name already checked this drive
+  # is never re-read.
+  $everCompletedNames = @($done + $complete | Sort-Object -Unique)
+  if ($everCompletedNames.Count -gt 0 -and (Test-Path -LiteralPath $SrcRoot -PathType Container)) {
+    try {
+      $idAudit = Invoke-FetchIdentityAudit -Names $everCompletedNames -SrcRoot $SrcRoot -VideoRoot 'D:/video' -Cache $script:fetchIdentityCache
+      if ($idAudit.Collisions.Count -gt 0) {
+        Write-Output ("[{0}] *** {1} DISC IDENTITY COLLISION(S) flagged (see D:/video/_fetch-collisions.json): {2}" -f `
+                      (Get-Date -Format 'HH:mm:ss'), $idAudit.Collisions.Count, (($idAudit.Collisions | ForEach-Object { $_.Name }) -join ', '))
+      }
+    } catch {
+      Write-Output ("[{0}] identity audit failed (non-fatal, continuing): {1}" -f (Get-Date -Format 'HH:mm:ss'), $_.Exception.Message)
+    }
+  }
+
+  # HELD FOR COLLISION - excluded from $left until a human resolves the flag (see above). This is
+  # what actually stops a repeatedly-refused resume (gate 3a, in _fetch-one.ps1) from being retried
+  # every pass forever: without this, $left would keep naming the same disc, _fetch-one.ps1 would
+  # keep refusing it, and nothing after it in the list would ever get a turn.
+  $collisionNames = Get-FetchCollisionNames -CollisionsPath 'D:/video/_fetch-collisions.json'
+  if ($collisionNames.Count -gt 0) {
+    $heldForCollision = @($left | Where-Object { $collisionNames.ContainsKey($_) })
+    if ($heldForCollision.Count -gt 0) {
+      $left = @($left | Where-Object { -not $collisionNames.ContainsKey($_) })
+      Write-Output ("[{0}] {1} disc(s) held for a DISC IDENTITY COLLISION, not retried: {2}" -f `
+                    (Get-Date -Format 'HH:mm:ss'), $heldForCollision.Count, ($heldForCollision -join ', '))
+    }
+  }
 
   if ($left.Count -eq 0) {
     Write-Output ("[{0}] every disc in {1} is staged or fetched - idling" -f (Get-Date -Format 'HH:mm:ss'), $listFile.Name)
