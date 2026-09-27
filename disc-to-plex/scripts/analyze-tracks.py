@@ -83,7 +83,11 @@ SRC_OPTS = []
 COMMENTARY_STRONG = re.compile(
     r'\b(we (shot|filmed|re-?shot)|the (director|script|screenplay|studio|sequence|set|scene)|'
     r'this shot|(the|this) (film|movie)|footage|producers?|first take|another take|the edit|'
-    r'(the|a) long takes?|(film |movie )?critics?|the (image|frame)|cinema)\b', re.I)
+    r'(the|a) long takes?|(film|movie) critics?)\b', re.I)
+# 2026-09-27, Jeanne Dielman (Akerman Vol 1 D3): its commentary said "this film" and "the long take"
+# and hit none of the above, so the near-silent film's own track lost the election. Bare `cinema`,
+# `critic(s)`, `the image` and `the frame` were proposed too and left OUT by the rule below: a
+# character can say "the cinema", "the critics", "the frame" in ordinary dialogue.
 # `the crew` was in this list for one run. The World's Fastest Indian extra says it in ordinary
 # narration and was classed as commentary talk - a film about a racing team naturally has a crew,
 # as do war and sea pictures. Anything a subject can plausibly have is not production vocabulary.
