@@ -210,6 +210,28 @@ if ($partial.Count) {
   if (-not $local) { throw "REFUSING: every file in $src is still partial - nothing to publish yet" }
 }
 
+# TWO FILES CLAIMING ONE EPISODE SLOT NEVER PUBLISH - the folder holding them is held until it is fixed.
+#
+# 2026-09-27, Doctor Who (1963): the Robot and The Androids of Tara manifests were authored close
+# together, both read "next free S00E320" from SEASON00-ALLOCATION.md, and only Robot recorded its
+# claim - so S00E320..E324 were each declared twice under different titles ("A New Frontier" and
+# "Now and Then", ...). The leaves differ, so nothing on disk clashes and every gate passed; on the
+# NAS, Plex would file both into one slot and show only one. Hold the whole folder (the plan gate's
+# unit) rather than guess which claim is right: the register decides, and a human renumbers.
+$slotOf = { param($f) if ($f.Extension -eq '.mkv' -and $f.Name -match '(?i)\bS(\d+)E(\d+)\b') { '{0}|S{1:D2}E{2:D2}' -f $f.DirectoryName, [int]$Matches[1], [int]$Matches[2] } }
+$slotClash = @($local | Where-Object { & $slotOf $_ } | Group-Object { & $slotOf $_ } | Where-Object { @($_.Group.Name | Sort-Object -Unique).Count -gt 1 })
+$slotHeldDirs = @()   # joined into robocopy's /XD below - removing them from $local alone does NOT stop /E copying them
+if ($slotClash.Count) {
+  $clashDirs = @($slotClash | ForEach-Object { $_.Group[0].DirectoryName } | Sort-Object -Unique)
+  $slotHeldDirs = $clashDirs
+  foreach ($c in $slotClash) {
+    Write-Warning ("REFUSING - SLOT COLLISION in '{0}': {1} is claimed by {2} different files - that folder is held until they are renumbered (see _pending/SEASON00-ALLOCATION.md):" -f (Split-Path $c.Group[0].DirectoryName -Leaf), ($c.Name -split '\|')[1], $c.Count)
+    $c.Group | ForEach-Object { Write-Warning ("    {0}" -f $_.Name) }
+  }
+  $local = @($local | Where-Object { $clashDirs -notcontains $_.DirectoryName })
+  if (-not $local) { Write-Warning ("REFUSING - every local file of '{0}' is in a folder with a slot collision; nothing is publishable yet." -f $Work); exit 2 }
+}
+
 # Refuse to publish AHEAD of the OCR pass. The documented order is encode -> OCR -> publish, and
 # publishing early is not harmless: the .mkv lands without its sidecar, so every one of them needs
 # a second, individual copy afterwards to carry the .srt up. It is easy to do by accident because
@@ -576,7 +598,8 @@ if ($partial.Count) { $flags += '/XF'; $flags += @($partial | ForEach-Object { $
 if ($nonArtefact.Count) { $flags += '/XF'; $flags += @($nonArtefact | ForEach-Object { $_.FullName }) }
 # Season folders the plan gate is HOLDING (television, per-season rule above). /XD with full paths is
 # what keeps them off the NAS; dropping them from $local only narrows what is reported and verified.
-if ($heldDirs.Count) { $flags += '/XD'; $flags += $heldDirs }
+$xdDirs = @(@($heldDirs) + @($slotHeldDirs) | Where-Object { $_ } | Sort-Object -Unique)
+if ($xdDirs.Count) { $flags += '/XD'; $flags += $xdDirs }
 # SAME REASONING FOR -SubtitlesOnly. robocopy's file spec is positional, before the switches, and
 # it is the only thing that stops /E dragging the .mkv along. Narrowing $local above governs what
 # is REPORTED and VERIFIED; this governs what actually moves.
