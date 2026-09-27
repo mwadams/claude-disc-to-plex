@@ -49,7 +49,10 @@ New-Item -ItemType Directory -Force -Path $ripDir | Out-Null
 Say ("{0}: {1} episode(s) to rip from {2}" -f $d.discName, @($d.episodes).Count, $Source)
 
 # ---- enumerate once: title id -> playlist, duration, output name ------------------------------------
-$info = @(& $MakeMkv -r --cache=1 "--minlength=$MinLength" info $Source 2>&1 | ForEach-Object { "$_" })
+# --noscan for a folder (file:) source: without it MakeMKV probes the optical drive through its CdRom
+# arbiter on every call and can hang holding it (2026-09-26). A disc: source needs the scan.
+$noScan = @(if ("$Source" -like 'file:*') { '--noscan' })
+$info = @(& $MakeMkv -r --cache=1 "--minlength=$MinLength" @noScan info $Source 2>&1 | ForEach-Object { "$_" })
 $titles = @{}
 foreach ($line in $info) {
   if ($line -match '^TINFO:(\d+),(\d+),\d+,"(.*)"$') {
@@ -80,7 +83,7 @@ foreach ($e in @($d.episodes)) {
   if (-not $existing.Count) {
     Say ("{0}: ripping title {1} ({2}, {3})" -f $e.episode, $pick.id, $pick.playlist, $pick.duration)
     $log = Join-Path $epDir '_makemkv.log'
-    & $MakeMkv -r --cache=1 "--minlength=$MinLength" mkv $Source $pick.id $epDir *> $log
+    & $MakeMkv -r --cache=1 "--minlength=$MinLength" @noScan mkv $Source $pick.id $epDir *> $log
   }
   # VERIFY BY THE OUTPUT, never by the exit code or a filtered log.
   $out = @(Get-ChildItem -LiteralPath $epDir -Filter '*.mkv' -File -ErrorAction SilentlyContinue)

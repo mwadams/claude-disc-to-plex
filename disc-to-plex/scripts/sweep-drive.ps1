@@ -60,7 +60,9 @@ foreach ($d in $discs) {
     if (@($lines | Where-Object { $_ -match '^TINFO:\d+,9,' }).Count -eq 0) { $lines = $null }
   }
   if (-not $lines) {
-    $o = & $MakeMkv -r --cache=1 --minlength=$MinLength info ('file:' + $d.FullName) 2>&1
+    # --noscan: a folder source never needs the optical drive; without it every call probes F: through
+    # MakeMKV's CdRom arbiter and can hang holding the drive (2026-09-26, rip-titles.ps1).
+    $o = & $MakeMkv -r --cache=1 --minlength=$MinLength --noscan info ('file:' + $d.FullName) 2>&1
     $lines = @($o | ForEach-Object { "$_" })
     Set-Content -LiteralPath $dump -Value $lines -Encoding UTF8
   }
