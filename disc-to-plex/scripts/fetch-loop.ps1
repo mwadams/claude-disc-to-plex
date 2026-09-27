@@ -252,6 +252,13 @@ while ($true) {
   $opticalReserveGB = 0.0
   try {
     $arch = 'C:/Users/matth/Videos/DVD'
+    # A FAILED READ IS NOT A RIP IN PROGRESS. The optical loop leaves a failed disc's partial in place
+    # for inspection with _FAILED.txt beside it; it will never finish, so reserving a disc for it only
+    # parks this loop. 2026-09-27: Akerman Vol1 D4's aborted read (28.34 GB) held the fetch 1-14 GB
+    # short of its floor for hours after the disc was out of the drive. Still reserved while the
+    # optical loop is reading THAT disc again (its status names it in flight) - a re-read may reuse it.
+    $opticalInFlight = ''
+    try { $opticalInFlight = "$((Get-Content -LiteralPath 'D:/video/_optical-status.json' -Raw -ErrorAction Stop | ConvertFrom-Json).inFlight.target)" } catch { }
     if (Test-Path -LiteralPath $arch) {
       $stagedNames = @{}
       foreach ($ln in (Get-Content -LiteralPath 'D:/video/_optical-staged.tsv' -ErrorAction SilentlyContinue)) {
@@ -263,6 +270,8 @@ while ($true) {
         if (Test-Path -LiteralPath (Join-Path $d.FullName '_stage')) { continue }
         $b = (Get-ChildItem -LiteralPath $d.FullName -Recurse -File -ErrorAction SilentlyContinue |
               Measure-Object Length -Sum).Sum
+        if ($d.Name -like '*.partial-*' -and (Test-Path -LiteralPath (Join-Path $d.FullName '_FAILED.txt')) -and
+            -not ($opticalInFlight -and $d.Name.StartsWith(($opticalInFlight -replace '\.partial-.*$', '')))) { continue }
         if ($d.Name -like '*.partial-*') {
           # A RIP STILL RUNNING STILL NEEDS ROOM WHEN IT FINISHES. The first version of this skipped
           # partials, so the room appeared only once the rip completed - by which time this loop had
