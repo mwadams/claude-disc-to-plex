@@ -180,6 +180,24 @@ if (Test-Path -LiteralPath $slotGuard) {
   }
 }
 
+# THE SAME SLOT, CLAIMED BY SOMETHING NOT YET IN THE LIBRARY.
+#
+# The guard above compares against the PUBLISHED library, so it cannot see a rival that is still in
+# flight. 2026-09-27, Doctor Who (1963): the Robot and The Androids of Tara manifests were authored
+# minutes apart, both read "Next free: S00E320" from SEASON00-ALLOCATION.md, only Robot wrote its
+# claim back - and both declared S00E320-E324 under different titles. Every gate passed, both encoded,
+# and publish-work.ps1 held the whole Season 00 folder until the five Androids extras were renumbered
+# by hand. This checks every place a claim can already be written down: the other manifests in _queue
+# (root, running, done) and _pending, the local work folder, and the register itself.
+$claimGuard = 'D:/video/.claude/skills/disc-to-plex/scripts/assert-slot-not-claimed.ps1'
+if (Test-Path -LiteralPath $claimGuard) {
+  & pwsh -NoProfile -File $claimGuard -Manifest $Manifest -QueueRoot $Queue -PendingDir $Pending
+  if ($LASTEXITCODE -ne 0) {
+    Write-Output ("gate REFUSED: {0} - an episode slot it declares is already claimed by another manifest, a local file or the Season 00 register. Not queued." -f (Split-Path $Manifest -Leaf))
+    exit 2
+  }
+}
+
 $audioGuard = 'D:/video/.claude/skills/disc-to-plex/scripts/assert-audio-default-language.ps1'
 if (Test-Path -LiteralPath $audioGuard) {
   & pwsh -NoProfile -File $audioGuard -Manifest $Manifest

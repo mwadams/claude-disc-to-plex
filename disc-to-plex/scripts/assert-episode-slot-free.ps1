@@ -49,26 +49,11 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
-function Get-EpisodeSlots {
-  <# Every SxxExx a filename claims, including both ends of a span like S01E01-E02 or S01E01-E03.
-     Returned uppercase so comparison is case-insensitive by construction. #>
-  param([Parameter(Mandatory)][string]$Name)
-  $slots = @()
-  # ONLY THE FIRST SxxExx IS THE SLOT - it is the one Plex's scanner reads. A later token is part of
-  # the TITLE, and this library names Season 00 extras after the episodes they accompany:
-  # "The Avengers (1961) - S00E95 - Did You Know - Trivia (S05E01-03).mkv". Reading every token
-  # (2026-09-25) refused that row as a second S05E01, "already" held by the four S00E49-52 galleries -
-  # none of which is in slot S05E01 either. A span in the slot token itself (S01E01-E02) is still
-  # expanded below, because it is part of the same first match.
-  foreach ($m in @([regex]::Match($Name, '(?i)S(\d{1,2})E(\d{1,3})(?:\s*-\s*(?:S\d{1,2})?E(\d{1,3}))?') | Where-Object { $_.Success })) {
-    $s = [int]$m.Groups[1].Value
-    $a = [int]$m.Groups[2].Value
-    $b = if ($m.Groups[3].Success) { [int]$m.Groups[3].Value } else { $a }
-    if ($b -lt $a) { $b = $a }
-    for ($e = $a; $e -le $b; $e++) { $slots += ('S{0:D2}E{1:D2}' -f $s, $e) }
-  }
-  return @($slots | Sort-Object -Unique)
-}
+# Get-EpisodeSlots lives in lib-slot-claims.ps1 (moved verbatim 2026-09-27) so that this guard and its
+# sibling assert-slot-not-claimed.ps1 read a slot identically. Verified load: a failed dot-source would
+# leave it undefined, and every row would then quietly claim no slot and pass.
+. (Join-Path $PSScriptRoot 'lib-slot-claims.ps1')
+if (-not (Get-Command Get-EpisodeSlots -ErrorAction SilentlyContinue)) { throw 'lib-slot-claims.ps1 failed to load - refusing to run the slot guard without its parser' }
 
 if ($SelfTest) {
   $fail = 0
