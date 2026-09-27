@@ -82,10 +82,30 @@ SRC_OPTS = []
 # separates 7.
 COMMENTARY_STRONG = re.compile(
     r'\b(we (shot|filmed|re-?shot)|the (director|script|screenplay|studio|sequence|set|scene)|'
-    r'this shot|the (film|movie)|footage|producers?|first take|another take|the edit)\b', re.I)
+    r'this shot|(the|this) (film|movie)|footage|producers?|first take|another take|the edit|'
+    r'(the|a) long takes?|(film |movie )?critics?|the (image|frame)|cinema)\b', re.I)
 # `the crew` was in this list for one run. The World's Fastest Indian extra says it in ordinary
 # narration and was classed as commentary talk - a film about a racing team naturally has a crew,
 # as do war and sea pictures. Anything a subject can plausibly have is not production vocabulary.
+#
+# WIDENED 2026-09-27 for Chantal Akerman's Jeanne Dielman (1975, near-silent film, BFI Vol.1 D3).
+# Its genuine English commentary (proven by transcript in the dispositions) scored ZERO strong hits
+# under the pattern above: "I mean, this film is structured...", "she uses the long take as a
+# tool", "the take goes on for another seven, eight minutes", "the critic who wrote a very famous
+# book", "already been explored in cinema", "force you to think about the image" - all analytical
+# vocabulary a feature soundtrack does not produce about itself, but phrased with "this" (`this
+# film`) and "long take"/"the image"/"critic"/"cinema" rather than anything already in the list.
+# Not hinted, so quiet_programme() (added 2026-09-26 for the same film's own Saute ma ville) never
+# fired, and the commentary was elected primary over the almost-silent French film track.
+#
+# Added: `this (film|movie)` alongside the existing `the (film|movie)`; `(the|a) long takes?` for
+# the film-crit term (bare `take`/`takes` stays WEAK - Farscape S1 D6 above); `critics?` (optionally
+# `film `/`movie `-prefixed); `the (image|frame)`; `cinema`. Measured 2026-09-27 over every
+# `*.tracks.json` on disk (57 files, 94 sampled streams, D:/video/_stage + _recovery + _reviews):
+# exactly ONE verdict changed - this a:1, False -> True. Nothing else flipped, so none of these
+# phrases costs a real programme/dialogue stream its correct classification on the evidence
+# available. `the crew`-style over-generalisation (above) is exactly what conservative, phrase-not-
+# word additions plus a full-corpus rescan are meant to catch before it ships.
 
 # Words a commentary uses freely and a drama can use in passing. Never conclusive alone.
 COMMENTARY_WEAK = re.compile(
