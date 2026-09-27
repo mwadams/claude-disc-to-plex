@@ -146,7 +146,9 @@ function Test-SlotRegisterTitleMatch {
      known-negative pairs (row j's title tested against row k's cell, same show, different item):
        normalised containment only            14 false refusals, 94.4% of different items caught
        containment OR any shared word          0 false refusals, 64.7% caught (galleries leak)
-       this function                           see assert-slot-not-claimed.tests.ps1 for the figures
+       this function                           1 false refusal (The Mind Robber S00E216 - the register
+                                               calls it 'Unidentified Off-Air Recording'), 94.7% caught
+                                               (163 pairs with identical titles excluded - no title test can split them)
      Rule: the numbers must not disagree (Deleted Scene 06 is not Deleted Scene 02), then EITHER the
      normalised candidate sits inside the cell / the cell's head inside the candidate, OR at least
      a MAJORITY of the candidate's DISTINCTIVE words (not "gallery", "interview", nor a word of the show's own name) appear in the cell -
