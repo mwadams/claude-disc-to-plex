@@ -39,6 +39,7 @@ param(
   [string]$Show = '',
   [int]$Season = 1,
   [string]$VideoRoot = 'D:/video',
+  [string]$NasRoot = '\\NASTEAMV\Multimedia',
   [int]$Section = 5,
   [switch]$SelfTest,
   [switch]$Quiet
@@ -166,7 +167,15 @@ function Read-DispositionClaims {
     # in the file. A false alarm of this shape is expensive twice over: it accuses a correct disc, and
     # it trains the reader to discount the one real mis-slotting this audit exists to catch.
     # `\s` subsumes " - " (which ends in a space), so this widening keeps every earlier shape.
-    if ($l -match '^(t\d+)\|(episode|extra|feature)\|(?:[^|]*?\s)?(S\d{1,2}E\d{1,3}(?:\s*-\s*(?:S\d{1,2})?E\d{1,3})+|S\d{1,2}E\d{1,3})(?:(?:\s+-)?\s+([^|]+))?\|') {
+    # A SIXTH SHAPE, 2026-09-27: `keep` AS THE VERDICT WORD. The Time Warrior.dispositions.txt writes
+    # all 14 of its rows `t00|keep|Doctor Who S11E01 "The Time Warrior" Part One|speech:...` - every
+    # one names a slot and a title, byte-proven, and assert-accounted.ps1 (the REAL accounting gate)
+    # already tolerates 'keep' as a kind word (it groups by whatever it finds). Requiring the fixed
+    # episode|extra|feature enum here read all 14 rows - and both dv3/dv6 rows - as making no claim at
+    # all, which is how a correctly-identified, byte-proven Doctor Who serial reported as "NO IDENTITY
+    # EVIDENCE - 4 slot(s) published with no disposition row claiming them". Same defect class as the
+    # five shapes above it: the DATA was right, the fixed vocabulary here was too narrow for it.
+    if ($l -match '^(t\d+)\|(episode|extra|feature|keep)\|(?:[^|]*?\s)?(S\d{1,2}E\d{1,3}(?:\s*-\s*(?:S\d{1,2})?E\d{1,3})+|S\d{1,2}E\d{1,3})(?:(?:\s+-)?\s+([^|]+))?\|') {
       $row = $Matches[1]; $span = $Matches[3]; $title = (Get-ClaimedTitle $Matches[4])
       $season = $(if ($span -match '^S(\d{1,2})') { $Matches[1] } else { '' })
       foreach ($m in [regex]::Matches($span, '(?i)(?:S(\d{1,2}))?E(\d{1,3})')) {
@@ -196,6 +205,10 @@ if ($SelfTest) {
   T 'claims: a feature row naming a slot is a claim' ($ft.Count -eq 1 -and $ft[0].Slot -eq 'S01E01')
   T 'claims: a feature row with no slot is not'      (-not ($ft | Where-Object { $_.Title -match 'Brother' }))
   T 'claims: the feature row cuts its evidence prose' ($ft[0].Title -eq 'Nine Dozen Heroes and One Wicked Man')
+  # NEW 2026-09-27: 'keep' AS A VERDICT WORD - see Read-DispositionClaims's comment at the regex.
+  $kp = @(Read-DispositionClaims @('t00|keep|Doctor Who S11E01 "The Time Warrior" Part One|speech: x'))
+  T 'claims: a keep row naming a slot is a claim'    ($kp.Count -eq 1 -and $kp[0].Slot -eq 'S11E01')
+  T 'claims: the keep row title is read'             ($kp[0].Title -eq '"The Time Warrior" Part One')
   $sp2 = @(Read-DispositionClaims @('t02|episode|S01E01-S01E02 Pilot|speech:x'))
   T 'claims: a spelled-out span is read'         ($sp2.Count -eq 2 -and $sp2[1].Slot -eq 'S01E02')
   T 'claims: a lone slot still yields ONE claim' (@(Read-DispositionClaims @('t01|episode|S03E02 The Priory School|speech:x')).Count -eq 1)
@@ -391,7 +404,26 @@ foreach ($slot in ($published.Keys | Sort-Object)) {
   }
   if (-not $plexReachable) { continue }
   $canon = "$($plexTitles[$slot])"
-  if (-not $canon) { $noPlexTitle += [pscustomobject]@{ Slot = $slot; Claim = $claim.Title }; continue }
+  if (-not $canon) {
+    # WHY does Plex have no title? Two different situations read identically here unless told apart,
+    # and the wrong advice for one is noise for the other (coordinator follow-up, 2026-09-27, Doctor
+    # Who S11E15-E20 "The Monster of Peladon"): the manifests had JUST been gated (15:18, the same run
+    # this fired) and neither a local .mkv nor a NAS file existed yet for any of the six slots - Plex
+    # cannot have a title for something that has not been produced, and "check the show's Plex match"
+    # sent the reader to Plex for nothing. Ask the disk which case this is, exactly as
+    # audit-publish-freshness.ps1 already does for "is this file actually out yet":
+    #   - not produced at all (no local, no NAS file)   -> expected, not a Plex-match question.
+    #   - the file EXISTS (local or NAS) but Plex still has no title -> now it is worth a look, either
+    #     Plex's async scan has not caught up (Plex auto-indexes new NAS files asynchronously) or the
+    #     show/season match is genuinely off.
+    $seasonDir = Join-Path (Join-Path (Join-Path $VideoRoot 'Television Shows') $Show) ('Season {0:00}' -f $Season)
+    $localFile = Join-Path $seasonDir $sources[0].Leaf
+    $nasSeasonDir = Join-Path (Join-Path (Join-Path $NasRoot 'Television Shows') $Show) ('Season {0:00}' -f $Season)
+    $nasFile = Join-Path $nasSeasonDir $sources[0].Leaf
+    $produced = (Test-Path -LiteralPath $localFile) -or (Test-Path -LiteralPath $nasFile)
+    $noPlexTitle += [pscustomobject]@{ Slot = $slot; Claim = $claim.Title; Produced = $produced }
+    continue
+  }
   # A ROW THAT NAMES NO TITLE STILL BACKS ITS SLOT. There is simply nothing to compare it against,
   # and an empty string must never be run through the swap test below - it matches nothing, so it
   # would be reported as "named differently" on every untitled show.
@@ -418,9 +450,18 @@ Say ("SEASON IDENTITY AUDIT - {0}, Season {1:00}: {2} published slot(s) from {3}
 if ($plexReachable) { Say ("   {0} slot(s) agree with Plex's canonical title" -f $agreed) }
 
 if ($noPlexTitle.Count) {
-  Say ''
-  Say ("PLEX HAS NO TITLE for {0} slot(s) - check the show's Plex match, not the files:" -f $noPlexTitle.Count)
-  foreach ($n in $noPlexTitle) { Say ("   {0}  disc says '{1}'" -f $n.Slot, $n.Claim) }
+  $notProduced = @($noPlexTitle | Where-Object { -not $_.Produced })
+  $producedNoTitle = @($noPlexTitle | Where-Object { $_.Produced })
+  if ($notProduced.Count) {
+    Say ''
+    Say ("not yet produced - {0} slot(s) have a manifest but no file locally or on the NAS, so Plex cannot have a title for them yet (expected, not a Plex-match question):" -f $notProduced.Count)
+    foreach ($n in $notProduced) { Say ("   {0}  disc says '{1}'" -f $n.Slot, $n.Claim) }
+  }
+  if ($producedNoTitle.Count) {
+    Say ''
+    Say ("PLEX HAS NO TITLE for {0} PRODUCED slot(s) - the file exists but Plex has not matched it; check the show's Plex match, or it may just not be indexed yet:" -f $producedNoTitle.Count)
+    foreach ($n in $producedNoTitle) { Say ("   {0}  disc says '{1}'" -f $n.Slot, $n.Claim) }
+  }
 }
 
 # COVERAGE IS INFORMATION, NOT A FAULT - partial sets are normal in this library.

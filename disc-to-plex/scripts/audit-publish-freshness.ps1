@@ -49,6 +49,12 @@ param(
   # $HoldFreshMin (the loop is not re-evaluating - it may be dead) all still count as waiting.
   [string]$HoldsDir   = '',
   [int]$HoldFreshMin  = 30,
+  # A FILE PAST $MaxWaitMin IS NOT NECESSARILY ABANDONED - see Get-PlanHold's $OcrProgress note
+  # below. How recently something must have landed, ANYWHERE under the held work's own folder, to
+  # count as "OCR is still moving on this backlog". 2026-09-27: Blake's 7 S04E11 sat past the cap
+  # while OCR was healthily working FIFO through e07..e10 immediately ahead of it; this window is
+  # what tells that apart from OCR having gone quiet.
+  [int]$OcrProgressWindowMin = 45,
   [switch]$SelfTest,
   [switch]$Quiet
 )
@@ -113,7 +119,31 @@ function Get-PlanHold {
         [scriptblock]$AgeOf = $null,
         # Seam for the self-test: has this item's OCR sidecar arrived since the record was written?
         [scriptblock]$SidecarExists = $null,
-        [string]$NasRoot = '')
+        [string]$NasRoot = '',
+        # A FILE PAST $BlockedCapMin IS NOT NECESSARILY ABANDONED (2026-09-27). Blake's 7 S04E11 sat
+        # past the cap while the OCR track was healthily working FIFO through e07..e10 immediately
+        # ahead of it (each "1 converted, 0 skipped, 0 failed") - this reported it STUCK solely from
+        # its own file age, with no way to tell "OCR has gone quiet" from "the backlog just has not
+        # reached me yet". Age alone cannot distinguish those, so two more signals decide it:
+        #   $OcrMakingProgress - is OCR, the ONE SHARED FIFO TRACK, producing sidecars ANYWHERE it is
+        #                   currently owed one - not just in THIS work's own folder? Colditz S00E01
+        #                   sat past the cap while OCR was busy on a Blake's 7 burst: no sidecar had
+        #                   landed in COLDITZ's folder, so a work-scoped check called it stuck too -
+        #                   the same false alarm one folder too narrow. The real caller computes this
+        #                   ONCE per run, across every work the plan gate currently lists as awaiting
+        #                   OCR (Test-OcrMakingProgress, below), and passes the single answer in here -
+        #                   it is a fact about the TRACK, not about any one work, so it is a plain bool,
+        #                   not a per-workRoot seam.
+        #   $OcrHasFailed - has OCR already RECORDED a real, permanent verdict for this exact file
+        #                   (Get-BitmapSubsVerdict = 'blocked:*', a defect a retry cannot fix)? That is
+        #                   always a stall, moving backlog or not - OCR already gave up on it, it is
+        #                   not merely waiting its turn.
+        # $OcrHasFailed is a seam, like $AgeOf/$SidecarExists, so the self-test can assert its branch
+        # without a real verdict cache. Unmeasured, it returns $false; $OcrMakingProgress defaults to
+        # $false too - the function still fails TOWARD REPORTING, its own rule.
+        [bool]$OcrMakingProgress = $false,
+        [scriptblock]$OcrHasFailed = $null,
+        [string]$Ffprobe = '')
   $parts = @($RelPath -split '[\\/]')
   if ($parts.Count -lt 2) { return $null }
   $work = $parts[0]
@@ -170,13 +200,31 @@ function Get-PlanHold {
       return $false
     }
   }
+  if (-not $OcrHasFailed) {
+    $OcrHasFailed = {
+      param($item)
+      if (-not $Ffprobe) { return $false }   # cannot ask the verdict store without ffprobe - do not additionally escalate on this axis
+      $p = Join-Path (Join-Path "$($rec.workRoot)" "$($item.dir)") "$($item.leaf)"
+      if (-not (Test-Path -LiteralPath $p)) { return $false }
+      $v = try { Get-BitmapSubsVerdict -Path $p -Ffprobe $Ffprobe } catch { $null }
+      "$v" -like 'blocked:*'
+    }.GetNewClosure()
+  }
   $encoding = @($items | Where-Object { "$($_.reason)" -eq 'not encoded' -and @('queued', 'running') -contains "$($_.manifestState)" })
   $ocrAll   = @($items | Where-Object { "$($_.reason)" -eq 'awaiting OCR' })
   $ocr      = @($ocrAll | Where-Object { -not (& $SidecarExists $_) })   # still owed; the rest have landed
   $resolved = $ocrAll.Count - $ocr.Count
   $other    = @($items | Where-Object { $encoding -notcontains $_ -and $ocrAll -notcontains $_ })
+  # $OcrMakingProgress IS A FACT ABOUT THE TRACK, NOT ABOUT THIS WORK - see the parameter note above.
+  $ocrMoving = $OcrMakingProgress
   $blocked  = @()
-  foreach ($o in $ocr) { if ((& $AgeOf $o) -gt $BlockedCapMin) { $blocked += $o } }
+  foreach ($o in $ocr) {
+    if ((& $AgeOf $o) -le $BlockedCapMin) { continue }
+    if (& $OcrHasFailed $o) { $blocked += $o; continue }   # a real, recorded defect - always a stall
+    if (-not $ocrMoving) { $blocked += $o }                 # OCR itself has gone quiet - the wait cannot be trusted to clear on its own
+    # else: past the cap, but OCR is alive and still landing sidecars in this work - queued behind a
+    # real backlog, not stuck. Age alone used to be the whole test; it is not any more.
+  }
   $where   = $(if ($scopeIsWork) { 'this work' } else { "'$dir'" })
   $suppress = (-not $other.Count) -and (-not $blocked.Count)
   $parts2 = @()
@@ -187,10 +235,79 @@ function Get-PlanHold {
   $reason = ("HELD by the plan gate - {0} is incomplete: {1}." -f $where, ($parts2 -join ', '))
   if ($blocked.Count) {
     $reason += (" STUCK: {0} has been awaiting an OCR sidecar for over {1} min - that one file is holding the rest." -f $blocked[0].leaf, $BlockedCapMin)
+  } elseif ($ocr.Count -gt 0 -and $ocrMoving) {
+    $reason += ' OCR is actively producing sidecars elsewhere in its queue; this is a queue position, not a stall.'
   } elseif ($suppress) {
     $reason += ' Not a stall; it ships when the folder is complete.'
   }
   [pscustomobject]@{ Suppress = $suppress; Reason = $reason }
+}
+
+function Test-OcrMakingProgress {
+  <# IS OCR - THE ONE SHARED FIFO TRACK - MOVING, ANYWHERE IT IS CURRENTLY OWED A SIDECAR?
+     Get-PlanHold used to ask this per WORK, scoped to that work's own folder - and Colditz S00E01
+     (2026-09-27) sat past the cap while OCR was busy on a Blake's 7 burst: no sidecar had landed in
+     COLDITZ's own folder in the window, so the work-scoped check called it stuck too, the same false
+     alarm one folder too narrow. The track works library-wide in file order, so "is it moving" is a
+     fact about the TRACK, answerable only by looking at every work it could plausibly be working on
+     right now - the union of the plan-held works currently awaiting OCR, which this script already
+     reads into $Holds.
+
+     ONE SCAN PER WORK, not a library-wide walk: the candidate set is exactly the (fresh, held)
+     records in $Holds that have an 'awaiting OCR' item, which is a handful of works, never the whole
+     library - a library-wide recursive *.eng.srt scan here would repeat the exact O(units x files)
+     mistake already fixed once in _stallwatch.ps1's per-unit loop. Stops at the first work with a
+     recent sidecar, so a healthy queue costs at most one scan.
+
+     Liveness (the mutex) is necessary but not sufficient on its own - "a track can hold its mutex and
+     produce nothing for hours" - so this requires both the mutex AND a landed sidecar. #>
+  param(
+    [Parameter(Mandatory)][AllowNull()][hashtable]$Holds,
+    [Parameter(Mandatory)][datetime]$Now,
+    [int]$FreshMin = 30,
+    [int]$WindowMin = 45,
+    # Seam for the self-test: is the OCR track alive right now? Real runs probe the mutex.
+    [scriptblock]$OcrAlive = $null,
+    # Seam for the self-test: the newest .eng.srt LastWriteTime under a work's folder, or $null.
+    [scriptblock]$NewestSidecarIn = $null
+  )
+  if (-not $OcrAlive) {
+    $OcrAlive = {
+      $alive = $false
+      try { $h = $null; $alive = [System.Threading.Mutex]::TryOpenExisting('Global\video-ocr-loop', [ref]$h) } catch { $alive = $false }
+      if ($h) { $h.Dispose() }
+      $alive
+    }
+  }
+  if (-not (& $OcrAlive)) { return $false }   # no track, no progress - liveness alone is still not enough, but its absence certainly is
+  if (-not $NewestSidecarIn) {
+    $NewestSidecarIn = {
+      param($workRoot)
+      if (-not $workRoot -or -not (Test-Path -LiteralPath $workRoot)) { return $null }
+      $newest = Get-ChildItem -LiteralPath $workRoot -Recurse -File -Filter *.eng.srt -EA SilentlyContinue |
+                Sort-Object LastWriteTime -Descending | Select-Object -First 1
+      if ($newest) { return $newest.LastWriteTime } else { return $null }
+    }
+  }
+  if (-not $Holds) { return $false }
+  # THE CANDIDATE SET: every FRESH, HELD record that lists at least one 'awaiting OCR' item - the
+  # exact same freshness test Get-PlanHold applies to a single record, applied here to all of them.
+  $workRoots = @()
+  foreach ($rec in $Holds.Values) {
+    if (-not $rec -or -not $rec.held) { continue }
+    $when = [datetime]::MinValue
+    if ($rec.when -is [datetime]) { $when = [datetime]$rec.when }
+    elseif (-not [datetime]::TryParse("$($rec.when)", [System.Globalization.CultureInfo]::InvariantCulture,
+                                      [System.Globalization.DateTimeStyles]::None, [ref]$when)) { continue }
+    if (($Now - $when).TotalMinutes -gt $FreshMin) { continue }
+    $hasOcr = @(@($rec.items) | Where-Object { "$($_.reason)" -eq 'awaiting OCR' }).Count -gt 0
+    if ($hasOcr -and "$($rec.workRoot)") { $workRoots += "$($rec.workRoot)" }
+  }
+  foreach ($wr in @($workRoots | Sort-Object -Unique)) {
+    $t = & $NewestSidecarIn $wr
+    if ($t -and (($Now - $t).TotalMinutes -le $WindowMin)) { return $true }
+  }
+  return $false
 }
 
 if ($SelfTest) {
@@ -227,6 +344,56 @@ if ($SelfTest) {
   T 'an OCR item whose sidecar landed is suppressed' ((& $H (& $mk $withOcr) $old $hasSidecar).Suppress)
   T 'and the reason says the gate has not re-run' ((& $H (& $mk $withOcr) $old $hasSidecar).Reason -match 'sidecar has since landed')
   T 'a sidecar that has NOT landed still blocks'  (-not (& $H (& $mk $withOcr) $old $noSidecar).Suppress)
+  # NEW 2026-09-27: A FILE WAITING ITS TURN IN A MOVING OCR BACKLOG IS NOT STUCK. Blake's 7 S04E11
+  # sat past the cap while OCR was healthily working FIFO through e07..e10 immediately ahead of it
+  # (each "1 converted, 0 skipped, 0 failed") - this reported STUCK from the file's own age alone,
+  # with no way to tell "OCR has gone quiet" from "the backlog just has not reached me yet".
+  $noFail    = { param($item) $false }
+  $hasFail   = { param($item) $true }
+  $r1 = Get-PlanHold -RelPath $rel -Holds (& $mk $withOcr) -Now $now -BlockedCapMin 45 -AgeOf $old -SidecarExists $noSidecar -OcrMakingProgress $true -OcrHasFailed $noFail
+  T 'OCR making progress elsewhere -> past-cap item is NOT stuck' ($r1.Suppress)
+  T 'and the reason says OCR is actively producing, not STUCK'   ($r1.Reason -match 'actively producing')
+  $r2 = Get-PlanHold -RelPath $rel -Holds (& $mk $withOcr) -Now $now -BlockedCapMin 45 -AgeOf $old -SidecarExists $noSidecar -OcrMakingProgress $false -OcrHasFailed $noFail
+  T 'OCR gone quiet (not moving) -> past-cap item IS stuck, as before' (-not $r2.Suppress)
+  $r3 = Get-PlanHold -RelPath $rel -Holds (& $mk $withOcr) -Now $now -BlockedCapMin 45 -AgeOf $old -SidecarExists $noSidecar -OcrMakingProgress $true -OcrHasFailed $hasFail
+  T 'a REAL recorded OCR failure on this file is ALWAYS a stall, even while OCR moves elsewhere' (-not $r3.Suppress)
+  T 'and it is named STUCK for that reason' ($r3.Reason -match 'STUCK')
+
+  # NEW 2026-09-27 (coordinator follow-up): PROGRESS MUST BE THE UNION ACROSS EVERY WORK OCR CURRENTLY
+  # OWES A SIDECAR, NOT ONE WORK'S OWN FOLDER. Colditz S00E01 waited 82 min while OCR was healthily
+  # converting Blake's 7 S04E07-E10 - no sidecar landed in Colditz's OWN folder in that window, so a
+  # work-scoped check called it stuck anyway. Test-OcrMakingProgress is the fix: it looks across every
+  # held work with an 'awaiting OCR' item, not just the one a caller happens to be asking about.
+  $mkHolds = {
+    param($recs)   # recs: @{ work = @{ workRoot; when; held; items } }
+    $h = @{}
+    foreach ($k in $recs.Keys) { $h[$k] = [pscustomobject]$recs[$k] }
+    $h
+  }
+  $awaitingOcrItem = @([pscustomobject]@{ dir = ''; leaf = 'x.mkv'; reason = 'awaiting OCR'; manifest = ''; manifestState = '' })
+  $twoWorkHolds = & $mkHolds @{
+    'Blakes 7'  = @{ workRoot = 'C:\fake\Blakes 7';  when = '2026-09-18T08:55:00'; held = $true; items = $awaitingOcrItem }
+    'Colditz'   = @{ workRoot = 'C:\fake\Colditz';   when = '2026-09-18T08:55:00'; held = $true; items = $awaitingOcrItem }
+  }
+  $alive = { $true }; $dead = { $false }
+  $sidecarOnlyInBlakes7 = { param($workRoot) if ($workRoot -eq 'C:\fake\Blakes 7') { [datetime]'2026-09-18T08:58:00' } else { $null } }
+  $sidecarNowhere       = { param($workRoot) $null }
+  T 'cross-work: a sidecar landing in WORK B counts as progress for WORK A' `
+    (Test-OcrMakingProgress -Holds $twoWorkHolds -Now $now -FreshMin 30 -WindowMin 45 -OcrAlive $alive -NewestSidecarIn $sidecarOnlyInBlakes7)
+  T 'cross-work: no sidecar anywhere in the window, mutex held -> NOT moving' `
+    (-not (Test-OcrMakingProgress -Holds $twoWorkHolds -Now $now -FreshMin 30 -WindowMin 45 -OcrAlive $alive -NewestSidecarIn $sidecarNowhere))
+  T 'cross-work: mutex down -> NOT moving even with a fresh sidecar somewhere' `
+    (-not (Test-OcrMakingProgress -Holds $twoWorkHolds -Now $now -FreshMin 30 -WindowMin 45 -OcrAlive $dead -NewestSidecarIn $sidecarOnlyInBlakes7))
+  T 'cross-work: no held records at all -> NOT moving' `
+    (-not (Test-OcrMakingProgress -Holds @{} -Now $now -FreshMin 30 -WindowMin 45 -OcrAlive $alive -NewestSidecarIn $sidecarOnlyInBlakes7))
+  # AND WIRE IT THROUGH Get-PlanHold END TO END: Colditz's own item is past the cap, its own folder
+  # has nothing, and the sidecar that proves the track is moving landed only in Blake's 7's.
+  $colditzRel = 'Colditz\Season 02\Colditz - S00E01.mkv'
+  $colditzHold = @{ 'Colditz' = [pscustomobject]@{ work = 'Colditz'; workRoot = 'C:\fake\Colditz'; when = '2026-09-18T08:55:00'
+                                                    held = $true; scope = 'work'; heldDirs = @(''); items = $awaitingOcrItem } }
+  $crossWorkMoving = Test-OcrMakingProgress -Holds $twoWorkHolds -Now $now -FreshMin 30 -WindowMin 45 -OcrAlive $alive -NewestSidecarIn $sidecarOnlyInBlakes7
+  $r4 = Get-PlanHold -RelPath $colditzRel -Holds $colditzHold -Now $now -BlockedCapMin 45 -AgeOf $old -SidecarExists $noSidecar -OcrMakingProgress $crossWorkMoving -OcrHasFailed $noFail
+  T 'end to end: Colditz is NOT stuck on a Blake''s 7 burst it has no folder evidence of' ($r4.Suppress)
   $undeclared = @([pscustomobject]@{ dir = 'Season 06'; leaf = 'e.mkv'; reason = 'not encoded'; manifest = ''; manifestState = 'undeclared' })
   T 'an undeclared output is never suppressed' (-not (& $H (& $mk $undeclared)).Suppress)
   T 'a stale record gives no hold at all'      ($null -eq (& $H (& $mk $inFlight '2026-09-18T07:00:00')))
@@ -338,8 +505,18 @@ if ($waiting.Count -eq 0) {
 # WHICH OF THESE IS ACTUALLY STALLING? A file the plan gate is deliberately holding, whose missing
 # siblings are still queued or encoding, is waiting correctly - it is counted and NAMED, but it
 # does not drive the clock. Everything else does, exactly as before.
+# COMPUTED ONCE FOR THE WHOLE RUN, NOT PER WAITING FILE OR PER WORK. Whether OCR is moving is a fact
+# about the ONE SHARED TRACK, answered by looking across every work it could be working on right now
+# (Test-OcrMakingProgress, above) - not a per-work question, so one answer applies to every waiting
+# file this run. Colditz S00E01 (2026-09-27) sat past the cap with nothing in its own folder while OCR
+# was busy on a Blake's 7 burst; a per-work check found nothing THERE and called it stuck. This also
+# keeps the one-scan-per-work property the old per-work memo had: Test-OcrMakingProgress stops at the
+# first work with a recent sidecar, so a healthy queue costs at most one scan, never a library walk.
+$ocrMakingProgress = Test-OcrMakingProgress -Holds $holds -Now $now -FreshMin $HoldFreshMin -WindowMin $OcrProgressWindowMin
+
 foreach ($w in $waiting) {
-  $hold = Get-PlanHold -RelPath $w.File -Holds $holds -Now $now -FreshMin $HoldFreshMin -BlockedCapMin $MaxWaitMin -NasRoot $NasRoot
+  $hold = Get-PlanHold -RelPath $w.File -Holds $holds -Now $now -FreshMin $HoldFreshMin -BlockedCapMin $MaxWaitMin -NasRoot $NasRoot `
+            -OcrMakingProgress $ocrMakingProgress -Ffprobe $ffprobe
   $w | Add-Member -NotePropertyName Held -NotePropertyValue ([bool]($hold -and $hold.Suppress)) -Force
   # The REASON is taken whenever the gate has one, suppressed or not: "ready - waiting on the
   # publish loop" is false about a file the loop is deliberately holding, and it sent the reader to
