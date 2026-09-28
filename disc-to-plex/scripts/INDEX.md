@@ -1,8 +1,8 @@
 # Script index - GENERATED, do not edit
 
-Generated 2026-09-28 04:57 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
+Generated 2026-09-28 05:34 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
 
-**175 scripts under `scripts/`, 63 loop scripts under `D:/video/`. 2 with NO usable header, 71 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
+**174 scripts under `scripts/`, 63 loop scripts under `D:/video/`. 2 with NO usable header, 70 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
 
 Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library` = dot-source, defines functions only; `tests` = a test suite, exit 0 = all passed.
 
@@ -177,7 +177,6 @@ Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library
 | `sweep-superseded-quarantine.ps1` | command | Report - and with -Apply, remove - quarantine artefacts (`.wrong-length`, `.seam-gap`) whose replacement has since encoded correctly. Local `D:` only, and only where the replacement is PROVEN good. | when: transcode.ps1 moves a bad output aside rather than deleting it, which is right: the artefact is the evidence, and more than once it has been the thing that settled what actually went wrong. | `pwsh -NoProfile -File sweep-superseded-quarantine.ps1` |
 | `sweep-temp.ps1` | command | Sweep dead working files out of D:\temp. Age-gated, scoped to directories this project creates, and deliberately blind to everything else living there. | when: D:\temp reached 62.4 GB on 2026-09-06 while D: was under its 120 GB fetch floor and the optical lane could not hand two finished discs across. None of it was needed; all of it was ours. | `pwsh -NoProfile -File sweep-temp.ps1 -WhatIf` |
 | `sweep-temp.tests.ps1` | tests | Tests for sweep-temp.ps1. Run: pwsh -NoProfile -File sweep-temp.tests.ps1 (exit 0 = all passed) | NO TRIGGER IN HEADER | - |
-| `transcode.prefix-check.ps1` | command | Transcode.ps1 — encode a manifest of disc titles to Plex-ready MKVs (H.264 NVENC, CQ20). Manifest-driven so it covers episodes, movies, and extras with one code path. | NO TRIGGER IN HEADER | `pwsh -File transcode.ps1 -Manifest items.json [-ToolsDir "D:\video\.transcode-tools"] [-LogDir .]` |
 | `transcode.ps1` | command | Encode a manifest of disc titles to Plex-ready MKVs (H.264 NVENC, CQ20). Manifest-driven so it covers episodes, movies, and extras with one code path. | NO TRIGGER IN HEADER | `pwsh -File transcode.ps1 -Manifest items.json [-ToolsDir "D:\video\.transcode-tools"] [-LogDir .]` |
 | `transcribe-subtitles.py` | python | Generate an English subtitle sidecar for ONE media file from its audio. | NO TRIGGER IN HEADER | - |
 | `transcribe-wav.py` | python | Transcribe one 16 kHz mono WAV to plain text. Used by catalogue-disc.ps1 / catalogue-dvd.ps1. | NO TRIGGER IN HEADER | - |

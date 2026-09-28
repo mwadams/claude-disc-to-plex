@@ -539,6 +539,38 @@ consistent*, so no cross-check could call it broken — the fix is to refuse to 
 a second of video rather than to print `OK`. Same family as the "internal consistency is not
 evidence of completeness" principle above.
 
+#### A "SEAM GAP" can be at no seam: the carve's AUDIO PRE-ROLL (fixed 2026-09-28)
+
+The CFR check counts empty timeline ANYWHERE, and the commonest place is **the start**. The Invisible
+Enemy's CGI angle, Parts Two and Three, failed `+6` (37,901 / 37,907 and 34,976 / 34,982) while the
+retimer's 24 cells joined exactly and every output video PTS stepped by exactly 40 ms. The output's
+video began at 0.200 s; its audio at 0. **Look at the first packet of each stream before any seam.**
+
+| carve | VOBU_S_PTM (first NAV) | first video PTS | first audio PTS | result |
+|---|---|---|---|---|
+| PGC 2 / PGC 5 (Parts One/Four) | 0.287267 | 0.287267 | 0.287267 | passed |
+| PGC 3 (Part Two) | 0.348689 | 0.348689 | 0.156689 | +6 |
+| PGC 4 (Part Three) | 0.284711 | 0.284711 | 0.092711 | +6 |
+
+The disc authors audio up to a VOBU **ahead of the title's presentation start** (VOBU_S_PTM = the first
+I-frame's PTS). A player starts its clock at VOBU_S_PTM and never plays it; ffmpeg's `dvdvideo`
+demuxer discards it, which is why the same disc's angle-1 episodes start audio and video together.
+A carve goes through the plain `mpegps` demuxer, which keeps it: 0.192 s of sound over no picture =
++5 frames, plus the +1 every one of these AAC outputs shows (the encoder's −0.021 s priming; the two
+passing parts measure +1 too, inside the tolerance of 2).
+
+**Fixed in `transcode.ps1` via `lib-carve-preroll.ps1`:** every `.vob`/`vobSectors` item measures the
+lead of the earliest KEPT audio over the first picture and, when it is between one frame and one VOBU
+(1 s), trims it with an output-side `-ss` placed 1 ms short of the picture. It cuts no video, so the
+length guards are not adjusted (unlike `startSeconds`). Proof on the re-encode: packets 37,901 / CFR
+37,902 and 34,976 / 34,977 (the +1 baseline), and a:1 cross-correlates against the angle-1 `dvdvideo`
+episode at **lag 0.0 ms, r = 1.00** — the trim reproduces the demuxer's presentation start exactly.
+
+⚠ Measure the first picture from the first **keyframe packet's PTS**, not `stream=start_time`: an
+elementary-stream mux leaves the I and P frames unstamped, `start_time` then reports the first
+stamped B-frame 40 ms late, and trimming to it silently cut the opening picture (249 of 250 — only an
+exact packet count caught it). No timestamped keyframe first = unmeasurable = no trim.
+
 #### An angle carve is NOT a `vobSectors` item — and used to bypass every gate
 
 `dvd-angle-cells.py` selects one angle's VOBUs out of an interleaved block, which is **not a

@@ -103,8 +103,9 @@ COMMENTARY_STRONG = re.compile(
 # fired, and the commentary was elected primary over the almost-silent French film track.
 #
 # Added: `this (film|movie)` alongside the existing `the (film|movie)`; `(the|a) long takes?` for
-# the film-crit term (bare `take`/`takes` stays WEAK - Farscape S1 D6 above); `critics?` (optionally
-# `film `/`movie `-prefixed); `the (image|frame)`; `cinema`. Measured 2026-09-27 over every
+# the film-crit term (bare `take`/`takes` stays WEAK - Farscape S1 D6 above); `(film|movie) critics?`.
+# (Bare `critics?`, `the (image|frame)` and `cinema` were in the first cut and REMOVED the same day -
+# see the note under the pattern: ordinary dialogue says them.) Measured 2026-09-27 over every
 # `*.tracks.json` on disk (57 files, 94 sampled streams, D:/video/_stage + _recovery + _reviews):
 # exactly ONE verdict changed - this a:1, False -> True. Nothing else flipped, so none of these
 # phrases costs a real programme/dialogue stream its correct classification on the evidence

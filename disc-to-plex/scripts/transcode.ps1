@@ -101,6 +101,10 @@
                                (The Silurians D2 S00E241, 2026-09-24). Set it to the MEASURED first
                                video pts. expectSeconds/expectFrames stay the SOURCE's figures -
                                the length guards subtract the trim themselves.
+                               NOT needed for AUDIO PRE-ROLL on a carve (audio authored ahead of
+                               the first picture, which is itself decodable): that is measured and
+                               trimmed automatically for every .vob/vobSectors item, cutting no
+                               video - see lib-carve-preroll.ps1 (The Invisible Enemy, 2026-09-28).
     subTrack (int|str, opt.)   Which source subtitle to keep. Either a 0-based ordinal, or a
                                LANGUAGE TAG such as "eng" — prefer the tag. Disc subtitle order is
                                arbitrary and often merely alphabetical (dan,eng,fin,nor,swe puts
