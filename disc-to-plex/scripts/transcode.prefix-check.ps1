@@ -973,7 +973,7 @@ foreach($it in $items){
   # here and trimmed with the same output-side -ss as startSeconds - but it cuts NO video, so the
   # length guards are not adjusted for it. An explicit startSeconds wins (it trims further).
   $prerollTrim = 0.0
-  if($nk -gt 0 -and -not (Has $it 'startSeconds') -and
+  if($false -and $nk -gt 0 -and -not (Has $it 'startSeconds') -and
      ((Has $it '_cutFile') -or ("$($it.src)" -like '*.vob'))){
     $pr = Measure-CarvePreroll -Ffprobe $fp -InSpec $inspec -AudioOrdinals $keep
     $ci = [Globalization.CultureInfo]::InvariantCulture
