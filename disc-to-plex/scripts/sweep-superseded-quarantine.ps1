@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
-  Report - and with -Apply, remove - quarantine artefacts (`.wrong-length`, `.seam-gap`) whose
+  Report - and with -Apply, remove - quarantine artefacts (`.wrong-length`, `.seam-gap`,
+  `.no-palette` - the last also needs the replacement's dvd_subtitle streams to carry a palette) whose
   replacement has since encoded correctly. Local `D:` only, and only where the replacement is
   PROVEN good.
 
@@ -46,7 +47,7 @@ param(
   # beside the output it was building, which is always under D:.
   [string[]]$Root = @('D:/video/Movies', 'D:/video/Television Shows'),
   [string]$Queue = 'D:/video/_queue',
-  [string[]]$Suffix = @('.wrong-length', '.seam-gap'),
+  [string[]]$Suffix = @('.wrong-length', '.seam-gap', '.no-palette'),
   # How long the replacement must have been untouched before it counts as finished.
   [int]$StableMinutes = 5,
   [switch]$Apply
@@ -54,6 +55,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/lib-length-tolerance.ps1"
+. "$PSScriptRoot/lib-vobsub-palette.ps1"
 
 $toolPaths = 'D:/video/.transcode-tools/tool-paths.json'
 $ffprobe = $null
@@ -139,6 +141,11 @@ foreach ($a in $arts) {
           $why += ('replacement is {0:N2}s against an expected {1:N2}s ({2:+0.00;-0.00}) - it is not good either' -f $gd, [double]$row.expectSeconds, $v.Delta)
         }
       } else { $why += 'manifest row declares no expectSeconds - nothing to verify the replacement against' }
+      # A .no-palette artefact was quarantined for its SUBTITLE, which length says nothing about.
+      if ($sfx -eq '.no-palette') {
+        $pg = Test-DvdSubPalette -Ffprobe $ffprobe -Path $repl
+        if (-not $pg.Ok) { $why += "replacement has the same defect: $($pg.Reason)" }
+      }
     }
   }
 

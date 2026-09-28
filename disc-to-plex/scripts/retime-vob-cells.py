@@ -404,6 +404,20 @@ def assert_consistent(cells, frame_dur, frc, dts_period, gpics):
                          f"unaccounted for at a cell boundary - refusing (exit 2)")
 
 
+def carry_palette(src, dst):
+    """Copy dvd-angle-cells.py's `<carve>.palette.txt` to `<retimed>.palette.txt`.
+
+    The retimed file is what a manifest points at, and transcode.ps1 looks for the palette beside
+    its src - so a sidecar left on the pre-retime name is the same as none: the encode refuses (or,
+    before 2026-09-28, shipped a dvd_subtitle stream with no palette - The Invisible Enemy S00E346-349).
+    """
+    s = src + ".palette.txt"
+    if os.path.exists(s):
+        with open(s, "rb") as fi, open(dst + ".palette.txt", "wb") as fo:
+            fo.write(fi.read())
+        print(f"  palette sidecar carried -> {dst}.palette.txt")
+
+
 def main():
     args = [a for a in sys.argv[1:]]
     if len(args) < 2:
@@ -485,6 +499,7 @@ def main():
                     if not chunk:
                         break
                     fo.write(chunk)
+            carry_palette(src, dst)
         return 0
     if report_only:
         return 0
@@ -526,6 +541,7 @@ def main():
                 raise SystemExit("ERROR: rewritten SCR clock steps backwards - refusing (exit 2)")
             last = scr
     print("  self-check OK: size unchanged, SCR clock monotonic")
+    carry_palette(src, dst)
     return 0
 
 

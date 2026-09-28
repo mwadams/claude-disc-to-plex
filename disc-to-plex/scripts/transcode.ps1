@@ -110,6 +110,11 @@
                                arbitrary and often merely alphabetical (dan,eng,fin,nor,swe puts
                                English at 1), so a fixed ordinal silently ships the wrong language
                                on the next disc. Defaults to 0 (fine for a single-PGS Blu-ray).
+                               A kept DVD subtitle (dvd_subtitle) MUST ship with its palette. On a
+                               carved .vob src the palette comes from `<src>.palette.txt` (written
+                               by dvd-angle-cells.py, carried by retime-vob-cells.py); a vobSectors
+                               cut takes its title's. No palette known -> the item is REFUSED; an
+                               output that still lacks it -> moved aside as .no-palette.
     commentary (int, optional) 0-based SOURCE audio index to tag as "Audio Commentary".
                                Accepts a list, or [idx,"Title"] pairs to name them.
     audioDescription (int, optional) 0-based SOURCE audio index of a narrated-visuals track for
@@ -154,9 +159,12 @@ $ErrorActionPreference = 'Continue'
 # A carved VOB keeps the disc's AUDIO PRE-ROLL (sound ahead of the first picture, never presented
 # by a player); the dvdvideo demuxer drops it, the carve route must too. See the lib's header.
 . "$PSScriptRoot/lib-carve-preroll.ps1"
+# A carved VOB also loses the DVD SUBTITLE PALETTE (it lives in the IFO, which the mpegps demuxer
+# never reads); the encode gets it injected, and no dvd_subtitle stream ships without one.
+. "$PSScriptRoot/lib-vobsub-palette.ps1"
 
 $tp = Get-Content (Join-Path $ToolsDir "tool-paths.json") | ConvertFrom-Json
-$ff = $tp.ffmpeg; $sm = $tp.supmover
+$ff = $tp.ffmpeg; $sm = $tp.supmover; $mkx = $tp.mkvextract
 $fp = Join-Path (Split-Path $ff) 'ffprobe.exe'    # our ffprobe (has dvdvideo demuxer + libdvdcss)
 # Per-process work dir. Two lanes encoding Blu-rays concurrently both extract PGS subs as
 # s<index>.sup / s<index>_fixed.sup; with a SHARED work dir the second lane's extraction deletes
@@ -1052,6 +1060,49 @@ foreach($it in $items){
       }
     }
 
+  # THE DVD SUBTITLE PALETTE - know it BEFORE encoding, or do not encode.
+  # A dvd_subtitle stream is 2-bit indices into the PGC's 16-colour CLUT, which is in the IFO. The
+  # dvdvideo demuxer (and MakeMKV) put it in the stream's extradata and a stream copy carries it;
+  # a CARVED .vob is read by the mpegps demuxer, which has no IFO, so the copy shipped with no
+  # palette at all. The Invisible Enemy S00E346-349 (2026-09-28): packets byte-identical to the
+  # primary angle's S15E08, palette absent, OCR against a default palette failed S00E349 49 times.
+  # Every carve with a kept subtitle ever published had the same defect. See lib-vobsub-palette.ps1.
+  $wantPal = $null
+  if($ns -gt 0 -and "$(& $fp -v error @inspec -select_streams "s:$subIdx" -show_entries stream=codec_name -of csv=p=0 2>$null)".Trim().TrimEnd(',') -eq 'dvd_subtitle'){
+    $palFrom = ''
+    if(Has $it '_cutFile'){
+      # A vobSectors cut is a range of THIS title's set; the dvdvideo read of the title has the CLUT.
+      $wantPal = Get-DvdSubPaletteLine -Ffprobe $fp -InSpec @('-f','dvdvideo','-title',[string]$it.title,'-i',$it.src) -Stream 's:0'
+      $palFrom = "dvdvideo title $($it.title)"
+    }
+    elseif("$($it.src)" -like '*.vob'){
+      $side = "$($it.src).palette.txt"
+      if(Test-Path -LiteralPath $side){
+        $wantPal = @(Get-Content -LiteralPath $side | Where-Object { $_ -match '^palette:' })[0]
+        if($wantPal){ $wantPal = $wantPal.Trim() }
+        $palFrom = 'the carve''s .palette.txt'
+      }
+    }
+    else {
+      $wantPal = Get-DvdSubPaletteLine -Ffprobe $fp -InSpec $inspec -Stream "s:$subIdx"
+      $palFrom = 'the source stream'
+    }
+    $isCarveSrc = (Has $it '_cutFile') -or ("$($it.src)" -like '*.vob')
+    if($wantPal -and $wantPal -notmatch $script:VobSubPaletteRx){
+      Write-Output "   !! FAILED - the subtitle palette from $palFrom is not a 16-entry palette line: '$wantPal'"
+      $failCount++; continue
+    }
+    if(-not $wantPal -and $isCarveSrc){
+      # A DVD's subtitles ALWAYS have a palette; not knowing it is our gap, never the disc's.
+      Write-Output "   !! FAILED - this carve keeps DVD subtitle s:$subIdx but its PALETTE is unknown (it lives in the IFO, not the VOB)."
+      Write-Output "          An angle carve: re-run dvd-angle-cells.py (it writes <out>.palette.txt) and retime-vob-cells.py (it carries it),"
+      Write-Output "          or write the line from 'dvd-angle-cells.py <VIDEO_TS> <vts> <pgc> --palette' to '$($it.src).palette.txt'."
+      $failCount++; continue
+    }
+    if($wantPal){ Write-Output "   subtitle palette from $palFrom" }
+    else { Write-Output "   ** source dvd_subtitle s:$subIdx carries no palette of its own - nothing to carry" }
+  }
+
   $a = @('-y','-hide_banner','-v','error','-stats')
   # A RETIMED CARVE'S TIMESTAMPS ARE TRUSTWORTHY - TELL FFMPEG SO. mpegps is a TS_DISCONT format,
   # so ffmpeg's input handler rebases the whole input's shared ts_offset whenever ANY stream's DTS
@@ -1467,6 +1518,22 @@ foreach($it in $items){
   # Success = ffmpeg said it succeeded AND the container is finalised. See Finalised-Output for why
   # a byte-size floor is wrong in both directions (danger-man-s1d6, 2026-09-02).
   $itemOk = ($ffExit -eq 0) -and (Finalised-Output $it.out)
+  # PALETTE: inject it where the copy lost it (a carve - lossless remux, verified packet for packet),
+  # then REFUSE any output whose dvd_subtitle stream does not carry the source's palette. Runs before
+  # the length guards so they measure the file that ships.
+  if($itemOk -and $wantPal){
+    $pg = Test-DvdSubPalette -Ffprobe $fp -Path $it.out -Want $wantPal
+    if(-not $pg.Ok -and $pg.Missing -gt 0 -and $pg.Wrong -eq 0){
+      $pr = Add-DvdSubPalette -Ffmpeg $ff -Ffprobe $fp -Mkvextract $mkx -Path $it.out -Palette $wantPal -WorkDir $work
+      Write-Output "   subtitle palette: $($pr.Reason)"
+      $pg = Test-DvdSubPalette -Ffprobe $fp -Path $it.out -Want $wantPal
+    }
+    if(-not $pg.Ok){
+      Write-Output "   !! NO PALETTE - $($pg.Reason); OCR would read it against a default palette. Moved aside as .no-palette"
+      Move-Item -LiteralPath $it.out -Destination "$($it.out).no-palette" -Force
+      $itemOk = $false
+    }
+  }
   # expectSeconds / expectFrames: length verification for items where a DEFAULT read path yields
   # the WRONG length while everything else looks normal - exit 0, finalised container, plausible
   # size. The Champions D1 t2 is the founding case: the dvdvideo demuxer declares 3049.2 s, MakeMKV

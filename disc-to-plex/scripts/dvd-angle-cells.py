@@ -41,8 +41,21 @@ image despite the menu card promising the un-graded angle would look "dark and b
 picks the wrong one. What separated them was `idet`: angle 1 Progressive 2919/2982 (a de-interlaced
 broadcast master), angle 2 TFF 2971/2982 (the interlaced camera original).
 
+THE CARVE LOSES THE SUBTITLE PALETTE, SO THIS WRITES IT BESIDE THE CARVE.
+A DVD subpicture is 2-bit indices into a 16-colour CLUT that lives in the PGC (IFO, PGC+0xA4),
+not in the VOB. The dvdvideo demuxer reads it and hands it on as the stream's extradata, so a
+normal DVD encode carries it; a carved .vob is read by the plain mpegps demuxer, which has no IFO,
+so the encode's dvd_subtitle stream shipped with NO palette and OCR rendered it against a default
+one. The Invisible Enemy S00E346-349 (2026-09-28): subtitle packets byte-identical to the
+primary-angle S15E08, palette absent - S00E349 failed the dictionary gate 49 times at 94.7%.
+So a carve also writes `<out>.palette.txt`: the palette line EXACTLY as ffmpeg's dvdvideo demuxer
+builds it (libavformat/dvdclut.c - measured byte-identical, MD5 e663151d..., against S15E08).
+retime-vob-cells.py carries it to the retimed file and transcode.ps1 injects it (lib-vobsub-palette).
+`--palette` prints the line alone, for repairs and for a hand-built carve.
+
 USAGE
     python dvd-angle-cells.py <VIDEO_TS dir> <vts> <pgc> --list
+    python dvd-angle-cells.py <VIDEO_TS dir> <vts> <pgc> --palette
     python dvd-angle-cells.py <VIDEO_TS dir> <vts> <pgc> --angle <n> <out.vob>
 
 Exit codes: 0 = OK, 2 = refused (structure, or a short/absent angle).
@@ -89,6 +102,43 @@ def pgc_table(ifo_path, pgc_no):
             secs=bcd(ct[0]) * 3600 + bcd(ct[1]) * 60 + bcd(ct[2]) + bcd(ct[3] & 0x3F) / fps,
             vob_id=struct.unpack_from('>H', b, pos)[0], cell_id=b[pos + 3]))
     return cells, pgc_secs, fps
+
+
+def pgc_palette_line(ifo_path, pgc_no):
+    """The PGC's subpicture CLUT as the idx/extradata line ffmpeg's dvdvideo demuxer writes.
+
+    Conversion copied from libavformat/dvdclut.c (ff_dvdclut_yuv_to_rgb): each entry is 0,Y,Cr,Cb;
+    CCIR range -> RGB in 10-bit fixed point, WITH the demuxer's `- 1024` bias (one step darker than
+    the plain colorspace.h macro - without it 3 of 16 entries differ by 1, fe vs fd). No trailing
+    newline; the caller adds one where it writes extradata.
+    """
+    b = open(ifo_path, 'rb').read()
+    if b[:12] != b'DVDVIDEO-VTS':
+        raise SystemExit('%s is not a VTS IFO (exit 2)' % ifo_path)
+    pgcit = struct.unpack_from('>I', b, 0xCC)[0] * SECTOR
+    nr = struct.unpack_from('>H', b, pgcit)[0]
+    if not 1 <= pgc_no <= nr:
+        raise SystemExit('VTS declares %d title PGC(s); %d asked for (exit 2)' % (nr, pgc_no))
+    q = pgcit + struct.unpack_from('>I', b, pgcit + 8 + 8 * (pgc_no - 1) + 4)[0]
+
+    def fix(x):
+        return int(x * (1 << 10) + 0.5)
+
+    def clip(v):
+        return 0 if v < 0 else 255 if v > 255 else v
+
+    out = []
+    for i in range(16):
+        y, cr, cb = b[q + 0xA4 + 4 * i + 1:q + 0xA4 + 4 * i + 4]
+        cb -= 128
+        cr -= 128
+        r_add = fix(1.40200 * 255.0 / 224.0) * cr + (1 << 9)
+        g_add = -fix(0.34414 * 255.0 / 224.0) * cb - fix(0.71414 * 255.0 / 224.0) * cr + (1 << 9)
+        b_add = fix(1.77200 * 255.0 / 224.0) * cb + (1 << 9)
+        yy = (y - 16) * fix(255.0 / 219.0)
+        out.append('%02x%02x%02x' % (clip((yy + r_add - 1024) >> 10), clip((yy + g_add - 1024) >> 10),
+                                     clip((yy + b_add - 1024) >> 10)))
+    return 'palette: ' + ', '.join(out)
 
 
 def vob_map(video_ts, vtsn):
@@ -177,7 +227,11 @@ def main():
     if len(a) < 4:
         raise SystemExit(__doc__.strip().rsplit('USAGE', 1)[-1].strip())
     video_ts, vtsn, pgcn = a[0], int(a[1]), int(a[2])
-    cells, pgc_secs, fps = pgc_table(os.path.join(video_ts, 'VTS_%02d_0.IFO' % vtsn), pgcn)
+    ifo = os.path.join(video_ts, 'VTS_%02d_0.IFO' % vtsn)
+    if '--palette' in a:
+        print(pgc_palette_line(ifo, pgcn))
+        return 0
+    cells, pgc_secs, fps = pgc_table(ifo, pgcn)
     groups = angle_groups(cells)
     listing = '--list' in a
 
@@ -249,6 +303,11 @@ def main():
                                  % (c['n'], c['vob_id'], c['cell_id']))
             total += emitted
     print('  -> %s  %d sectors, %d bytes' % (out, total, total * SECTOR))
+    # The carve cannot carry the PGC's subtitle palette (see the header); its sidecar does.
+    pal = pgc_palette_line(ifo, pgcn)
+    with open(out + '.palette.txt', 'w', newline='\n') as fp:
+        fp.write(pal + '\n')
+    print('  -> %s.palette.txt  (VTS_%02d PGC %d subtitle palette)' % (out, vtsn, pgcn))
     return 0
 
 
