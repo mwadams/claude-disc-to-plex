@@ -207,33 +207,56 @@ function Get-PlanHold {
       $p = Join-Path (Join-Path "$($rec.workRoot)" "$($item.dir)") "$($item.leaf)"
       if (-not (Test-Path -LiteralPath $p)) { return $false }
       $v = try { Get-BitmapSubsVerdict -Path $p -Ffprobe $Ffprobe } catch { $null }
-      "$v" -like 'blocked:*'
+      # The verdict's own words when it is blocked (truthy), $false otherwise - so the reason can
+      # NAME what OCR recorded instead of calling a settled failure a long wait.
+      if ("$v" -like 'blocked:*') { "$v".Substring('blocked:'.Length) } else { $false }
     }.GetNewClosure()
   }
   $encoding = @($items | Where-Object { "$($_.reason)" -eq 'not encoded' -and @('queued', 'running') -contains "$($_.manifestState)" })
-  $ocrAll   = @($items | Where-Object { "$($_.reason)" -eq 'awaiting OCR' })
+  # 'OCR blocked' (publish-work.ps1, since 2026-09-28): OCR ran, recorded `blocked:`, and will not
+  # retry. It is a DECISION owed by a human, never a queue position - so it is a stall the moment it
+  # is seen, with no age cap and no "OCR is moving elsewhere" excuse. Before this reason existed the
+  # gate wrote such a file as 'awaiting OCR', and a verdict that was never going to change was
+  # reported as a wait (Doctor Who Season 00, ten hours behind S00E349).
+  $ocrAll   = @($items | Where-Object { @('awaiting OCR', 'OCR blocked') -contains "$($_.reason)" })
   $ocr      = @($ocrAll | Where-Object { -not (& $SidecarExists $_) })   # still owed; the rest have landed
   $resolved = $ocrAll.Count - $ocr.Count
   $other    = @($items | Where-Object { $encoding -notcontains $_ -and $ocrAll -notcontains $_ })
   # $OcrMakingProgress IS A FACT ABOUT THE TRACK, NOT ABOUT THIS WORK - see the parameter note above.
   $ocrMoving = $OcrMakingProgress
   $blocked  = @()
+  $decision = @()          # [pscustomobject]@{ leaf; why } - OCR has RECORDED that it gave up
   foreach ($o in $ocr) {
+    # A RECORDED VERDICT IS FINAL, SO IT IS NOT CLOCKED. The age cap exists to tell "not reached
+    # yet" from "stuck"; a `blocked:` verdict already answers that - OCR reached it and stopped.
+    if ("$($o.reason)" -eq 'OCR blocked') {
+      $decision += [pscustomobject]@{ leaf = $o.leaf; why = $(if ("$($o.verdict)") { "$($o.verdict)" } else { 'OCR recorded a blocked verdict' }) }
+      continue
+    }
+    $failed = & $OcrHasFailed $o
+    if ($failed) {
+      $decision += [pscustomobject]@{ leaf = $o.leaf; why = $(if ($failed -is [string]) { $failed } else { 'OCR recorded a blocked verdict' }) }
+      continue
+    }
     if ((& $AgeOf $o) -le $BlockedCapMin) { continue }
-    if (& $OcrHasFailed $o) { $blocked += $o; continue }   # a real, recorded defect - always a stall
     if (-not $ocrMoving) { $blocked += $o }                 # OCR itself has gone quiet - the wait cannot be trusted to clear on its own
     # else: past the cap, but OCR is alive and still landing sidecars in this work - queued behind a
     # real backlog, not stuck. Age alone used to be the whole test; it is not any more.
   }
   $where   = $(if ($scopeIsWork) { 'this work' } else { "'$dir'" })
-  $suppress = (-not $other.Count) -and (-not $blocked.Count)
+  $suppress = (-not $other.Count) -and (-not $blocked.Count) -and (-not $decision.Count)
+  $nBlocked = $decision.Count
   $parts2 = @()
   if ($encoding.Count) { $parts2 += ("{0} still encoding" -f $encoding.Count) }
-  if ($ocr.Count)      { $parts2 += ("{0} awaiting OCR" -f $ocr.Count) }
+  if ($ocr.Count - $nBlocked) { $parts2 += ("{0} awaiting OCR" -f ($ocr.Count - $nBlocked)) }
+  if ($nBlocked)       { $parts2 += ("{0} OCR-blocked (decision needed)" -f $nBlocked) }
   if ($resolved -gt 0) { $parts2 += ("{0} whose sidecar has since landed - the gate has not re-run yet" -f $resolved) }
   if ($other.Count)    { $parts2 += ("{0} with no live manifest - a manifest needs correcting" -f $other.Count) }
   $reason = ("HELD by the plan gate - {0} is incomplete: {1}." -f $where, ($parts2 -join ', '))
-  if ($blocked.Count) {
+  if ($decision.Count) {
+    $reason += (" STUCK - DECISION NEEDED: OCR gave up on {0} ({1}) and will not retry; that one file is holding the rest. Supply a sidecar, fix the OCR path then reset-ocr-verdicts.ps1, or publish with -SkipSubtitleCheck." -f $decision[0].leaf, $decision[0].why)
+    if ($decision.Count -gt 1) { $reason += (" (+{0} more OCR-blocked: {1})" -f ($decision.Count - 1), ((@($decision | Select-Object -Skip 1) | ForEach-Object leaf) -join ', ')) }
+  } elseif ($blocked.Count) {
     $reason += (" STUCK: {0} has been awaiting an OCR sidecar for over {1} min - that one file is holding the rest." -f $blocked[0].leaf, $BlockedCapMin)
   } elseif ($ocr.Count -gt 0 -and $ocrMoving) {
     $reason += ' OCR is actively producing sidecars elsewhere in its queue; this is a queue position, not a stall.'
@@ -358,6 +381,24 @@ if ($SelfTest) {
   $r3 = Get-PlanHold -RelPath $rel -Holds (& $mk $withOcr) -Now $now -BlockedCapMin 45 -AgeOf $old -SidecarExists $noSidecar -OcrMakingProgress $true -OcrHasFailed $hasFail
   T 'a REAL recorded OCR failure on this file is ALWAYS a stall, even while OCR moves elsewhere' (-not $r3.Suppress)
   T 'and it is named STUCK for that reason' ($r3.Reason -match 'STUCK')
+
+  # NEW 2026-09-28: A RECORDED OCR BLOCK IS A DECISION, NOT A WAIT. Doctor Who Season 00 was held ten
+  # hours "awaiting OCR" behind S00E349, whose OCR had failed identically 49 times.
+  $blkItem = [pscustomobject]@{ dir = 'Season 06'; leaf = 'z.mkv'; reason = 'OCR blocked'; verdict = 'dictionary gate rejected the conversion'; manifest = ''; manifestState = '' }
+  $withBlk = @($inFlight + $blkItem)
+  $r5 = Get-PlanHold -RelPath $rel -Holds (& $mk $withBlk) -Now $now -BlockedCapMin 45 -AgeOf $young -SidecarExists $noSidecar -OcrMakingProgress $true -OcrHasFailed $noFail
+  T "an 'OCR blocked' item is a stall at ANY age, even while OCR moves"   (-not $r5.Suppress)
+  T 'and the reason says DECISION NEEDED, naming the file and its verdict' ($r5.Reason -match 'DECISION NEEDED' -and $r5.Reason -match 'z\.mkv' -and $r5.Reason -match 'dictionary gate rejected')
+  T "and it is NOT misreported as 'no live manifest'"                      ($r5.Reason -notmatch 'no live manifest')
+  T "and it is NOT counted as 'awaiting OCR'"                              ($r5.Reason -notmatch '\d+ awaiting OCR' -and $r5.Reason -match '1 OCR-blocked')
+  $r6 = Get-PlanHold -RelPath $rel -Holds (& $mk $withBlk) -Now $now -BlockedCapMin 45 -AgeOf $young -SidecarExists $hasSidecar -OcrMakingProgress $true -OcrHasFailed $noFail
+  T "an 'OCR blocked' item whose sidecar has since been supplied is resolved" ($r6.Suppress -and $r6.Reason -match 'sidecar has since landed')
+  $failWhy = { param($item) 'same OCR failure 3 times in a row' }
+  $r7 = Get-PlanHold -RelPath $rel -Holds (& $mk $withOcr) -Now $now -BlockedCapMin 45 -AgeOf $young -SidecarExists $noSidecar -OcrMakingProgress $true -OcrHasFailed $failWhy
+  T "a legacy 'awaiting OCR' record whose file HAS a blocked verdict: a stall even when young" (-not $r7.Suppress)
+  T 'and the verdict text reaches the reason'                              ($r7.Reason -match 'DECISION NEEDED' -and $r7.Reason -match 'same OCR failure 3 times')
+  $r8 = Get-PlanHold -RelPath $rel -Holds (& $mk $withOcr) -Now $now -BlockedCapMin 45 -AgeOf $young -SidecarExists $noSidecar -OcrMakingProgress $false -OcrHasFailed $noFail
+  T 'a young awaiting-OCR item with no verdict is still just a wait (unchanged)' ($r8.Suppress)
 
   # NEW 2026-09-27 (coordinator follow-up): PROGRESS MUST BE THE UNION ACROSS EVERY WORK OCR CURRENTLY
   # OWES A SIDECAR, NOT ONE WORK'S OWN FOLDER. Colditz S00E01 waited 82 min while OCR was healthily
@@ -525,6 +566,11 @@ foreach ($w in $waiting) {
 }
 $stalling = @($waiting | Where-Object { -not $_.Held })
 $heldCount = $waiting.Count - $stalling.Count
+# A RECORDED OCR BLOCK IS A DECISION, NOT A WAIT - so no age cap may hide it. The file carrying the
+# verdict reads 'BLOCKED - ...' (per-file Why above); its held siblings read 'DECISION NEEDED' (the
+# plan hold). Either way, nothing will change until a human acts, and "publishing in progress, under
+# the cap" is a false sentence about it.
+$decisionRows = @($stalling | Where-Object { "$($_.Why)" -match '^BLOCKED - |DECISION NEEDED' })
 
 if ($stalling.Count -eq 0) {
   $worstHeld = ($waiting | Measure-Object WaitedMin -Maximum).Maximum
@@ -538,7 +584,7 @@ if ($stalling.Count -eq 0) {
   exit 0
 }
 $worst = ($stalling | Measure-Object WaitedMin -Maximum).Maximum
-if ($worst -le $MaxWaitMin) {
+if ($worst -le $MaxWaitMin -and -not $decisionRows.Count) {
   # The healthy verdict is stated too. Absence of the marker then means the audit did not RUN -
   # which is a different thing from "nothing is stalled" and must not read as reassurance.
   Write-Output ("PUBLISH-STALL-STATE stalled=0 minutes={0} waiting={1} held={2}" -f $worst, $stalling.Count, $heldCount)
@@ -572,6 +618,20 @@ if (-not $Quiet) {
   # 2026-09-23 this read "NOTHING HAS PUBLISHED FOR 1074 MINUTES" three hours after Doctor Who's
   # Season 09 published, because Season 00's files had been held since 09:00 - and the false
   # sentence sent the session looking for a publish outage that did not exist.
+  if ($decisionRows.Count) {
+    # NAMED FIRST: the one thing on this list a human can act on. 2026-09-28: S00E349's verdict was
+    # the whole story behind 55 held files, and the reader had to find it in the OCR log.
+    # One line per DISTINCT reason: a held work's siblings all carry the same hold reason (which names
+    # the blocked file), so grouping shows each decision once with how many files it is holding.
+    $groups = @($decisionRows | Group-Object Why)
+    Write-Output ("*** OCR DECISION NEEDED - OCR recorded that it gave up and will not retry; {0} finished file(s) wait on {1} decision(s):" -f $decisionRows.Count, $groups.Count)
+    foreach ($g in $groups) {
+      Write-Output ("    {0}{1}" -f $g.Group[0].File, $(if ($g.Count -gt 1) { "  (+$($g.Count - 1) held with it)" } else { '' }))
+      Write-Output ("             {0}" -f $g.Name)
+    }
+    Write-Output '    Remedies: supply a verified sidecar; fix the OCR path then reset-ocr-verdicts.ps1; or publish the work with -SkipSubtitleCheck.'
+    Write-Output ''
+  }
   Write-Output ("*** {1} FINISHED FILE(S) NOT SHIPPING - the oldest has waited {0} MINUTES:" -f $worst, $stalling.Count)
   foreach ($w in ($stalling | Sort-Object WaitedMin -Descending | Select-Object -First 12)) {
     Write-Output ("    {0,4} min  {1}" -f $w.WaitedMin, $w.File)

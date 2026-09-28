@@ -153,25 +153,37 @@ while ($true) {
       # SHARED with _ocr-queue-loop.ps1 (lib-subtitles.ps1). This was inline here and absent there,
       # so the same file got a second attempt locally and was written off on the NAS. The loop
       # control stays here - only the attempt is shared.
-      if (Invoke-OcrDirectRenderFallback -Path $f.FullName -Sidecar $sidecar -Outcome $outcome) {
+      # -Say, and the SIDECAR decides - not the return value. This call used to omit -Say, the
+      # function's progress lines joined its return value, `$false` arrived here as a non-empty
+      # (truthy) array, and this took `continue` for a file with no sidecar: no verdict, no count,
+      # the same file re-OCR'd every pass (S00E349, 49 passes, 2026-09-27/28). The function is fixed
+      # too; asking the disk here means a regression in it cannot hide a failure again.
+      [void](Invoke-OcrDirectRenderFallback -Path $f.FullName -Sidecar $sidecar -Outcome $outcome -Say { param($m) Write-Host $m })
+      if (Test-Path -LiteralPath $sidecar) {
         $did = $true
-        continue          # nothing to classify: the sidecar exists
+        continue          # recovered by the direct renderer: nothing to classify
       }
       switch ($outcome.Verdict) {
-        'exhausted' { Set-BitmapSubsExhausted -Path $f.FullName; Write-OcrTerminalLedger -LocalPath $f.FullName -Reason 'OCR ran, no usable text (settled verdict)' -Evidence (@($outcome.Lines) -join ' ') }
+        'exhausted' { Set-BitmapSubsExhausted -Path $f.FullName; [void](Write-OcrTerminalLedger -LocalPath $f.FullName -Reason 'OCR ran, no usable text (settled verdict)' -Evidence (@($outcome.Lines) -join ' ')) }
         'blocked'   { Set-BitmapSubsBlocked   -Path $f.FullName -Reason $outcome.BlockReason }
-        # NO VERDICT = RETRY, BUT NOT FOR EVER. Register-OcrUnexplainedFailure counts consecutive
-        # failures that STATED a reason this library could not classify, and on the third records
-        # `blocked:` carrying the gate's own words. A failure with no message at all is still an
-        # unbounded retry, which is correct - that is the contended/half-written/crashed case.
-        # Publish stays held either way; what changes is that the reason reaches the verdict store
-        # the board already reads, instead of living only in this log. 2026-09-22: it lived only in
-        # this log for ELEVEN HOURS while 65 finished files waited behind two bad ones.
-        default     { if (Register-OcrUnexplainedFailure -Path $f.FullName -OutputText ($out | Out-String)) {
-                        "    *** BOUNDED - third unexplained failure for this file; recorded a blocked verdict with the gate's own reason. Publish stays held (correct); the OCR track will stop respinning it."
-                      } }
       }
       $outcome.Lines | ForEach-Object { "    $_" }
+      # NO VERDICT = RETRY, BUT NOT FOR EVER - and this is a POST-CONDITION, not a branch. It used to
+      # be the switch's `default` only, so it bounded the classifier's catch-all and nothing else: any
+      # path that ended with neither a sidecar nor a recorded verdict (a branch that failed to record,
+      # a verdict write that threw, the truthy-return bug above) respun for ever uncounted. Now the
+      # question is asked of the RESULT: is this file still attemptable after this pass? If so, count
+      # it. Register-OcrUnexplainedFailure counts only failures that STATED a reason, and only
+      # IDENTICAL ones in a row on unchanged bytes; on the third it records `blocked:` carrying the
+      # gate's own words. A failure with no message at all stays an unbounded retry - correct for the
+      # contended/half-written/crashed case. Publish stays held either way; what changes is that the
+      # reason reaches the verdict store the board reads. 2026-09-22: it lived only in this log for
+      # ELEVEN HOURS while 65 finished files waited behind two bad ones.
+      if (Test-BitmapSubsAttemptable -Path $f.FullName -Ffprobe $ffprobe) {
+        if (Register-OcrUnexplainedFailure -Path $f.FullName -OutputText ($out | Out-String)) {
+          "    *** BOUNDED - the same OCR failure three passes running on unchanged bytes; recorded a blocked verdict with the gate's own reason. Publish stays held and the board names it as a decision; the OCR track will stop respinning it."
+        }
+      }
     }
     $did = $true
   }

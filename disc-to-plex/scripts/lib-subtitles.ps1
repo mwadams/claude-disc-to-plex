@@ -304,20 +304,33 @@ function Register-OcrUnexplainedFailure {
   }
   if (-not $why) { return $false }
 
+  # COUNT IDENTICAL FAILURES, NOT ANY FAILURES. The file stores "<n>|<reason>". A pass that fails for
+  # a DIFFERENT stated reason restarts the count at 1: two different refusals are two different
+  # problems, and neither has yet shown itself to be deterministic. The same words $Max times in a row
+  # on the same bytes (the key is leaf|length|mtime) is a deterministic failure - S00E349 printed the
+  # identical "94.7% ... (865 words)" line 49 times. A bare integer is the pre-2026-09-28 format and is
+  # read as a count with no reason, so an in-flight count is continued rather than silently reset.
   $tries = (Get-BitmapSubsCachePath -Path $Path -CacheDir $CacheDir) + '.tries'
-  $n = 0
-  if (Test-Path -LiteralPath $tries) { [void][int]::TryParse(((Get-Content -LiteralPath $tries -Raw).Trim()), [ref]$n) }
+  $n = 0; $lastWhy = $null
+  if (Test-Path -LiteralPath $tries) {
+    $raw = "$(Get-Content -LiteralPath $tries -Raw)".Trim()
+    $bar = $raw.IndexOf('|')
+    if ($bar -ge 0) { [void][int]::TryParse($raw.Substring(0, $bar), [ref]$n); $lastWhy = $raw.Substring($bar + 1) }
+    else            { [void][int]::TryParse($raw, [ref]$n) }
+  }
+  $whyKey = ($why -replace '\s+', ' ').Trim()
+  if ($null -ne $lastWhy -and $lastWhy -ne $whyKey) { $n = 0 }
   $n++
   try {
     New-Item -ItemType Directory -Path $CacheDir -Force | Out-Null
-    Set-Content -LiteralPath $tries -Value $n -Encoding UTF8
+    Set-Content -LiteralPath $tries -Value ("{0}|{1}" -f $n, $whyKey) -Encoding UTF8
   } catch { }
   if ($n -lt $Max) { return $false }
 
   # THE FAILURE'S OWN WORDS, carried through verbatim. A classifier that states a cause it did not
   # measure is the exact fault this library exists to stop, so nothing is summarised or inferred here.
   Set-BitmapSubsBlocked -Path $Path -CacheDir $CacheDir `
-    -Reason ("unexplained OCR failure {0} times, last: {1}" -f $n, $why)
+    -Reason ("same OCR failure {0} times in a row on unchanged bytes (deterministic): {1}" -f $n, $whyKey)
   return $true
 }
 
@@ -575,6 +588,15 @@ function Resolve-OcrOutcome {
 # Returns $true if a sidecar now exists (the caller should treat the file as converted and record
 # NO verdict). Returns $false otherwise, having appended to $Outcome.BlockReason so the recorded
 # block carries an honest history of both attempts.
+#
+# THE RETURN VALUE IS THE ONLY THING ON THE OUTPUT STREAM. Emit used to default to Write-Output, and
+# _ocr-loop.ps1 calls this inside `if (...)` without -Say - so every progress line joined the return
+# value, `$false` became a non-empty array, the `if` read it as TRUE, and the loop took its
+# "recovered - the sidecar exists" branch for a file with no sidecar. No verdict was ever recorded
+# and no failure was ever counted: Doctor Who S00E349 (a quality near-miss) was re-OCR'd, paddle
+# fallback and all, 49 times over 2026-09-27/28 while 55 finished Season 00 files waited behind it.
+# _ocr-queue-loop.ps1 passed -Say { Write-Host } and so never saw it. Progress goes to the HOST
+# (which Start-Transcript records); the output stream carries exactly one [bool].
 function Invoke-OcrDirectRenderFallback {
   param(
     [Parameter(Mandatory)][string]$Path,
@@ -583,7 +605,7 @@ function Invoke-OcrDirectRenderFallback {
     [string]$PaddleScript = 'D:/video/.claude/skills/disc-to-plex/scripts/ocr-paddle.ps1',
     [scriptblock]$Say = $null
   )
-  function Emit([string]$m) { if ($Say) { & $Say $m } else { Write-Output $m } }
+  function Emit([string]$m) { if ($Say) { [void](& $Say $m) } else { Write-Host $m } }
 
   if ($null -eq $Outcome -or "$($Outcome.Status)" -ne 'quality-near-miss') { return $false }
   if (-not (Test-Path -LiteralPath $PaddleScript)) {

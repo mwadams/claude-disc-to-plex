@@ -394,7 +394,8 @@ if (-not $SkipSubtitleCheck) {
   }
   $dirOf = { param($p) $rel = "$p".Substring($workOut.Length).TrimStart('\'); if ($rel -match '^([^\\]+)\\') { $Matches[1] } else { '' } }
   $writeHold = {
-    param([string]$Scope, [string[]]$HeldDirs = @(), [string[]]$MissingPaths = @(), [string[]]$AwaitingOcrPaths = @())
+    param([string]$Scope, [string[]]$HeldDirs = @(), [string[]]$MissingPaths = @(), [string[]]$AwaitingOcrPaths = @(),
+          [hashtable]$OcrBlocked = @{})
     $items = @()
     foreach ($p in @($MissingPaths)) {
       # PREFER THE LIVE DECLARATION. An output can be declared by more than one manifest (a re-rip,
@@ -412,7 +413,16 @@ if (-not $SkipSubtitleCheck) {
       }
     }
     foreach ($p in @($AwaitingOcrPaths)) {
-      $items += [pscustomobject]@{ dir = (& $dirOf $p); leaf = (Split-Path $p -Leaf); reason = 'awaiting OCR'; manifest = ''; manifestState = '' }
+      # A RECORDED `blocked:` VERDICT IS NOT "AWAITING OCR". OCR has run, failed in a way it will not
+      # retry, and stopped - nothing is coming. Recording it as 'awaiting OCR' (as this did until
+      # 2026-09-28) told the audit and the board to wait for a sidecar that no track would ever make:
+      # Doctor Who Season 00 read "awaiting OCR" for ten hours behind S00E349. Its own reason says
+      # what it is, and carries the verdict so the audit can NAME the decision without a cache read.
+      if ($OcrBlocked.ContainsKey($p)) {
+        $items += [pscustomobject]@{ dir = (& $dirOf $p); leaf = (Split-Path $p -Leaf); reason = 'OCR blocked'; verdict = "$($OcrBlocked[$p])"; manifest = ''; manifestState = '' }
+      } else {
+        $items += [pscustomobject]@{ dir = (& $dirOf $p); leaf = (Split-Path $p -Leaf); reason = 'awaiting OCR'; manifest = ''; manifestState = '' }
+      }
     }
     $rec = [pscustomobject]@{
       work = $Work; workRoot = $workOut; when = (Get-Date).ToString('s')
@@ -498,13 +508,21 @@ if (-not $SkipSubtitleCheck) {
     # file the reclaim is entitled to remove again. A deadlock, not a backlog.
     #
     # So ask the same question the media half asks: does this sidecar exist ANYWHERE it should?
-    $awaiting = @(); $awaitingPaths = @()
+    # Held either way (Test-BitmapSubsPopulated is true for 'populated' AND 'blocked:*' - blocked
+    # KEEPS publish held, its documented route). What differs is the NAME: a blocked file is a
+    # decision owed by a human, not a queue position, so it is reported and recorded as such.
+    $awaiting = @(); $awaitingPaths = @(); $ocrBlocked = @{}
     foreach ($o in @($declared | Where-Object { Test-Path -LiteralPath $_ })) {
       if ([IO.Path]::GetExtension($o) -ne '.mkv') { continue }
       $sidecar = [IO.Path]::ChangeExtension($o, $null) + 'eng.srt'
       if (Test-DeclaredSatisfied $sidecar) { continue }
-      if (Test-BitmapSubsPopulated -Path $o -Ffprobe $ffprobe) { $awaiting += (Split-Path $o -Leaf); $awaitingPaths += $o }
+      if (Test-BitmapSubsPopulated -Path $o -Ffprobe $ffprobe) {
+        $awaiting += (Split-Path $o -Leaf); $awaitingPaths += $o
+        $v = "$(Get-BitmapSubsVerdict -Path $o -Ffprobe $ffprobe)"
+        if ($v -like 'blocked:*') { $ocrBlocked[$o] = $v.Substring('blocked:'.Length) }
+      }
     }
+    $ocrWord = { param([string]$p) if ($ocrBlocked.ContainsKey($p)) { "OCR BLOCKED : $(Split-Path $p -Leaf) - $($ocrBlocked[$p]) [decision needed: supply a sidecar, fix the OCR path then reset-ocr-verdicts.ps1, or publish with -SkipSubtitleCheck]" } else { "awaiting OCR: $(Split-Path $p -Leaf)" } }
     # TELEVISION: THE SCHEDULED SET IS A SEASON, NOT THE WHOLE SHOW. Operator decision 2026-09-16.
     #
     # The whole-work rule deadlocked a long series. Friends (1994) is a dozen discs fetched over days;
@@ -523,12 +541,13 @@ if (-not $SkipSubtitleCheck) {
         foreach ($h in $heldNames) {
           $hm = @($missing | Where-Object { (& $seasonOf $_) -eq $h })
           $ha = @($awaitingPaths | Where-Object { (& $seasonOf $_) -eq $h })
-          Write-Warning ("REFUSING - HOLDING '{0}' only (not the whole work): {1} declared output(s) neither local nor on the NAS, {2} awaiting OCR." -f $h, $hm.Count, $ha.Count)
+          $hb = @($ha | Where-Object { $ocrBlocked.ContainsKey($_) })
+          Write-Warning ("REFUSING - HOLDING '{0}' only (not the whole work): {1} declared output(s) neither local nor on the NAS, {2} awaiting OCR, {3} OCR-blocked{4}." -f $h, $hm.Count, ($ha.Count - $hb.Count), $hb.Count, $(if ($hb.Count) { " (decision needed: " + ((@($hb | ForEach-Object { Split-Path $_ -Leaf })) -join ", ") + ")" } else { "" }))
           $hm | ForEach-Object { Write-Warning "    not encoded : $(Split-Path $_ -Leaf)" }
-          $ha | ForEach-Object { Write-Warning "    awaiting OCR: $(Split-Path $_ -Leaf)" }
+          $ha | ForEach-Object { Write-Warning "    $(& $ocrWord $_)" }
           $heldDirs += (Join-Path $src $h)
         }
-        & $writeHold -Scope 'season' -HeldDirs $heldNames -MissingPaths $missing -AwaitingOcrPaths $awaitingPaths
+        & $writeHold -Scope 'season' -HeldDirs $heldNames -MissingPaths $missing -AwaitingOcrPaths $awaitingPaths -OcrBlocked $ocrBlocked
         $local = @($local | Where-Object { $heldNames -notcontains (& $seasonOf $_.FullName) })
         if (-not $local.Count) {
           Write-Warning ("REFUSING - every local file of '{0}' is in a held season folder; nothing is publishable yet." -f $Work)
@@ -544,11 +563,11 @@ if (-not $SkipSubtitleCheck) {
       # refusal is invisible reads in the log as a publish that simply did nothing. That is how
       # Pride and Prejudice was held 27 times with no line in the log saying why - the loop printed
       # its own "PARTIAL: 0 landed this pass" and nothing else, so the cause looked like robocopy.
-      Write-Warning ("REFUSING - HOLDING the whole work: its plan declares {0} output(s); {1} neither local nor on the NAS, {2} awaiting OCR." -f $declared.Count, $missing.Count, $awaiting.Count)
+      Write-Warning ("REFUSING - HOLDING the whole work: its plan declares {0} output(s); {1} neither local nor on the NAS, {2} awaiting OCR, {3} OCR-blocked{4}." -f $declared.Count, $missing.Count, ($awaiting.Count - $ocrBlocked.Count), $ocrBlocked.Count, $(if ($ocrBlocked.Count) { " (decision needed: " + ((@($ocrBlocked.Keys | ForEach-Object { Split-Path $_ -Leaf })) -join ", ") + ")" } else { "" }))
       $missing  | ForEach-Object { Write-Warning "    not encoded : $(Split-Path $_ -Leaf)" }
-      $awaiting | ForEach-Object { Write-Warning "    awaiting OCR: $_" }
+      $awaitingPaths | ForEach-Object { Write-Warning "    $(& $ocrWord $_)" }
       Write-Warning '    Publication triggers when the whole declared set is complete. -SkipSubtitleCheck overrides the OCR half.'
-      & $writeHold -Scope 'work' -HeldDirs @('') -MissingPaths $missing -AwaitingOcrPaths $awaitingPaths
+      & $writeHold -Scope 'work' -HeldDirs @('') -MissingPaths $missing -AwaitingOcrPaths $awaitingPaths -OcrBlocked $ocrBlocked
       exit 2
     }
     if (-not $heldDirs.Count) {
@@ -562,7 +581,10 @@ if (-not $SkipSubtitleCheck) {
     foreach ($f in $local | Where-Object { $_.Extension -eq '.mkv' }) {
       $sidecar = [IO.Path]::ChangeExtension($f.FullName, $null) + 'eng.srt'
       if (Test-Path -LiteralPath $sidecar) { continue }
-      if (Test-BitmapSubsPopulated -Path $f.FullName -Ffprobe $ffprobe) { $awaiting += $f.Name }
+      if (Test-BitmapSubsPopulated -Path $f.FullName -Ffprobe $ffprobe) {
+        $v = "$(Get-BitmapSubsVerdict -Path $f.FullName -Ffprobe $ffprobe)"
+        $awaiting += $(if ($v -like 'blocked:*') { "$($f.Name) - OCR BLOCKED: $($v.Substring('blocked:'.Length)) [decision needed]" } else { $f.Name })
+      }
     }
     if ($awaiting) {
       Write-Warning ("REFUSING: {0} file(s) have bitmap subtitles but no OCR sidecar yet (no manifest declares into this folder, so the per-file check applies) - run ocr-subtitles.ps1 first, or pass -SkipSubtitleCheck:" -f $awaiting.Count)
