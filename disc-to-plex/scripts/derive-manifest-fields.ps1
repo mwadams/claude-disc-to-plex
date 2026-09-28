@@ -106,7 +106,8 @@ $shape = if ($doc -is [array]) { 'array' } elseif ($null -ne $doc -and $doc.PSOb
 $rows = switch ($shape) { 'array' { @($doc) } 'outputs' { @($doc.outputs) } default { @($doc) } }
 
 . "$PSScriptRoot/lib-audio-evidence.ps1"
-if (-not (Get-Command Get-AudioEvidencePath -ErrorAction SilentlyContinue)) {
+. "$PSScriptRoot/lib-clpi.ps1"
+if (-not (Get-Command Get-AudioEvidencePath -ErrorAction SilentlyContinue) -or -not (Get-Command Get-ClpiSubtitleLangs -ErrorAction SilentlyContinue)) {
   Write-Output 'derive-manifest-fields: lib-audio-evidence.ps1 did not load - refusing to derive with half a library'; exit 3
 }
 
@@ -474,8 +475,25 @@ foreach ($r in $rows) {
     $st = Get-Text $r 'subTrack'
     if ($isMedia -and $st -match '^\d+$') {
       if ($ext -eq '.m2ts') {
-        [void]$changes.Add([ordered]@{ field = 'subTrack'; from = [int]$st; to = 'eng'; evidence = 'raw Blu-ray .m2ts: subtitle streams carry no language tags, so an ordinal is unverifiable; "eng" is resolved by transcode.ps1 from the disc''s CLPI declaration (and aborts if none is English)' })
-        Set-Field $r 'subTrack' 'eng'
+        # AN ORDINAL THE CLPI PROVES ENGLISH, CHOSEN BETWEEN SEVERAL ENGLISH STREAMS, IS KEPT.
+        #
+        # This rewrote every numeric ordinal on a raw .m2ts to "eng", on the grounds that an untagged
+        # stream's ordinal is unverifiable. But the disc's CLPI declares each stream's language by PID,
+        # so it IS verifiable - and when the CLPI declares TWO comparable English streams (full dialogue
+        # + SDH), transcode.ps1's "eng" resolver correctly refuses to choose and ABORTS, telling the
+        # author to set an explicit ordinal - which this then rewrote back. Golden Eighties (1986),
+        # Akerman Vol 2 D1, 2026-09-28: s:0 full English, s:1 English SDH (read by OCR); the ordinal 0
+        # was reverted inside the gate and the item aborted again. So: keep an in-range ordinal whose
+        # stream the CLPI declares English when two or more English streams exist; otherwise rewrite as
+        # before ("eng" then resolves unambiguously, or the ordinal named a non-English stream).
+        $clpiLangs = Get-ClpiSubtitleLangs -Src $srcWin -Ffprobe $ffprobe
+        $engIdx = if ($clpiLangs) { @(for ($i = 0; $i -lt $clpiLangs.Count; $i++) { if ($clpiLangs[$i] -eq 'eng') { $i } }) } else { @() }
+        if ($clpiLangs -and [int]$st -lt $clpiLangs.Count -and $engIdx -contains [int]$st -and $engIdx.Count -ge 2) {
+          Write-Output ("  {0}: subTrack {1} KEPT - the CLPI declares s:{1} English and {2} English subtitle streams exist (s:{3}), so ""eng"" cannot choose; the explicit ordinal is the author's evidenced choice" -f (Split-Path (Get-Text $r 'out') -Leaf), $st, $engIdx.Count, ($engIdx -join ',s:'))
+        } else {
+          [void]$changes.Add([ordered]@{ field = 'subTrack'; from = [int]$st; to = 'eng'; evidence = 'raw Blu-ray .m2ts: "eng" is resolved by transcode.ps1 from the disc''s CLPI declaration (and aborts if none is English); an explicit ordinal is kept only when the CLPI declares it English among two or more English streams' })
+          Set-Field $r 'subTrack' 'eng'
+        }
       } else {
         $langs = Get-SubtitleLangs $srcWin (Get-Text $r 'title')
         if (-not (Set-SubTrackEngIfOutOfRange $r $langs $st $changes)) {

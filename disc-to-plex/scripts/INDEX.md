@@ -1,8 +1,8 @@
 # Script index - GENERATED, do not edit
 
-Generated 2026-09-28 09:22 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
+Generated 2026-09-28 12:09 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
 
-**177 scripts under `scripts/`, 63 loop scripts under `D:/video/`. 2 with NO usable header, 71 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
+**178 scripts under `scripts/`, 63 loop scripts under `D:/video/`. 2 with NO usable header, 72 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
 
 Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library` = dot-source, defines functions only; `tests` = a test suite, exit 0 = all passed.
 
@@ -114,6 +114,7 @@ Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library
 | `lib-carve-preroll.ps1` | library | Measure a carved DVD VOB's AUDIO PRE-ROLL - sound that sits ahead of the first picture, which a DVD player never presents - and return the output-side trim that removes it. | when: a carved .vob item (dvd-angle-cells.py angle carve, or a vobSectors cut) fails transcode.ps1's CFR check as "SEAM GAP" although retime-vob-cells.py reports ONE continuous video timeline - look at t... | - |
 | `lib-carve-preroll.tests.ps1` | tests | Tests for lib-carve-preroll.ps1 and its wiring in transcode.ps1. Run: pwsh -NoProfile -File lib-carve-preroll.tests.ps1 (exit 0 = all passed) | NO TRIGGER IN HEADER | - |
 | `lib-closure-verdict.ps1` | library | THE ONE PLACE that decides whether a line in a dispositions file (or a closure-verdict sidecar) is a CLOSURE VERDICT rather than prose mentioning one. | when: The rule lived in TWO files - `_dispositions-loop.ps1`'s Get-ClosureVerdict and `close-ships-nothing.ps1`'s $verdictRx - kept in step by a comment reading "Keep this identical to $rxNothing in _dis... | - |
+| `lib-clpi.ps1` | library | Read a Blu-ray CLIPINF\<clip>.clpi's per-stream LANGUAGE declaration, and join it to ffprobe's subtitle streams by PID. Dot-source it. | NO TRIGGER IN HEADER | - |
 | `lib-disk.ps1` | library | Wait for a volume's free-space figure to catch up with a large delete, then report it. | when: Releasing staging prints how many bytes it freed and then what the disk reports. Those two disagreed twice on 2026-08-27: | - |
 | `lib-disk.tests.ps1` | tests | Tests for Wait-FreeSpaceSettled and Get-UnitStageTargets. Run: pwsh -File lib-disk.tests.ps1 (exit 0 = all passed) | NO TRIGGER IN HEADER | - |
 | `lib-length-tolerance.ps1` | library | THE ONE PLACE that decides whether an encoded output's length matches what its manifest declared. Dot-source this; it defines functions and does nothing on its own. | when: The rule was written twice on 2026-09-07 and the two copies immediately disagreed. | - |
