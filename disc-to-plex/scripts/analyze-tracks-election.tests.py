@@ -92,5 +92,21 @@ akerman_streams = [
 check('a:0 elected programme from real Akerman D3 samples',
       pick(akerman_streams, {1}), 0)
 
+def L(a, lang, ch):
+    return {'a': a, 'spokenLang': lang, 'channels': ch}
+
+print('9. LANGUAGE TIE, mono film vs stereo commentary: Les Rendez-vous d\'Anna (Akerman Vol.1 D4, '
+      '00001.m2ts, 2026-09-28) - a:0 French mono LPCM film, a:1 English 2.0 AC3 commentary')
+anna = [L(0, 'fr', 1), L(1, 'en', 2)]
+check('first-authored language wins (fr), not the stereo one', at.language_tiebreak(anna, ['fr', 'en']), 'fr')
+check('order of the tied list does not matter', at.language_tiebreak(anna, ['en', 'fr']), 'fr')
+
+print('10. LANGUAGE TIE with a real surround mix: the widest language still wins')
+surround = [L(0, 'fr', 2), L(1, 'en', 6)]
+check('5.1 English beats a stereo French track', at.language_tiebreak(surround, ['fr', 'en']), 'en')
+
+print('11. No tie: the single top language is returned untouched')
+check('single language', at.language_tiebreak(anna, ['en']), 'en')
+
 print('%d failure(s)' % fails)
 sys.exit(1 if fails else 0)

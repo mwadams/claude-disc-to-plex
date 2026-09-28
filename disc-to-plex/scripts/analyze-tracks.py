@@ -559,6 +559,29 @@ def similarity(a_text, b_text):
     return len(A & B) / float(len(A | B))
 
 
+def language_tiebreak(cand, top):
+    """The winning language when several tie for the most speech tracks.
+
+    Channel count breaks the tie ONLY when a real multichannel mix (3+ channels) is in play;
+    otherwise the language of the first-authored track wins - the same rule the election applies
+    within a language (see "CHANNEL COUNT ELECTS THE PRIMARY ONLY WHEN..." in main()).
+
+    This preferred the widest language unconditionally until 2026-09-28. Les Rendez-vous d'Anna
+    (1978, BFI Akerman Vol.1 D4): a:0 the film's French mono LPCM, a:1 an English 2.0 AC3 commentary
+    by Kate Rennebohm whose sampled windows hit no commentary cue. French and English tied 1-1, the
+    stereo commentary won on 2 > 1 channels, and the French film was then classed a `dub` - the
+    same mono-programme / stereo-commentary inversion the within-language rule was written to stop.
+    Re-scored offline over every *.tracks.json on disk (89 files, 251 streams): this was the only
+    language tie, and the only verdict that changed.
+    """
+    if len(top) < 2:
+        return top[0]
+    widest = max((s['channels'] or 0) for s in cand if s['spokenLang'] in top)
+    if widest >= 3:
+        return max(top, key=lambda l: max((s['channels'] or 0) for s in cand if s['spokenLang'] == l))
+    return min(top, key=lambda l: min(s['a'] for s in cand if s['spokenLang'] == l))
+
+
 def quiet_programme(streams, cand, hinted):
     """The programme track of a near-wordless film, or None. See the call site in main().
 
@@ -982,10 +1005,7 @@ def main():
             counts[s['spokenLang']] = counts.get(s['spokenLang'], 0) + 1
         best = max(counts.values())
         top = [l for l, n in counts.items() if n == best]
-        if len(top) > 1:
-            # tie: prefer the language owning the highest channel count on the disc
-            top.sort(key=lambda l: -max((s['channels'] or 0) for s in cand if s['spokenLang'] == l))
-        winner = top[0]
+        winner = language_tiebreak(cand, top)
         inLang = [s for s in cand if s['spokenLang'] == winner]
         # CHANNEL COUNT ELECTS THE PRIMARY ONLY WHEN A REAL MULTICHANNEL MIX IS IN PLAY.
         #
