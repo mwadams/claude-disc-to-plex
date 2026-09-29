@@ -1,8 +1,8 @@
 # Script index - GENERATED, do not edit
 
-Generated 2026-09-29 08:57 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
+Generated 2026-09-29 11:30 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
 
-**180 scripts under `scripts/`, 63 loop scripts under `D:/video/`. 2 with NO usable header, 73 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
+**182 scripts under `scripts/`, 63 loop scripts under `D:/video/`. 2 with NO usable header, 75 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
 
 Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library` = dot-source, defines functions only; `tests` = a test suite, exit 0 = all passed.
 
@@ -122,6 +122,8 @@ Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library
 | `lib-length-tolerance.ps1` | library | THE ONE PLACE that decides whether an encoded output's length matches what its manifest declared. Dot-source this; it defines functions and does nothing on its own. | when: The rule was written twice on 2026-09-07 and the two copies immediately disagreed. | - |
 | `lib-nas-governor.ps1` | library | NAS bandwidth governor - shared, CROSS-PROCESS admission control for anything that reads the published library over SMB. | when: The machine was force-rebooted at 11:47 because the NAS link had been busy all day and stopping the session did not stop it: the tracks are detached pwsh processes holding named mutexes, and three... | `pwsh -File D:/video/_nas-hold.ps1 -On -Reason "network hammering"` |
 | `lib-nas-governor.tests.ps1` | tests | Tests for lib-nas-governor.ps1. Run: pwsh -File lib-nas-governor.tests.ps1 (exit 0 = all passed) | NO TRIGGER IN HEADER | - |
+| `lib-ocr-junk.ps1` | library | The OCR quality gate's per-line JUNK test, shared by ocr-subtitles.ps1 and its tests. | NO TRIGGER IN HEADER | - |
+| `lib-ocr-junk.tests.ps1` | tests | Tests for lib-ocr-junk.ps1 - the OCR quality gate's per-line junk test. | NO TRIGGER IN HEADER | `pwsh -File lib-ocr-junk.tests.ps1      (exit 0 = all pass)` |
 | `lib-publish-state.ps1` | library | WHAT "PUBLISHED" MEANS FOR A MULTI-FILE WORK - one definition, used before AND after the copy. | when: 2026-09-04, Fight Club. The feature was still encoding while its 5 MB extra (`Other/Warning from Tyler Durden.mkv`) finished. | - |
 | `lib-publish-state.tests.ps1` | tests | Tests for Get-WorkOutstanding - the definition of "published" for a multi-file work. Run: pwsh -File lib-publish-state.tests.ps1 (exit 0 = all passed) | NO TRIGGER IN HEADER | - |
 | `lib-queue-guard.ps1` | library | Shared duplicate-insertion guard for any path-keyed pipeline queue CSV. | when: _transcribe-queue.csv held two independent enqueue routes - subtitle-coverage.ps1 (per-row Export-Csv -Append, checking a hashtable it built from the file ONCE at startup) and queue-transcribable.p... | - |

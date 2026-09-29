@@ -275,7 +275,10 @@ foreach ($mf in @($queueDirs | ForEach-Object { Get-ChildItem -LiteralPath $_ -F
     # shows instead of the one it was written for.
     $src = "$($r.src)" -replace '/', '\'
     $disc = Split-Path $src -Leaf
-    if ($disc -match '\.(mkv|m2ts|vob|iso)$') { $src = Split-Path $src -Parent; $disc = Split-Path $src -Leaf }
+    # A LOOSE FILE'S DISC IS ITS FOLDER TOO. Hand-staged rips (Doomwatch, 2026-09-29: six .mp4 files
+    # in _stage/Doomwatch) left `.mp4` out of this list, so each FILE was taken as its own "disc" and
+    # every slot reported NO IDENTITY EVIDENCE against a dispositions file nobody would name that way.
+    if ($disc -match '(?i)\.(mkv|m2ts|vob|iso|mp4|m4v|avi|ts)$') { $src = Split-Path $src -Parent; $disc = Split-Path $src -Leaf }
     while ($disc -match '^(STREAM|BDMV|VIDEO_TS|PLAYLIST|CLIPINF)$' -and (Split-Path $src -Parent)) {
       $src = Split-Path $src -Parent; $disc = Split-Path $src -Leaf
     }

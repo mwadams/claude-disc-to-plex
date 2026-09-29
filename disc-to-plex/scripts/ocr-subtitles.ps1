@@ -888,17 +888,10 @@ foreach ($f in $targets) {
     $cues  = [regex]::Matches($text, '(?m)^\d+\s*$').Count
     $lines = @($text -split "`r?`n" | Where-Object { $_ -and $_ -notmatch '^\d+$' -and $_ -notmatch '-->' })
 
-    # Junk = a line that is too short to be dialogue, OR that is mostly not letters. The
-    # length-only test misses the worst real-world failure: a track whose images the engine
-    # cannot read at all still emits long lines, they are just gibberish -
-    #   "= | dea oe ae esa ll"   "2 RES SI ASS SS)"
-    # which are 20 characters of nothing. Measure the alphabetic fraction instead.
-    $junk = @($lines | Where-Object {
-      $t = $_.Trim()
-      if ($t.Length -le 2) { return $true }
-      $alpha = ($t.ToCharArray() | Where-Object { [char]::IsLetter($_) -or $_ -eq ' ' }).Count
-      ($alpha / $t.Length) -lt 0.65
-    }).Count
+    # Junk = a line too short to be dialogue, or mostly not letters once ordinary dialogue
+    # punctuation is set aside - the rule and its history live in lib-ocr-junk.ps1.
+    . (Join-Path $PSScriptRoot 'lib-ocr-junk.ps1')
+    $junk = @($lines | Where-Object { Test-OcrJunkLine $_ }).Count
     $junkPct = if ($lines.Count) { [math]::Round(100 * $junk / $lines.Count) } else { 100 }
 
     # The cue floor has to scale with runtime. A flat "at least 5" is right for a feature but
