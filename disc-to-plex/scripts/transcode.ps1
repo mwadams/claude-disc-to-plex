@@ -622,6 +622,31 @@ function Get-ClpiStreamLangs([string]$clpi){
   } catch { return @{} }
   return $map
 }
+function Sub-ClpiLangHits($inspec,[string]$src,$lang){
+  # The subtitle ORDINALS the disc's CLPI declares as $lang, joined to ffprobe's streams by PID.
+  # Returns $null when there is no CLPI answer at all (not a raw BDMV .m2ts, no CLIPINF file, or a
+  # stream PID the CLPI does not declare) and an empty array when the CLPI answers "none are $lang".
+  # Shared by Sub-IdxByClpi (which chooses) and the subTrack ABORT (which must say WHY it could not):
+  # Moon (2026-09-29) declares FIVE English PGS streams and the abort reported "no 'eng' subtitle".
+  if($src -notmatch '(?i)[\\/]BDMV[\\/]STREAM[\\/](\d+)\.m2ts$'){ return $null }
+  $clpi = Join-Path (Split-Path (Split-Path $src -Parent) -Parent) "CLIPINF/$($Matches[1]).clpi"
+  if(-not (Test-Path -LiteralPath $clpi)){ return $null }
+  $decl = Get-ClpiStreamLangs $clpi
+  $rows = @{}   # NOT [ordered]: an [int] key on an OrderedDictionary is read as a POSITION and throws
+  foreach($line in @(& $fp -v error @inspec -select_streams s -show_entries stream=index,id -of csv=p=0 2>$null)){
+    if("$line".Trim() -match '^(\d+),(0x[0-9a-fA-F]+)$'){ $rows[[int]$Matches[1]] = $Matches[2] }
+  }
+  $ids = @($rows.Keys | Sort-Object | ForEach-Object { $rows[$_] })
+  if($ids.Count -eq 0){ return $null }
+  $hits = @()
+  for($i=0; $i -lt $ids.Count; $i++){
+    $sid = [Convert]::ToInt32(($ids[$i] -replace '^0x',''), 16)
+    if(-not $decl.ContainsKey($sid)){ return $null }
+    if($decl[$sid] -eq $lang){ $hits += $i }
+  }
+  return ,$hits
+}
+
 function Sub-IdxByClpi($inspec,[string]$src,$lang){
   # Fallback for Sub-IdxByLang on a raw Blu-ray .m2ts whose subtitle streams are UNTAGGED. Resolve the
   # ordinal from the disc's own CLPI declaration, joined to ffprobe's streams by PID - never by
@@ -1048,9 +1073,21 @@ foreach($it in $items){
         # There is no safe default here. Either the caller knows which stream is English (pass the
         # ORDINAL, established by rendering the streams and reading them) or the source has no
         # English subtitles (pass "none"). Guessing is what this whole file exists to prevent.
-        Write-Output "   ABORT: no '$subSpec' subtitle on this source and $ns subtitle stream(s) present.$subDflt"
-        Write-Output "          Refusing to fall back to s:0 - that ships an unknown language tagged as 'eng'."
-        Write-Output "          Fix the manifest: use an explicit 0-based ordinal, or subTrack:'none' if the source has no English subs."
+        # SAY WHICH OF THE TWO REFUSALS THIS IS. "no 'eng' subtitle" was printed for Moon (2026-09-29),
+        # whose CLPI declares FIVE English streams - the author went looking for a missing language
+        # instead of choosing between the ones that are there.
+        # Assign FIRST, then count: `@(Sub-ClpiLangHits ...)` wraps the comma-returned array as ONE
+        # element, so five English streams counted as 1 and the old message came back.
+        $clpiHits = Sub-ClpiLangHits $inspec "$($it.src)" $subSpec
+        $clpiHits = if($null -eq $clpiHits){ @() } else { @($clpiHits) }
+        if($clpiHits.Count -ge 2){
+          Write-Output "   ABORT: the disc declares $($clpiHits.Count) '$subSpec' subtitle streams (s:$($clpiHits -join ',s:')) and none dominates - '$subSpec' cannot choose.$subDflt"
+          Write-Output "          Render each one over the same frame, read them, and set subTrack to the ordinal of the main (dialogue) track."
+        } else {
+          Write-Output "   ABORT: no '$subSpec' subtitle on this source and $ns subtitle stream(s) present.$subDflt"
+          Write-Output "          Refusing to fall back to s:0 - that ships an unknown language tagged as 'eng'."
+          Write-Output "          Fix the manifest: use an explicit 0-based ordinal, or subTrack:'none' if the source has no English subs."
+        }
         # COUNT THE SKIP AS A FAILURE. Without this the manifest exits 0 and lane-runner files it
         # under done\ with an item never encoded - "MANIFEST DONE with failed items" through the one
         # path the exit-code fix at the bottom of this file did not cover. The ABORT line above is
@@ -1372,11 +1409,24 @@ foreach($it in $items){
   # 4:3 is NOT assumed here: this project has SD extras that are genuinely 16:9, and hard-coding
   # 4:3 has caused its own damage. The manifest author states `dar` per item, from LOOKING at a
   # frame. Absent the field, behaviour is unchanged.
+  #
+  # AN EXPLICIT `dar` APPLIES TO EVERY KIND, "BD" INCLUDED. It used to be honoured only for DVD/MKV,
+  # and derive-manifest-fields.ps1 promotes any 1080p source to kind "BD" - so an author's `dar` was
+  # silently dropped exactly where it mattered. Doomwatch (2026-09-29): "The Red Sky"/"You Killed
+  # Toby Wren" are 4:3 pictures STRETCHED into a 1920x1080 16:9 upscale; the author looked, stated
+  # "dar": "4:3", the row was re-kinded BD, and the encode would have shipped the stretch again.
+  # Without the field a BD item is unchanged (it keeps its declared aspect and the bt709 tags).
   if($it.kind -in @('DVD','MKV')){
     $dar = if(Has $it 'dar'){ "$($it.dar)" } else { Get-DAR $inspec }
     if(Has $it 'dar'){ Write-Output "   DAR $dar (explicit; source declares $(Get-DAR $inspec))" }
     $a += @('-aspect',$dar)
-  } else { $a += @('-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-color_range','tv') }
+  } else {
+    if(Has $it 'dar'){
+      Write-Output "   DAR $($it.dar) (explicit; source declares $(Get-DAR $inspec))"
+      $a += @('-aspect',"$($it.dar)")
+    }
+    $a += @('-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-color_range','tv')
+  }
 
   # --- audio codecs ---
   # Audio-Lang reads the SOURCE tag and falls back to 'eng' when a stream is untagged. Blu-ray

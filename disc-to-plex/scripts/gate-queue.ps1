@@ -294,6 +294,20 @@ if (Test-Path -LiteralPath $sourceGuard) {
   }
 }
 
+# AN "eng" THE ENCODER CANNOT RESOLVE. On a raw Blu-ray clip transcode.ps1 resolves subTrack "eng"
+# from the disc's CLPI, and ABORTS when several comparable English streams are declared (dialogue,
+# SDH, commentary subtitles) - after every other row of the manifest has already run. Moon (2009),
+# 2026-09-29: five English PGS streams, the feature aborted mid-manifest and had to be re-queued.
+# Measurable here, so refuse here, naming the ordinals. Counts packets only on a clip with 2+ English.
+$subGuard = 'D:/video/.claude/skills/disc-to-plex/scripts/assert-subtrack-resolvable.ps1'
+if (Test-Path -LiteralPath $subGuard) {
+  & pwsh -NoProfile -File $subGuard -Manifest $Manifest
+  if ($LASTEXITCODE -ne 0) {
+    Write-Output ("gate REFUSED: {0} - a row asks for subTrack 'eng' on a Blu-ray clip with several comparable English subtitle streams, so transcode.ps1 would abort it mid-manifest. Render them and set the ordinal. Not queued." -f (Split-Path $Manifest -Leaf))
+    exit 2
+  }
+}
+
 $sidecarGuard = 'D:/video/.claude/skills/disc-to-plex/scripts/assert-superseded-sidecars.ps1'
 if (Test-Path -LiteralPath $sidecarGuard) {
   & pwsh -NoProfile -File $sidecarGuard -Manifest $Manifest

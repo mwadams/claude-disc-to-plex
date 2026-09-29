@@ -1,8 +1,8 @@
 # Script index - GENERATED, do not edit
 
-Generated 2026-09-28 22:47 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
+Generated 2026-09-29 08:57 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
 
-**178 scripts under `scripts/`, 63 loop scripts under `D:/video/`. 2 with NO usable header, 72 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
+**180 scripts under `scripts/`, 63 loop scripts under `D:/video/`. 2 with NO usable header, 73 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
 
 Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library` = dot-source, defines functions only; `tests` = a test suite, exit 0 = all passed.
 
@@ -41,6 +41,8 @@ Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library
 | `assert-stills-pgcs-dispositioned.ps1` | command | REFUSE a manifest whose menu-domain STILLS row carves PGCs that its OWN disc's dispositions never named - the sibling-disc page numbers that build a gallery out of the wrong pages. | when: A menu-domain `pgcs` list is only meaningful for the ONE disc named in that row's `src`. | `pwsh -NoProfile -File assert-stills-pgcs-dispositioned.ps1 -Manifest D:/video/_queue/pending/x.json` |
 | `assert-stills-pgcs-dispositioned.tests.ps1` | tests | Tests for assert-stills-pgcs-dispositioned.ps1. | NO TRIGGER IN HEADER | `pwsh -File assert-stills-pgcs-dispositioned.tests.ps1` |
 | `assert-stream-packets.ps1` | command | COUNT THE PACKETS. Durations, sizes and stream declarations can all be right while the media is wrong; a packet count is the thing that cannot be faked. | when: Five defects found on 2026-08-28 alone were invisible to every structural check and every one of them was caught by counting packets: | - |
+| `assert-subtrack-resolvable.ps1` | command | REFUSE a manifest row whose `subTrack: "eng"` transcode.ps1 would be unable to resolve on a raw Blu-ray clip - because the disc declares SEVERAL English subtitle streams and none dominates. | when: On a raw BDMV\STREAM\<clip>.m2ts the subtitle streams are untagged, so transcode.ps1 resolves "eng" from the disc's CLPI declaration (Sub-IdxByClpi). | - |
+| `assert-subtrack-resolvable.tests.ps1` | tests | Tests for assert-subtrack-resolvable.ps1 - the gate check that refuses `subTrack: "eng"` on a raw Blu-ray clip whose CLPI declares several comparable English subtitle streams (Moon, 2026-09-29). | NO TRIGGER IN HEADER | `pwsh -File assert-subtrack-resolvable.tests.ps1      (exit 0 = all pass)` |
 | `assert-suites-for-changed.ps1` | command | Given files you have changed, name EVERY test suite that exercises them - and run them. | when: On 2026-09-06 `Resolve-BackupFolderName` in lib-optical.ps1 was changed so an archive folder name carries the disc fingerprint. | `pwsh -NoProfile -File assert-suites-for-changed.ps1 -Changed lib-optical.ps1` |
 | `assert-superseded-sidecars.ps1` | command | Refuse a manifest that would replace a published .mkv IN PLACE while leaving the old subtitle sidecar standing beside it. | NO TRIGGER IN HEADER | `pwsh -NoProfile -File assert-superseded-sidecars.ps1 -Manifest D:/video/_pending/foo.json` |
 | `assert-superseded-sidecars.tests.ps1` | tests | Tests for assert-superseded-sidecars.ps1. | NO TRIGGER IN HEADER | - |
