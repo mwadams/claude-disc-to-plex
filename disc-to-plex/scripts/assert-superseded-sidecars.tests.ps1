@@ -102,6 +102,41 @@ try {
   # re-gates cleanly instead of reading as a different source.
   Check 'RE-GATE: src as a file inside the same unit -> passes' `
         (Run @(Row $e01 @{ src = 'D:/video/_stage/Demo/VIDEO_TS/VTS_01_1.VOB' })).Code 0
+
+  # ---- EMBEDDED SUBTITLES (Lovejoy S3, 2026-09-29). No sidecar, but the published file may carry its
+  # subtitles INSIDE it; an overwrite by an encode with no subtitle source deletes them. A stub ffprobe
+  # answers the packet count from the fake file's own text ("PKTS=<n>"), so each case differs by
+  # exactly one fact. A declared-but-EMPTY stream (0 packets) is not subtitles and must pass.
+  $stub = Join-Path $root 'ffprobe-stub.ps1'
+  Set-Content -LiteralPath $stub -Value @'
+$f = $args[-1]
+$n = 0
+if ((Get-Content -LiteralPath $f -Raw) -match 'PKTS=(\d+)') { $n = [int]$Matches[1] }
+for ($i = 0; $i -lt $n; $i++) { '3' }
+exit 0
+'@
+  function RunP([object[]]$rows, [switch]$NoProbe) {
+    $mf = Join-Path $root ('p' + [Guid]::NewGuid().ToString('N').Substring(0, 6) + '.json')
+    ,$rows | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $mf -Encoding UTF8
+    $a = @('-NoProfile', '-File', $guard, '-Manifest', $mf, '-NasRoot', $nas, '-DoneDir', $done, '-Ffprobe', $stub)
+    if ($NoProbe) { $a += '-NoProbe' }
+    $o = & pwsh @a 2>&1
+    [pscustomobject]@{ Code = $LASTEXITCODE; Text = ($o -join "`n") }
+  }
+  $e03 = 'D:/video/Television Shows/Demo Show/Season 01/Demo Show - s01e03.mkv'
+  $e04 = 'D:/video/Television Shows/Demo Show/Season 01/Demo Show - s01e04.mkv'
+  Set-Content -LiteralPath (Join-Path $show 'Demo Show - s01e03.mkv') -Value 'old video with real embedded subs PKTS=412'
+  Set-Content -LiteralPath (Join-Path $show 'Demo Show - s01e04.mkv') -Value 'old video, declared-but-empty stream PKTS=0'
+
+  $r = RunP @(Row $e03)
+  Check 'EMBEDDED: real subtitle packets + no subTrack -> REFUSED' $r.Code 2
+  Check '  ...and it reports the packet count'                     ($r.Text -match 'EMBEDS 412 subtitle packet') $true
+  Check 'EMBEDDED: subTrack "none" is not an answer -> REFUSED'    (RunP @(Row $e03 @{ subTrack = 'none' })).Code 2
+  Check 'EMBEDDED: zero packets (declared-but-empty) -> passes'    (RunP @(Row $e04)).Code 0
+  Check 'EMBEDDED: a named subtitle source -> passes'              (RunP @(Row $e03 @{ subTrack = 'eng' })).Code 0
+  Check 'EMBEDDED: staleSidecar stated -> passes'                  (RunP @(Row $e03 @{ staleSidecar = 'embedded track OCR''d to .eng.srt first' })).Code 0
+  Check 'EMBEDDED: cannot measure (-NoProbe) -> passes'            (RunP @(Row $e03) -NoProbe).Code 0
+  Check 'EMBEDDED: a NEW output is never probed -> passes'         (RunP @(Row $e09)).Code 0
 }
 finally {
   Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

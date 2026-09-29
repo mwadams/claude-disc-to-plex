@@ -43,7 +43,9 @@
 .WHAT IT REFUSES
   A row where ALL of:
     1. it REPLACES something, in the sense just defined;
-    2. a subtitle sidecar already sits beside that NAS path;
+    2. a subtitle sidecar already sits beside that NAS path - OR, with no sidecar, the published
+       file EMBEDS a subtitle stream that carries PACKETS (a declared-but-empty stream is not
+       subtitles, and is not refused);
     3. the row names NO subtitle source (`subTrack` absent, empty, or "none"), so this publish will
        produce nothing to overwrite it with;
     4. the row does not carry `staleSidecar` - the author's explicit statement that they looked.
@@ -74,6 +76,9 @@ param(
   [string]$LocalRoot = 'D:/video',
   # The completed manifests, read to learn WHICH SOURCE produced the file already on the NAS.
   [string]$DoneDir = 'D:/video/_queue/done',
+  # Tests point this at a stub; empty = tool-paths.json. -NoProbe skips the embedded-subtitle count.
+  [string]$Ffprobe = '',
+  [switch]$NoProbe,
   [switch]$Quiet
 )
 
@@ -101,6 +106,40 @@ function Get-ObjText($row, [string]$name) {
   if ($null -eq $row) { return '' }
   if ($row.PSObject.Properties.Name -notcontains $name) { return '' }
   return "$($row.$name)".Trim()
+}
+
+# How many subtitle PACKETS does a published file carry inside it? $null = could not measure (no
+# ffprobe, -NoProbe, a read error) - and an unmeasured file is never refused. Every NAS reader goes
+# through lib-nas-governor's Invoke-NasRead (read slot, hold, throughput ceiling); this one too.
+$script:ffprobeExe = $null
+if (-not $NoProbe) {
+  if ($Ffprobe) { $script:ffprobeExe = $Ffprobe }
+  else {
+    try {
+      $tp = Get-Content 'D:/video/.transcode-tools/tool-paths.json' -Raw | ConvertFrom-Json
+      $cand = Join-Path (Split-Path $tp.ffmpeg) 'ffprobe.exe'
+      if (Test-Path -LiteralPath $cand) { $script:ffprobeExe = $cand }
+    } catch { }
+  }
+  $gov = Join-Path $PSScriptRoot 'lib-nas-governor.ps1'
+  if (Test-Path -LiteralPath $gov) { . $gov }
+}
+function Get-EmbeddedSubPackets([string]$path) {
+  if (-not $script:ffprobeExe) { return $null }
+  # GetNewClosure: bind THIS $path and probe. Invoke-NasRead has its own -Path, and PowerShell names
+  # are case-insensitive, so an unbound block would read whichever $path/$Path is nearest at call time.
+  $probe = $script:ffprobeExe
+  $count = {
+    $lines = @(& $probe -v error -select_streams s -show_entries packet=stream_index -of csv=p=0 $path 2>$null)
+    if ($LASTEXITCODE -ne 0) { return $null }
+    return @($lines | Where-Object { "$_".Trim() }).Count
+  }.GetNewClosure()
+  try {
+    if ($path.StartsWith('\\') -and (Get-Command Invoke-NasRead -ErrorAction SilentlyContinue)) {
+      return (Invoke-NasRead -Path $path -Label 'assert-superseded-sidecars embedded-subtitle count' -Do $count)
+    }
+    return (& $count)
+  } catch { return $null }
 }
 
 # WHO ALREADY WROTE THIS PATH? out (normalised) -> the set of src UNITS that completed manifests
@@ -162,13 +201,30 @@ foreach ($r in $rows) {
     $cand = $stem + $sfx
     if (Test-Path -LiteralPath $cand -PathType Leaf) { $found += (Split-Path -Leaf $cand) }
   }
-  if (-not $found.Count) { continue }                                   # (2) no sidecar to go stale
 
   $sub = Get-ObjText $r 'subTrack'
   if ($sub -and $sub -ne 'none') { $exempt++; continue }                # (3) a fresh one will be made
-
   $ack = Get-ObjText $r 'staleSidecar'
   if ($ack) { $exempt++; continue }                                     # (4) the author answered
+
+  if (-not $found.Count) {
+    # (2b) NO SIDECAR - BUT THE OLD FILE MAY CARRY ITS SUBTITLES INSIDE IT. An in-place overwrite by an
+    # encode with no subtitle source deletes an EMBEDDED track just as surely as it strands a sidecar,
+    # and silently: nothing is left to notice. The Lovejoy S3 manifest agent (2026-09-29) raised
+    # exactly this, and this guard - external files only - had passed the rows cleanly. Measured
+    # there, the old tracks carried ZERO packets (a disc's declared-but-empty stream carried through),
+    # so nothing was at risk; but a published file with REAL embedded subtitles would lose them with
+    # no gate in the way. So COUNT PACKETS - a declared stream proves nothing (Camille 1921, Moon). One
+    # governed pass over the NAS file, and only for a replacement that names no subtitle source.
+    $pk = Get-EmbeddedSubPackets $nas
+    if ($null -eq $pk -or $pk -eq 0) { continue }                       # nothing to lose, or unmeasurable
+    $faults += [pscustomobject]@{
+      Out      = (Split-Path -Leaf $outPath)
+      Sidecars = "(none) - but the published file EMBEDS $pk subtitle packet(s)"
+      Sub      = $(if ($sub) { $sub } else { '(no subTrack field)' })
+    }
+    continue
+  }
 
   $faults += [pscustomobject]@{
     Out      = (Split-Path -Leaf $outPath)
@@ -188,10 +244,12 @@ if ($faults.Count) {
     Say ("      subtitle source in this row : {0}" -f $f.Sub)
   }
   Say ''
-  Say  'That sidecar was OCR''d from the PREVIOUS source. This row names no subtitle stream, so this'
+  Say  'A SIDECAR was OCR''d from the PREVIOUS source. This row names no subtitle stream, so this'
   Say  'publish produces nothing to overwrite it with - and _ocr-loop.ps1 skips any file that already'
   Say  'has a sidecar, so it will never be revisited. A remaster is a different transfer; its old'
   Say  'timings are not transferable, and the desync surfaces to a viewer, not to a gate.'
+  Say  'An EMBEDDED track (packets counted, not just declared) is simply DELETED by the overwrite: the'
+  Say  'new encode carries no subtitle stream. Extract/OCR it first, or state that the loss is accepted.'
   Say ''
   Say  'Either name this disc''s subtitle stream in `subTrack`, or state the decision on the row:'
   Say  '    "staleSidecar": "disc carries no subpicture stream; existing DVD sidecar retained -"'
