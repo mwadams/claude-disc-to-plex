@@ -210,11 +210,50 @@ if($null -eq $items -or @($items).Count -eq 0){
 # It ABORTS rather than warns: shipping the wrong length is the expensive outcome, and the fix
 # (rip the title with MakeMKV, point src at the .mkv) takes a minute.
 # ---------------------------------------------------------------------------------------------
+# A PLAYLIST THAT PLAYS THIS CLIP WHOLE, BESIDE CLIPS THE DISC'S OWN DISPOSITIONS EXCLUDE, TRUNCATES
+# NOTHING. Moon's teaser (00099.mpls = the teaser + the menu loop) and Master and Commander's
+# theatrical trailer (00016.mpls = this trailer + two OTHER films' trailers, dispositioned `exclude`),
+# 2026-09-29: both refused, both stopped the line for a fix the dispositions had already proved. The
+# PLAY-ALL rule above only forgives clips this manifest SHIPS; an excluded clip is just as accounted
+# for. Returns a reason string when the exemption holds, $null when it does not - and it holds only
+# on MEASUREMENT: every playitem of this clip spans the whole clip (mpls in/out against the file), and
+# the playlist's remaining seconds are shipped, or sourced by a MakeMKV title the dispositions mark
+# `exclude`, with at most 20 s of anything else (menu stubs). No dispositions file, no python, or any
+# unreadable playlist -> $null, and the refusal stands.
+function Test-PlayAllOthersExcluded($disc, $mpls, $stem, $actual, $shipped, $srcOf){
+  $dp = Join-Path 'D:\video\_catalogue' ((Split-Path $disc -Leaf) + '.dispositions.txt')
+  if(-not (Test-Path -LiteralPath $dp)){ return $null }
+  $verdict = @{}
+  foreach($l in Get-Content -LiteralPath $dp){ if($l -match '^t(\d+)\|(\w+)\|'){ $verdict[[int]$Matches[1]] = $Matches[2] } }
+  $pj = $null
+  try { $pj = (& python (Join-Path $PSScriptRoot 'mpls-clips.py') $mpls --json 2>$null) -join "`n" | ConvertFrom-Json } catch { return $null }
+  if(-not $pj -or -not $pj.clips){ return $null }
+  $mine = @($pj.clips | Where-Object { $_.clip -eq $stem })
+  if(-not $mine.Count){ return $null }
+  foreach($c in $mine){ if([math]::Abs([double]$c.durSec - $actual) -gt 0.5){ return $null } }   # a PART of this clip: not whole
+  $excluded = @{}
+  foreach($t in $srcOf.Keys){
+    if("$($srcOf[$t])" -match '^(\d{5})\.m2ts$' -and $verdict[[int]$t] -eq 'exclude'){ $excluded[$Matches[1]] = "t{0:D2}" -f [int]$t }
+  }
+  $loose = 0.0; $why = @()
+  foreach($c in @($pj.clips | Where-Object { $_.clip -ne $stem })){
+    if($shipped[$c.clip]){ continue }
+    if($excluded.ContainsKey($c.clip)){ $why += "$($c.clip)=$($excluded[$c.clip]) exclude"; continue }
+    $loose += [double]$c.durSec
+  }
+  if($loose -gt 20){ return $null }
+  return ("{0} plays {1} whole; the rest is {2}" -f (Split-Path $mpls -Leaf), $stem,
+          $(if($why){ (($why | Select-Object -Unique) -join ', ') + $(if($loose -gt 0){ " + $([math]::Round($loose,1)) s of stubs" } else { '' }) } else { "$([math]::Round($loose,1)) s of stubs" }))
+}
+
 function Preflight-BDStreams($items){
   $makemkv = 'C:\Program Files (x86)\MakeMKV\makemkvcon64.exe'
   if(-not (Test-Path -LiteralPath $makemkv)){ Write-Warning 'MakeMKV not found - skipping raw-m2ts playlist check'; return }
 
-  $raw = @($items | Where-Object { $_.kind -eq 'BD' -and "$($_.src)" -match '\.m2ts$' })
+  # PER ITEM, NOT PER MANIFEST: an item's `allowRawStream` excuses THAT item. It used to skip the whole
+  # preflight (`if(-not ($items | ...allowRawStream))` at the call site), so flagging one trailer
+  # silently unchecked the feature beside it.
+  $raw = @($items | Where-Object { $_.kind -eq 'BD' -and "$($_.src)" -match '\.m2ts$' -and $_.allowRawStream -ne $true })
   if(-not $raw){ return }
 
   # group by disc root (…\<disc>\BDMV\STREAM\x.m2ts -> …\<disc>) so we call MakeMKV once per disc
@@ -224,7 +263,9 @@ function Preflight-BDStreams($items){
   foreach($g in $byDisc){
     $disc = $g.Name
     if(-not (Test-Path -LiteralPath $disc)){ continue }
-    $info = & $makemkv -r --cache=1 --minlength=10 info "file:$disc" 2>&1
+    # --noscan: without it MakeMKV probes every optical drive through its arbiter on a FOLDER call, and
+    # probing F: during a disc's spin-up is what broke the drive (2026-09-26/28, makemkv-folder-calls-need-noscan).
+    $info = & $makemkv -r --cache=1 --noscan --minlength=10 info "file:$disc" 2>&1
 
     # TINFO:<id>,9,0,"H:MM:SS" = runtime, TINFO:<id>,16,0,"<source>" = playlist or stream it came from
     $len = @{}; $srcOf = @{}
@@ -238,8 +279,11 @@ function Preflight-BDStreams($items){
     if(-not $len.Count){ Write-Warning "preflight: MakeMKV reported no titles for $disc"; continue }
 
     # Seconds of every raw stream this manifest ships from this disc, by stem - see PLAY-ALL below.
+    # EVERY raw item on this disc counts as shipped - including an allowRawStream one, which is excused
+    # from its own check but still goes out.
     $shipped = @{}
-    foreach($it in $g.Group){
+    foreach($it in @($items | Where-Object { $_.kind -eq 'BD' -and "$($_.src)" -match '\.m2ts$' -and
+                     (Split-Path (Split-Path (Split-Path $_.src -Parent) -Parent) -Parent) -eq $disc })){
       $st = [IO.Path]::GetFileNameWithoutExtension((Split-Path $it.src -Leaf))
       if(-not $shipped.ContainsKey($st)){ $shipped[$st] = [double](& $fp -v error -show_entries format=duration -of csv=p=0 $it.src 2>$null) }
     }
@@ -276,7 +320,12 @@ function Preflight-BDStreams($items){
         # distinct clips shipped from this disc. A repeated clip or an unshipped one still refuses.
         $covered = 0.0
         foreach($u in ($clips | Select-Object -Unique)){ if($shipped[$u]){ $covered += $shipped[$u] } }
-        return ($len[$_] -gt $covered + 20)
+        if($len[$_] -le $covered + 20){ return $false }
+        $ok = Test-PlayAllOthersExcluded $disc $mpls $stem $actual $shipped $srcOf
+        # Write-HOST: this runs inside Where-Object, where any pipeline output becomes part of the
+        # predicate - a Write-Output line here would turn "accepted" into a truthy "refuse".
+        if($ok){ Write-Host "   preflight: $stream accepted raw - $ok"; return $false }
+        return $true
       }
       foreach($c in $cands){
         $problems += [pscustomobject]@{
@@ -299,7 +348,7 @@ function Preflight-BDStreams($items){
     exit 2
   }
 }
-if(-not ($items | Where-Object { $_.allowRawStream -eq $true })){ Preflight-BDStreams $items }
+Preflight-BDStreams $items
 
 # ---------------------------------------------------------------------------------------------
 # PREFLIGHT: enough free space to hold what this manifest will WRITE.

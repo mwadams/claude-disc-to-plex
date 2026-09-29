@@ -50,6 +50,23 @@ if (-not (Test-Path -LiteralPath $Manifest -PathType Leaf)) {
   throw "-Manifest '$Manifest' does not exist. Author it first, then gate it."
 }
 
+# A MANIFEST WITH NO ROWS IS NOT A MANIFEST. Every guard below reads "no rows" as "nothing to check"
+# and exits 0, so an empty file passed the whole chain and was queued. Master and Commander,
+# 2026-09-29: a retry was rebuilt from a failed manifest that another process had just moved, the
+# read came back empty, `[]` was written - and the gate queued it. Count the rows the way every guard
+# does (ConvertFrom-Json UNWRAPS a single-element array, and an `outputs` document holds them there).
+$rowsRead = $null
+try {
+  $mjGate = Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json
+  $rowsRead = if ($null -eq $mjGate) { 0 }
+              elseif ($mjGate -isnot [System.Array] -and $mjGate.PSObject.Properties.Name -contains 'outputs') { @($mjGate.outputs).Count }
+              else { @($mjGate).Count }
+} catch { throw "gate REFUSED: $(Split-Path $Manifest -Leaf) is not readable JSON - $($_.Exception.Message)" }
+if ($rowsRead -lt 1) {
+  Write-Output ("gate REFUSED: {0} has NO ROWS - an empty manifest passes every guard below (they read 'no rows' as 'nothing to check'), so it is refused here. Rebuild it from its real source. Not queued." -f (Split-Path $Manifest -Leaf))
+  exit 2
+}
+
 # MEASURABLE FIELDS ARE DERIVED BEFORE ANYTHING IS CHECKED - for manifests gated by hand, outside the
 # dispositions loop (which runs the same step itself). Idempotent; exit 2 = the guards below decide.
 $deriver = 'D:/video/.claude/skills/disc-to-plex/scripts/derive-manifest-fields.ps1'
