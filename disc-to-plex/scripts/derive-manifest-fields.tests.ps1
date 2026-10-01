@@ -107,6 +107,24 @@ try {
   Check 'absent expectFrames filled from the packet count' ([int]$r.Rows[2].expectFrames -eq 250) (J $r.Rows[2])
   Check 'wrong source: expectFrames left alone' ([int]$r.Rows[3].expectFrames -eq 250 -and -not ((J $r.Rows[3].derived) -match 'expectFrames'))
 
+  # A HELD STILL (REAL CASE: The Thin Red Line's Melanesian Songs, 2026-10-01): ONE video packet under
+  # 10 s of audio. transcode.ps1 resamples a stillsHold row to expectSeconds x fps, so the packet count
+  # (1) is the wrong figure. One fact differs between the rows: stillsHold.
+  Write-Host 'expectFrames: a held still'
+  # ONE frame spanning the whole 10 s, as the carved menu VOB's single still does (a 25 fps one-frame
+  # file would report a 0.04 s video stream and never settle expectSeconds at all).
+  $still = Make 'still.mkv' '-f lavfi -i color=c=black:s=720x576:r=0.1 -f lavfi -i sine=f=440:r=48000 -t 10 -c:v libx264 -preset ultrafast -c:a aac'
+  Write-Manifest @(
+    @{ out = 'x/H.mkv'; src = $still; kind = 'MKV'; subTrack = 'none'; expectSeconds = 10.0; stillsHold = 10.0; stillsFps = 25 },
+    @{ out = 'x/H30.mkv'; src = $still; kind = 'MKV'; subTrack = 'none'; expectSeconds = 10.0; stillsHold = 10.0; stillsFps = '30000/1001' },
+    @{ out = 'x/P.mkv'; src = $still; kind = 'MKV'; subTrack = 'none'; expectSeconds = 10.0 }
+  )
+  $r = Run
+  Check 'REAL: held still -> expectSeconds x stillsFps (250), not the 1 source packet' ([int]$r.Rows[0].expectFrames -eq 250) (J $r.Rows[0])
+  Check '  ...and the derived record names the basis' ((J $r.Rows[0].derived) -match 'held still') (J $r.Rows[0].derived)
+  Check 'a rational stillsFps (30000/1001) -> 300' ([int]$r.Rows[1].expectFrames -eq 300) (J $r.Rows[1])
+  Check 'known-negative: the same file with no stillsHold keeps the packet count (1)' ([int]$r.Rows[2].expectFrames -eq 1) (J $r.Rows[2])
+
   # ============================================================================ subTrack
   Write-Host 'subTrack'
   Write-Manifest @(

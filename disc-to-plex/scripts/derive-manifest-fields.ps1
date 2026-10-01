@@ -352,12 +352,36 @@ foreach ($r in $rows) {
           $fields = ($vf.FieldOrder -match '^(tt|bb|tb|bt)$') -and ($vf.Codec -eq 'h264')
           $pk = 0
           $expF = 0; $haveF = (Has $r 'expectFrames') -and [int]::TryParse(((Get-Text $r 'expectFrames') -replace '\.0+$', ''), [ref]$expF) -and $expF -gt 0
-          $pk = Get-VideoPackets $srcWin
+          # A HELD STILL IS NOT ITS SOURCE'S PACKET COUNT. transcode.ps1 stretches a `stillsHold` row's
+          # input to the row's TOTAL expectSeconds and resamples at `stillsFps` (else the source's
+          # r_frame_rate when 10-60 fps, else 24) - so the output has round(expectSeconds x fps)
+          # frames, whatever the still count. 2026-10-01, The Thin Red Line: 11 Melanesian Songs
+          # tracks (one CD-cover still each under audio) were given expectFrames 1 here, encoded
+          # correctly to exactly hold x 25 frames (722..5518), and all 11 were failed as wrong-length.
+          $isHold = $false; $holdSec = 0.0
+          if ((Has $r 'stillsHold') -and [double]::TryParse((Get-Text $r 'stillsHold'), [ref]$holdSec) -and $holdSec -gt 0) { $isHold = $true }
+          $isPaff = $false
+          if ($isHold) {
+            $hfps = 0.0; $hfpsWhy = ''
+            $sf = Get-Text $r 'stillsFps'
+            if ($sf -match '^(\d+)/(\d+)$' -and [double]$Matches[2] -gt 0) { $hfps = [double]$Matches[1] / [double]$Matches[2]; $hfpsWhy = "stillsFps $sf" }
+            elseif ($sf -and [double]::TryParse($sf, [ref]$hfps) -and $hfps -gt 0) { $hfpsWhy = "stillsFps $sf" }
+            elseif ($vf.Fps -ge 10 -and $vf.Fps -le 60) { $hfps = $vf.Fps; $hfpsWhy = "source frame rate $($vf.Fps)" }
+            else { $hfps = 24.0; $hfpsWhy = 'transcode.ps1 fallback 24 fps' }
+            $totSec = [double](Get-Text $r 'expectSeconds')
+            $pk = [int][math]::Round($totSec * $hfps)
+            $measFrames = $pk
+            $basis = ("held still: expectSeconds {0:N3} x {1} - transcode.ps1 resamples a stillsHold row to the total, not to the source's still count" -f $totSec, $hfpsWhy)
+          } else {
+            $pk = Get-VideoPackets $srcWin
+          }
           if ($pk -gt 0) {
+            if (-not $isHold) {
             # PAFF: each FIELD is a packet, so the packet rate is twice the frame rate.
             $isPaff = $fields -and $vf.Fps -gt 0 -and [math]::Abs(($pk / [math]::Max(0.001, $measSec)) - 2 * $vf.Fps) -le 0.02 * 2 * $vf.Fps
             $measFrames = if ($isPaff) { [int][math]::Floor($pk / 2) } else { $pk }
             $basis = if ($isPaff) { "source v:0 packet count $pk halved - field-coded H.264 (field_order $($vf.FieldOrder)) carries one packet per FIELD" } else { "source v:0 packet count (ffprobe -count_packets)" }
+            }
             if (-not $haveF) {
               [void]$changes.Add([ordered]@{ field = 'expectFrames'; from = $null; to = $measFrames; evidence = $basis })
               Set-Field $r 'expectFrames' $measFrames

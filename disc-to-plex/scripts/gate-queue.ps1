@@ -325,6 +325,17 @@ if (Test-Path -LiteralPath $subGuard) {
   }
 }
 
+# A numeric subTrack is the SUBTITLE ORDINAL; an absolute stream index written there picks a near-empty
+# phantom (The Enemy Below 2026-10-01: subTrack 7 = a 7-packet German forced stream, shipped tagged eng).
+$subSubstGuard = 'D:/video/.claude/skills/disc-to-plex/scripts/assert-subtrack-substantial.ps1'
+if (Test-Path -LiteralPath $subSubstGuard) {
+  & pwsh -NoProfile -File $subSubstGuard -Manifest $Manifest
+  if ($LASTEXITCODE -ne 0) {
+    Write-Output ("gate REFUSED: {0} - a DVD row's subTrack picks a near-empty subtitle stream while the title carries a substantial one (an absolute stream index written as the subtitle ordinal?). Not queued." -f (Split-Path $Manifest -Leaf))
+    exit 2
+  }
+}
+
 $sidecarGuard = 'D:/video/.claude/skills/disc-to-plex/scripts/assert-superseded-sidecars.ps1'
 if (Test-Path -LiteralPath $sidecarGuard) {
   & pwsh -NoProfile -File $sidecarGuard -Manifest $Manifest
