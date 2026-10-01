@@ -170,8 +170,22 @@ $manifestDirs = @("$Manifests/*.json", "$Pending/*.json", "$Queue/*.json", "$Que
 $manifestFileCache = @(Get-ChildItem $manifestDirs -ErrorAction SilentlyContinue | ForEach-Object {
   $content = ''
   try { $content = Get-Content -LiteralPath $_.FullName -Raw -ErrorAction Stop } catch { $content = '' }
-  [pscustomobject]@{ Name = $_.Name; FullName = $_.FullName; LastWriteTime = $_.LastWriteTime; Content = $content }
+  [pscustomobject]@{ Name = $_.Name; FullName = $_.FullName; LastWriteTime = $_.LastWriteTime; Content = $content
+                     InArchive = ((Split-Path $_.FullName -Parent) -replace '\\', '/').TrimEnd('/') -ieq (($Manifests -replace '\\', '/').TrimEnd('/')) }
 })
+# A MANIFEST IN _manifests WRITTEN BEFORE THE DISC WAS STAGED IS HISTORY, NOT THIS COPY'S MANIFEST.
+# _manifests is the August-era archive: nothing encodes from it (the lane reads _queue only). When a
+# disc is re-fetched for a re-rip (list19, 2026-09-29), its old pass's manifest still names
+# `_stage/<disc>`, so the board called the fresh copy "AUTHORED BUT NEVER QUEUED" and the dispositions
+# loop treated it as "downstream owns it" and never briefed its manifest - Last King of Scotland sat
+# 38 h behind _manifests/secc-3.json of 2026-08-15, with 24 more list19 discs carrying the same trap.
+# A staging folder's CreationTime is its fetch time (robocopy keeps the source's LastWriteTime, not
+# its CreationTime). Only _manifests is aged out: a queued, running, done or failed manifest is
+# never assumed stale, because those stores are the line's live record.
+function Select-CurrentMentions($files, $unitDir) {
+  $stagedAt = $unitDir.CreationTime
+  @($files | Where-Object { -not ($_.InArchive -and $_.LastWriteTime -lt $stagedAt) })
+}
 
 # SAME REASONING FOR THE BARE-NAME QUEUE LISTINGS FURTHER DOWN (the FAILED/DONE/QUEUED/RUNNING
 # classification): none of the four depend on the unit either, so they too are computed once here
@@ -335,7 +349,7 @@ foreach ($u in $units) {
   # afford.
   # $manifestDirs / $manifestFileCache are built ONCE, above the loop - see the comment there.
   $pathRx = '_stage[\\/]' + [regex]::Escape($name) + '(?=["\\/])'
-  $mentioned = @($manifestFileCache | Where-Object { $_.Content -match $pathRx })
+  $mentioned = @(Select-CurrentMentions @($manifestFileCache | Where-Object { $_.Content -match $pathRx }) $u)
 
   # A DISC THAT LEGITIMATELY SHIPS NOTHING IS CLOSED, NOT WAITING ON A MANIFEST.
   #
@@ -480,13 +494,13 @@ foreach ($u in $units) {
     # This line re-derived it by hand twelve lines below the dot-source, and drifted anyway.
     $slug = ConvertTo-RipSlug -Name $name
     # Same cache as $mentioned above - no fresh listing or read per unit.
-    $viaRip = @($manifestFileCache | Where-Object {
+    $viaRip = @(Select-CurrentMentions @($manifestFileCache | Where-Object {
       $raw = $_.Content
       foreach ($sfx in @('-rip', '-x', '-main', '-mkv')) {
         if ($raw -match ('_stage[\\/]' + [regex]::Escape($slug + $sfx) + '(?=["\\/])')) { return $true }
       }
       $false
-    })
+    }) $u)
     if ($viaRip.Count -gt 0) {
       $moving += "{0,-28} its RIP carries the manifest ({1})" -f $name, (($viaRip.Name) -join ', ')
     } else {
