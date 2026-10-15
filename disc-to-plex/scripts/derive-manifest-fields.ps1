@@ -172,12 +172,20 @@ function Get-VideoPackets([string]$src) {
 function Get-StreamEnds([string]$src, [double]$dur) {
   # The last video and audio packet: a container can outlast its programme (Friends S7 D2 t06, a PGS
   # stream declaring a minute past the A/V). Same probe as assert-expectations-match-source.ps1.
+  # RELATIVE TO THE CONTAINER'S START, as the gate measures it (assert-expectations-match-source.ps1,
+  # fixed there 2026-09-19). pts_time is ABSOLUTE: The Ark In Space's carved CGI angles start at
+  # 0.287 s, so the last video packet read 1,499.287 s - within tolerance of a wrong 1,499.6 s
+  # figure - and this script "left as authored" what the gate then refused (2026-10-15). Two
+  # measurements of one quantity must agree, so both now subtract start_time.
   $ends = @{ v = 0.0; a = 0.0 }
-  $from = [math]::Max(0, $dur - 120)
+  $st0 = 0.0
+  $stTxt = "$(& $ffprobe -v error -show_entries format=start_time -of csv=p=0 $src 2>$null | Select-Object -First 1)".Trim()
+  if ($stTxt -match '^[0-9]+(\.[0-9]+)?$') { $st0 = [double]$stTxt }
+  $from = $st0 + [math]::Max(0, $dur - 120)
   foreach ($sel in 'v:0', 'a:0') {
     $pts = @(& $ffprobe -v error -select_streams $sel -read_intervals ("{0}%+#100000" -f [int]$from) -show_entries packet=pts_time -of csv=p=0 $src 2>$null |
              Where-Object { $_ -match '^[0-9]+(\.[0-9]+)?$' })
-    if ($pts.Count) { $ends[$sel.Substring(0, 1)] = [double]$pts[-1] }
+    if ($pts.Count) { $ends[$sel.Substring(0, 1)] = [double]$pts[-1] - $st0 }
   }
   return $ends
 }

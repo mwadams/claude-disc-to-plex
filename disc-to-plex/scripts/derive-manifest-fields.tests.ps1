@@ -125,6 +125,28 @@ try {
   Check 'a rational stillsFps (30000/1001) -> 300' ([int]$r.Rows[1].expectFrames -eq 300) (J $r.Rows[1])
   Check 'known-negative: the same file with no stillsHold keeps the packet count (1)' ([int]$r.Rows[2].expectFrames -eq 1) (J $r.Rows[2])
 
+  # A CONTAINER THAT DOES NOT START AT ZERO (REAL CASE: The Ark In Space's carved CGI angles,
+  # start_time 0.287 s, 2026-10-15). pts_time is absolute, so the last video packet read ~0.5 s late
+  # and a figure 0.6 s too long "matched the last video packet" and was left as authored - which the
+  # gate, measuring relative to the start, then refused. One fact differs between the two sources: the
+  # start offset. The outlasting-container rule itself must keep working (known-positive below).
+  Write-Host 'expectSeconds: a source that starts at a non-zero time'
+  # A program stream, like the carved VOB: start_time ~0.53 s, duration 10.0 s measured FROM it.
+  $late = Make 'late.vob' '-f lavfi -i color=c=black:s=320x240:r=25 -f lavfi -i sine=f=440:r=48000 -t 10 -c:v mpeg2video -c:a mp2 -f vob'
+  $zero = Make 'zero.mkv' '-f lavfi -i color=c=black:s=320x240:r=25 -f lavfi -i sine=f=440:r=48000 -t 10 -c:v libx264 -preset ultrafast -c:a aac'
+  $srt = Join-Path $root 'long.srt'
+  Set-Content -LiteralPath $srt -Value "1`n00:00:01,000 --> 00:00:02,000`nhello`n`n2`n00:00:19,000 --> 00:00:20,000`nlate cue`n" -Encoding ascii
+  $over = Make 'over.mkv' ("-t 10 -f lavfi -i color=c=black:s=320x240:r=25 -t 10 -f lavfi -i sine=f=440:r=48000 -i {0} -map 0 -map 1 -map 2 -c:v libx264 -preset ultrafast -c:a aac -c:s srt" -f ($srt -replace '\\', '/'))
+  Write-Manifest @(
+    @{ out = 'x/L.mkv'; src = $late; kind = 'MKV'; subTrack = 'none'; expectSeconds = 10.6 },
+    @{ out = 'x/Z.mkv'; src = $zero; kind = 'MKV'; subTrack = 'none'; expectSeconds = 10.6 },
+    @{ out = 'x/O.mkv'; src = $over; kind = 'MKV'; subTrack = 'none'; expectSeconds = 10.0 }
+  )
+  $r = Run
+  Check 'REAL: offset source, figure 0.6 s long -> corrected, not "left as authored"' ([math]::Abs([double]$r.Rows[0].expectSeconds - 10.0) -lt 0.1 -and -not ((J $r.Rows[0].derived) -match 'outlasts')) (J $r.Rows[0])
+  Check 'the same wrong figure on a zero-start source -> corrected too (the control)' ([math]::Abs([double]$r.Rows[1].expectSeconds - 10.0) -lt 0.1) (J $r.Rows[1])
+  Check 'known-positive: a container a subtitle stream outlasts is still left as authored' ([double]$r.Rows[2].expectSeconds -eq 10.0 -and ((J $r.Rows[2].derived) -match 'outlasts')) (J $r.Rows[2])
+
   # ============================================================================ subTrack
   Write-Host 'subTrack'
   Write-Manifest @(

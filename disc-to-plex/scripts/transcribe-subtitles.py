@@ -88,6 +88,7 @@ def nas_readrate_args(src, duration_s):
 MIN_DUR, MAX_DUR, GAP, WRAP = 1.0, 8.0, 0.04, 42
 # Refuse to write a transcript that stops early - the VAD failure's signature.
 MIN_COVERAGE = 0.80
+TAIL_GRACE_S = 0.5     # voice within this of the last cue's end is that cue's own trailing speech
 # Refuse output that is not recognisable English, mirroring the OCR pipeline's guard.
 MIN_ENGLISH = 0.35
 
@@ -444,10 +445,7 @@ def main():
             print(f'[test] TRANSCRIBE_TEST_TRUNCATE_AT={_trunc}: kept {len(segments)} cue(s)')
         tail_check = None
         if segments and duration and segments[-1]['end'] / duration < MIN_COVERAGE:
-            tail_start = max(0.0, segments[-1]['end'] - 1.0)
-            tail_wav = os.path.join(tmpdir, 'tail.tmp16k.wav')
-            subprocess.run([ff, '-v', 'error', '-ss', f'{tail_start:.3f}', '-i', wav,
-                            '-c:a', 'pcm_s16le', '-y', tail_wav], check=True)
+            last_end = segments[-1]['end']
             # VOICE ACTIVITY, NOT A SECOND DECODE. Re-transcribing the tail was tried first and is not a
             # measurement: whisper hallucinates lines over music ('Thanks for watching!', 'Battle of the
             # Chiefs!'), and no_speech_prob is scored per 30 s window, so the same real narration read
@@ -457,13 +455,26 @@ def main():
             # DECODE because it clipped line tails - it is used here only to ask 'is anyone talking'.)
             from faster_whisper.audio import decode_audio
             from faster_whisper.vad import get_speech_timestamps, VadOptions
-            tail_audio = decode_audio(tail_wav, sampling_rate=16000)
-            regions = get_speech_timestamps(tail_audio, VadOptions())
-            speech_s = sum(r['end'] - r['start'] for r in regions) / 16000.0
-            tail_s = len(tail_audio) / 16000.0
+            # RUN VAD OVER THE WHOLE FILE, THEN COUNT ONLY THE VOICE PAST THE LAST CUE (2026-10-15).
+            # This used to cut the tail out (from 1 s before the last cue) and run VAD on that clip
+            # alone. Both halves misread Roman Holiday's reissue trailer - narration ends 103.3 s of
+            # 142 s, the transcript's last cue ends 103.0 s on its final word, then 39 s of music:
+            #  - the 1 s overlap counted the last cue's own words as "dropped" speech, and
+            #  - Silero is stateful, so a clip opened mid-sentence read the following music as voice:
+            #    4.1 s from a 101.99 s start, 0.9 s from 102.4 s, NONE from the whole file.
+            # Against a 4.0 s threshold that is a coin toss. The whole file gives the detector its real
+            # context; clipping at the last cue (plus a grace for its trailing syllable) keeps every
+            # second of voice a truncated transcript really did drop.
+            audio = decode_audio(wav, sampling_rate=16000)
+            regions = get_speech_timestamps(audio, VadOptions())
+            covered = (last_end + TAIL_GRACE_S) * 16000
+            # float()/bool(): the region bounds can be numpy scalars, and a numpy bool in tailCheck
+            # crashed the provenance json.dump AFTER the .srt was written - a sidecar with no record.
+            speech_s = float(sum(max(0, r['end'] - max(r['start'], covered)) for r in regions)) / 16000.0
+            tail_s = max(0.0, len(audio) / 16000.0 - last_end)
             threshold = max(3.0, 0.10 * tail_s)
             tail_check = {'tailSeconds': round(tail_s, 1), 'speechSeconds': round(speech_s, 1),
-                          'thresholdSeconds': round(threshold, 1), 'spoken': speech_s >= threshold}
+                          'thresholdSeconds': round(threshold, 1), 'spoken': bool(speech_s >= threshold)}
     except subprocess.CalledProcessError as e:
         print(f'[failed] audio extraction failed: {e}')
         return 2

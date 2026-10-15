@@ -1238,18 +1238,25 @@ if (Test-Path -LiteralPath $reripDrive) {
 # COUNT is the trigger, never the contents - reading them is the review, and that is a human or
 # agent job.
 $failuresOwed = @()
+# Distinct PATHS, not rows: a file retried three times is one failure owing one review. And only a
+# path whose LATEST result is 'failed' - the registers are append-only, so a retry that later shipped
+# ('ok', 'ok-redo') or was found not applicable ('na') leaves its old 'failed' row behind. Counting
+# that row held the alarm open for ever: on 2026-10-15 the only way to clear a reviewed-and-retried
+# failure would have been to rewrite a register its track owns.
+function Get-LatestFailedPaths([string]$csv) {
+  $latest = @{}
+  Import-Csv -LiteralPath $csv | ForEach-Object { $latest["$($_.Path)".ToLowerInvariant()] = "$($_.Result)" }
+  @($latest.Keys | Where-Object { $latest[$_] -eq 'failed' })
+}
 try {
   $tp = 'D:/video/_transcribe-progress.csv'
   if (Test-Path -LiteralPath $tp) {
-    $tf = @(Import-Csv -LiteralPath $tp | Where-Object { "$($_.Result)" -eq 'failed' })
-    # Distinct PATHS, not rows: a file retried three times is one failure owing one review.
-    $tfu = @($tf | ForEach-Object { "$($_.Path)" } | Sort-Object -Unique)
+    $tfu = @(Get-LatestFailedPaths $tp)
     if ($tfu.Count) { $failuresOwed += ("transcribe: {0} file(s) failed and unreviewed" -f $tfu.Count) }
   }
   $op = 'D:/video/_ocr-queue-progress.csv'
   if (Test-Path -LiteralPath $op) {
-    $of = @(Import-Csv -LiteralPath $op | Where-Object { "$($_.Result)" -eq 'failed' })
-    $ofu = @($of | ForEach-Object { "$($_.Path)" } | Sort-Object -Unique)
+    $ofu = @(Get-LatestFailedPaths $op)
     if ($ofu.Count) { $failuresOwed += ("ocr-queue: {0} file(s) failed and unreviewed" -f $ofu.Count) }
   }
 } catch { }
