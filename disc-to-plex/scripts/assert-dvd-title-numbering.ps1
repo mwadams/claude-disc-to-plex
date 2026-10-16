@@ -91,6 +91,34 @@ foreach ($t in @($cat.titles)) {
   if (-not $byTitle.ContainsKey($k)) { $byTitle[$k] = @() }
   $byTitle[$k] += $secs
 }
+
+# AND THE DISC'S OWN FIGURES FOR EACH dvdvideo TITLE, from the evidence pack (2026-10-16, operator:
+# "go ahead with BTS2"). The catalogue's durations are MakeMKV's, tied to a dvdvideo title by a
+# mapping; the evidence pack measures each dvdvideo title DIRECTLY - what its IFO declares and what
+# the dvdvideo demuxer emits - so no mapping is involved and nothing is MakeMKV's guess. Big Train
+# Series 2: every episode's IFO declared and emitted ~10 s MORE than MakeMKV's figure (1,745 vs
+# 1,735 s ...), and because the six episodes sit within 40 s of each other, a 10 s offset landed
+# rows on NEIGHBOURS' MakeMKV figures (+1, +3, -1) - read as a shift and refused twice, on a manifest
+# whose every title was right. Adding the direct figures lets a correct row match its own title
+# exactly. The shift this guard exists for still refuses: Tales of the Unexpected's row asked for a
+# 23-SECOND leader title, and no figure of a 23 s title matches a 1,400 s episode.
+$evPath = Join-Path $Catalogue "$unit.evidence.json"
+if (Test-Path -LiteralPath $evPath) {
+  try {
+    $ev = Get-Content -LiteralPath $evPath -Raw | ConvertFrom-Json
+    foreach ($t in @($ev.titles)) {
+      if ($null -eq $t.dvdvideoTitle) { continue }
+      $k = [int]$t.dvdvideoTitle
+      foreach ($v in @($t.declaredSec, $t.emittedSec)) {
+        $d = 0.0
+        if ($null -ne $v -and [double]::TryParse("$v", [ref]$d) -and $d -gt 0) {
+          if (-not $byTitle.ContainsKey($k)) { $byTitle[$k] = @() }
+          $byTitle[$k] += $d
+        }
+      }
+    }
+  } catch { }   # an unreadable pack leaves the catalogue figures, exactly as before
+}
 if ($byTitle.Count -lt 2) { Say "assert-dvd-title-numbering: catalogue for '$unit' carries no usable per-title durations - cannot judge"; exit 0 }
 
 # The rule itself lives in ONE place and is dot-sourced, never re-implemented here - the same
