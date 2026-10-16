@@ -86,6 +86,31 @@ function Test-DiscReadDirectly {
   }
   return ($consumers -gt 0)
 }
+# A DISC WHOSE ANALYSIS SAYS NOTHING SHIPS IS NEVER RIPPED (2026-10-16, operator: "a substantial time
+# and storage sponge that is all waste"). The ships-nothing RECORD (checked in the pass below) lands
+# only when the dispositions track closes the disc, a pass or more after the verdict is written - and
+# longer when the closure is refused. Star Trek 11 Disk 1's verdict was written by 08:49; this loop
+# began a 42 GB rip of t00 at 08:49, the closure was refused until 08:57 (a stale archive manifest),
+# and the rip then held the staged .m2ts open so the staging release failed "PARTIAL release, paths
+# still present (locked?)". So read the VERDICT, not just the record - with the one shared parser,
+# lib-closure-verdict.ps1, which already refuses prose that merely mentions it (or denies it).
+# Two places carry it, exactly as close-ships-nothing.ps1 accepts them: the dispositions, or a
+# closure-verdict sidecar whose dispositionsSha256 matches the dispositions as they are NOW.
+. 'D:/video/.claude/skills/disc-to-plex/scripts/lib-closure-verdict.ps1'
+function Test-ShipsNothingVerdict {
+  param([Parameter(Mandatory)][string]$Disc, $Lines, [Parameter(Mandatory)][string]$CatalogueDir)
+  if (@(Get-ClosureVerdictLines -Lines @($Lines) -Kind 'ships-nothing').Count) { return 'dispositions' }
+  $sc = Join-Path $CatalogueDir "$Disc.closure-verdict.txt"
+  if (-not (Test-Path -LiteralPath $sc)) { return '' }
+  if (-not @(Get-ClosureVerdictLines -Lines @(Get-Content -LiteralPath $sc -ErrorAction SilentlyContinue) -Kind 'ships-nothing').Count) { return '' }
+  $m = [regex]::Match((Get-Content -LiteralPath $sc -Raw), '(?im)^\s*dispositionsSha256:\s*([0-9A-Fa-f]{64})\s*$')
+  $dispPath = Join-Path $CatalogueDir "$Disc.dispositions.txt"
+  if ($m.Success -and (Test-Path -LiteralPath $dispPath) -and
+      $m.Groups[1].Value.ToUpperInvariant() -eq (Get-FileHash -LiteralPath $dispPath -Algorithm SHA256).Hash) { return 'closure-verdict sidecar' }
+  return ''
+}
+$script:VerdictSkipSaid = @{}
+
 $tp = Get-Content 'D:/video/.transcode-tools/tool-paths.json' -Raw | ConvertFrom-Json
 $ffprobe = Join-Path (Split-Path $tp.ffmpeg) 'ffprobe.exe'
 
@@ -112,12 +137,21 @@ while ($true) {
     # 2026-09-18, sixteen minutes after the disc was closed. Checked inline rather than through
     # lib-disk.ps1's Get-UnitRetiredReason because this loop loads no library; the rule is the same
     # (ships-nothing record OR _completed.txt), and _completed.txt is handled on the line above.
-    if (Test-Path -LiteralPath ("D:/video/_catalogue/{0}.ships-nothing.json" -f $disc) -PathType Leaf) { continue }
+    if (Test-Path -LiteralPath (Join-Path $Catalogue "$disc.ships-nothing.json") -PathType Leaf) { continue }
 
     # KEEP = feature or extra. Anything with an unresolved '?' means the dispositions are not
     # finished, and ripping against a half-written file would rip the wrong titles.
     $lines = @(Get-Content -LiteralPath $disp.FullName -ErrorAction SilentlyContinue)
     if ($lines | Where-Object { $_ -match '^t\d+\|\?\|' }) { continue }
+    # ...AND A VERDICT MEANS DONE BEFORE THE CLOSURE LANDS (see Test-ShipsNothingVerdict).
+    $verdictIn = Test-ShipsNothingVerdict -Disc $disc -Lines $lines -CatalogueDir $Catalogue
+    if ($verdictIn) {
+      if (-not $script:VerdictSkipSaid.ContainsKey($disc)) {
+        $script:VerdictSkipSaid[$disc] = $true
+        Write-Output ("[{0}] {1}: NOT ripped - its {2} say NOTHING IS WORTH SHIPPING (closure pending)" -f (Get-Date -Format 'HH:mm:ss'), $disc, $verdictIn)
+      }
+      continue
+    }
     # KEEP-TITLE VOCABULARY: feature | extra | episode.
     #
     # `episode` is used for TV discs. It is deliberately NOT ripped on a DVD: a DVD manifest reads

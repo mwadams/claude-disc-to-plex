@@ -167,11 +167,29 @@ $rxes = @('_stage[\\/]' + [regex]::Escape($discName) + '(?=["\\/])')
 foreach ($sfx in @('-rip', '-x', '-main', '-mkv')) {
   $rxes += ('_stage[\\/]' + [regex]::Escape($slug + $sfx) + '(?=["\\/])')
 }
+# AN ARCHIVED MANIFEST OLDER THAN THIS STAGING IS A PREVIOUS COPY'S HISTORY, NOT A CLAIM ON THIS ONE
+# (2026-10-16, operator: "Go ahead"). _manifests is the August archive and is never encoded from; a
+# disc re-fetched for a re-rip check is staged under the same name, so every such disc "matched" the
+# manifest that published it months earlier and could never close. Star Trek 11 Disk 1 (39.9 GB)
+# was refused on _manifests/st2009.json, written 2026-08-15, staged 2026-10-15. Same rule as
+# _dispositions-loop.ps1's Test-ManifestMentionsUnit and _stallwatch.ps1's Select-CurrentMentions:
+# the staging folder's CreationTime is when THIS copy arrived. Live dirs (_pending, _queue/*) are
+# never aged out, and nothing is aged out when the staging folder is absent.
+$stagedDir = Join-Path $Stage $discName
+$stagedAt = if (Test-Path -LiteralPath $stagedDir) { (Get-Item -LiteralPath $stagedDir).CreationTime } else { [datetime]::MinValue }
+$archiveDir = ((Resolve-Path -LiteralPath $Manifests -ErrorAction SilentlyContinue).Path -replace '\\', '/').TrimEnd('/')
+$agedOut = @()
 $referencing = @(Get-ChildItem $manifestDirs -ErrorAction SilentlyContinue | Where-Object {
+  $inArchive = $archiveDir -and ((Split-Path $_.FullName -Parent) -replace '\\', '/').TrimEnd('/') -ieq $archiveDir
   $raw = Get-Content -LiteralPath $_.FullName -Raw -ErrorAction SilentlyContinue
-  foreach ($rx in $rxes) { if ($raw -match $rx) { return $true } }
-  $false
+  $hit = $false
+  foreach ($rx in $rxes) { if ($raw -match $rx) { $hit = $true; break } }
+  if ($hit -and $inArchive -and $_.LastWriteTime -lt $stagedAt) { $script:agedOut += $_.FullName; return $false }
+  $hit
 })
+if ($agedOut.Count) {
+  Write-Output ("note    {0} archived manifest(s) predate this staging ({1:s}) and are history, not a claim: {2}" -f $agedOut.Count, $stagedAt, ($agedOut -join ', '))
+}
 if ($referencing.Count -gt 0) {
   Write-Output ("REFUSE  {0} - {1} manifest(s) reference this disc: {2}" -f `
                 $discName, $referencing.Count, (($referencing | ForEach-Object { $_.FullName }) -join ', '))

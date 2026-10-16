@@ -33,9 +33,11 @@ param(
   [string]$Authorisations = 'D:/video/_standing-authorisations.json',
   [string[]]$ManifestGlobs = @('D:/video/_manifests/*.json', 'D:/video/_pending/*.json', 'D:/video/_queue/*.json',
                                'D:/video/_queue/running/*.json', 'D:/video/_queue/done/*.json', 'D:/video/_queue/failed/*.json'),
+  [string]$Manifests = 'D:/video/_manifests',   # the ARCHIVE among the globs - only it ages out (see below)
   [switch]$WhatIf
 )
 $ErrorActionPreference = 'Stop'
+$archiveDir = ($Manifests -replace '\\', '/').TrimEnd('/')
 
 $auth = $null
 try { $auth = (Get-Content -LiteralPath $Authorisations -Raw | ConvertFrom-Json).releaseShipsNothingStaging } catch { }
@@ -64,9 +66,17 @@ foreach ($f in $records) {
     Write-Output "SKIP  $name - dispositions changed since the closure (stale record)"; continue
   }
 
-  if ($null -eq $manifestText) { $manifestText = @(Get-ChildItem $ManifestGlobs -ErrorAction SilentlyContinue | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }) }
+  if ($null -eq $manifestText) {
+    $manifestText = @(Get-ChildItem $ManifestGlobs -ErrorAction SilentlyContinue | ForEach-Object {
+      [pscustomobject]@{ Text = (Get-Content -LiteralPath $_.FullName -Raw); Time = $_.LastWriteTime
+                         InArchive = ((Split-Path $_.FullName -Parent) -replace '\\', '/').TrimEnd('/') -ieq $archiveDir } })
+  }
+  # An ARCHIVED manifest older than this staging is the previous copy's history, not a claim on this
+  # one - same rule as close-ships-nothing.ps1 check 5 (2026-10-16, Star Trek 11 Disk 1: closed as
+  # ships-nothing, then skipped here on the August _manifests/st2009.json). Live globs never age out.
+  $stagedAt = (Get-Item -LiteralPath (Join-Path $Stage $name)).CreationTime
   $pathRx = '_stage[\\/]+' + [regex]::Escape($name) + '(?=["\\/])'
-  if ($manifestText | Where-Object { $_ -match $pathRx } | Select-Object -First 1) {
+  if ($manifestText | Where-Object { $_.Text -match $pathRx -and -not ($_.InArchive -and $_.Time -lt $stagedAt) } | Select-Object -First 1) {
     Write-Output "SKIP  $name - a manifest references its staging; it is not a ships-nothing disc"; continue
   }
 

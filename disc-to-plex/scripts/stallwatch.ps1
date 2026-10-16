@@ -760,6 +760,38 @@ if (Test-Path -LiteralPath $spaceaudit) {
   $spaceBlocked = @($spaceOut | Where-Object { $_ -match 'SPACE-BLOCKED' }).Count -gt 0
 }
 
+# AND WHETHER THE CATALOGUE TRACK CAN CATALOGUE AT ALL (2026-10-16, operator: "a board line for
+# repeated catalogue failures ... and a message about the key failure").
+#
+# MakeMKV's beta key expired during a pause and every staged disc failed to catalogue for hours -
+# eight discs and 122.8 GB stuck, the fetch held at the floor - while the block above said "clears
+# without anyone acting" and the alarm said clear: the failures lived only in the catalogue loop's log.
+# The loop now records them in _catalogue-failures.json. The KEY verdict is the loop's, not this
+# board's: a check run from a Claude session sees that session's sandboxed key and would say "fine".
+$catFailFile = 'D:/video/_catalogue-failures.json'
+$makemkvKeyExpired = $false; $makemkvKeySince = ''; $catalogueFailing = @()
+try {
+  if (Test-Path -LiteralPath $catFailFile) {
+    $cf = Get-Content -LiteralPath $catFailFile -Raw | ConvertFrom-Json -AsHashtable
+    if ($cf.makemkvKey -and $cf.makemkvKey.expired) {
+      $makemkvKeyExpired = $true; $makemkvKeySince = "$($cf.makemkvKey.since)"
+      Write-Output ("*** MAKEMKV KEY EXPIRED (since {0}) - the catalogue track cannot enumerate ANY disc. MakeMKV says: {1}" -f $makemkvKeySince, $cf.makemkvKey.message)
+      Write-Output '    YOU: open MakeMKV > Help > Register and paste the current beta key from https://forum.makemkv.com/forum/viewtopic.php?t=1053'
+      Write-Output '    (enter it in MakeMKV itself - a key written from the Claude session is sandboxed and the line never sees it).'
+    }
+    # Repeated = three passes, so a one-off refusal (a disc mid-lock, a transient read) stays quiet.
+    foreach ($u in @($cf.units.Keys | Sort-Object)) {
+      $e = $cf.units[$u]
+      if ([int]$e.count -lt 3) { continue }
+      $catalogueFailing += $u
+      Write-Output ("*** CATALOGUE FAILING: {0} - {1} attempts since {2}, exit {3}: {4}" -f $u, $e.count, $e.firstFailedAt, $e.exit, $e.reason)
+    }
+    if (($makemkvKeyExpired -or $catalogueFailing.Count) -and @($spaceOut | Where-Object { $_ -match 'without anyone acting' }).Count) {
+      Write-Output '    ^ so the space line above will NOT clear by itself: staged discs cannot move on until they catalogue.'
+    }
+  }
+} catch { Write-Output "(could not read $catFailFile : $($_.Exception.Message))" }
+
 # AND THE OPTICAL ARCHIVE TRACK: ITS SPACE WARNING AND ITS DRIVE (2026-09-04, a user requirement).
 #
 # _optical-loop.ps1 archives DVDs to C:\Users\matth\Videos\DVD and writes _optical-status.json after
@@ -1360,6 +1392,9 @@ if ($StateFile) {
     publishStallFiles = [int]$publishStallFiles
     needsValidation = @($needsValidation)
     failuresOwed   = @($failuresOwed)
+    makemkvKeyExpired = [bool]$makemkvKeyExpired
+    makemkvKeySince   = "$makemkvKeySince"
+    catalogueFailing  = @($catalogueFailing)
     awaitingConfirmation = @($awaitingConfirmation)
     confirmSuppressed    = @($confirmSuppressed)
     briefsReady    = @($briefsReady)

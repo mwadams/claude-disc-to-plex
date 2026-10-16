@@ -31,10 +31,14 @@ param(
   [string]$Catalogue       = 'D:/video/_catalogue',
   [string]$FetchDone       = 'D:/video/_fetch-done.txt',
   [string]$CatalogueScript = 'D:/video/.claude/skills/disc-to-plex/scripts/catalogue-disc.ps1',
+  [string]$FailuresFile    = 'D:/video/_catalogue-failures.json',
+  [string]$MakeMkv         = 'C:/Program Files (x86)/MakeMKV/makemkvcon64.exe',
+  [string]$MutexName       = 'Global\video-catalogue-loop',   # tests pass their own, so they run beside the live track
+  [string]$LogDir          = 'D:/video/_logs',
   [switch]$Once            # one pass then exit - for tests; production runs without it
 )
 
-$loopMutex = New-Object System.Threading.Mutex($false, 'Global\video-catalogue-loop')
+$loopMutex = New-Object System.Threading.Mutex($false, $MutexName)
 $loopOwned = $false
 try { $loopOwned = $loopMutex.WaitOne(0) }
 catch [System.Threading.AbandonedMutexException] { $loopOwned = $true }  # holder died; the lock is ours
@@ -51,11 +55,48 @@ if (-not $loopOwned) {
 # carries: a loop that cannot be observed gets misdiagnosed, and the misdiagnosis is what leads to
 # restarting or "fixing" loops that were working. Transcript, not a launcher redirect, so it holds
 # however the loop is started. AFTER the mutex guard, so a losing second instance writes nothing.
-$logDir = 'D:/video/_logs'
+$logDir = $LogDir
 if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path $logDir | Out-Null }
 try { Start-Transcript -Path (Join-Path $logDir '_catalogue-loop.log') -Append | Out-Null } catch { }
 
 function Say($msg) { Write-Output ("[{0}] {1}" -f (Get-Date -Format 'HH:mm:ss'), $msg) }
+
+# A FAILURE RECORD THE BOARD CAN READ (2026-10-16). Until now a failed sweep was written ONLY to this
+# loop's log. MakeMKV's beta key expired during a two-week pause and every staged disc then failed
+# in a second with "MakeMKV enumerated no titles" - 19,000 log lines, eight discs and 122.8 GB stuck,
+# the fetch held at the space floor - while the board said "clears without anyone acting" and the
+# alarm said clear. So: per unit, when it first and last failed and why; cleared the moment it
+# sweeps (or leaves _stage). Every write is guarded - a bookkeeping failure must never stop the track.
+function Read-Failures {
+  $d = $null
+  # Test-Path first: a caught "file not found" still prints as a TerminatingError in the transcript.
+  if (Test-Path -LiteralPath $FailuresFile) {
+    try { $d = Get-Content -LiteralPath $FailuresFile -Raw -ErrorAction Stop | ConvertFrom-Json -AsHashtable } catch { }
+  }
+  if (-not $d) { $d = @{} }
+  if (-not $d.ContainsKey('units') -or -not $d.units) { $d.units = @{} }
+  if (-not $d.ContainsKey('makemkvKey') -or -not $d.makemkvKey) { $d.makemkvKey = @{ expired = $false } }
+  return $d
+}
+function Write-Failures($d) {
+  try {
+    $d.updatedAt = (Get-Date).ToString('s')
+    $tmp = "$FailuresFile.tmp"
+    ($d | ConvertTo-Json -Depth 5) | Set-Content -LiteralPath $tmp -Encoding UTF8
+    Move-Item -LiteralPath $tmp -Destination $FailuresFile -Force
+  } catch { Say "  (could not write $FailuresFile : $($_.Exception.Message) - the sweep result above stands)" }
+}
+# THE KEY IS ASKED OF MAKEMKV ITSELF, FROM THIS PROCESS. A key entered from a Claude Desktop session is
+# MSIX-sandboxed (HKCU is virtualised), so a check run from the session reports a working key while this
+# track - started by the supervisor, outside the package - has none. Only this process sees what the
+# line sees. --noscan: never probe the optical drive (it can hang holding it).
+function Test-MakeMkvKey {
+  if (-not (Test-Path -LiteralPath $MakeMkv)) { return @{ known = $false; expired = $false; message = "makemkvcon not found at $MakeMkv" } }
+  $o = @(& $MakeMkv -r --noscan --cache=1 info disc:9999 2>&1 | ForEach-Object { "$_" })
+  $hit = @($o | Where-Object { $_ -match '(?i)key has expired|registration key|evaluation period|too old' } | Select-Object -First 1)
+  if ($hit.Count) { return @{ known = $true; expired = $true; message = (($hit[0] -split '","')[0] -replace '^MSG:[^"]*"', '') } }
+  return @{ known = $true; expired = $false; message = '' }
+}
 
 Say "catalogue loop: watching $Stage (gate: $FetchDone)"
 
@@ -65,6 +106,12 @@ while ($true) {
   # goes stale the moment the next copy verifies.
   $verified = @(Get-Content $FetchDone -ErrorAction SilentlyContinue |
                 Where-Object { $_ -and $_.Trim() } | ForEach-Object { $_.Trim() })
+
+  # A unit that has left _stage (released) can no longer be failing here.
+  $fails = Read-Failures
+  $gone = @($fails.units.Keys | Where-Object { -not (Test-Path -LiteralPath (Join-Path $Stage $_)) })
+  if ($gone.Count) { foreach ($g in $gone) { $fails.units.Remove($g) }; Write-Failures $fails }
+  $keyCheckedThisPass = $false
 
   foreach ($u in @(Get-ChildItem $Stage -Directory -ErrorAction SilentlyContinue)) {
     $name = $u.Name
@@ -130,13 +177,39 @@ while ($true) {
       # Surface the sweep's own findings without letting diagnostics crowd them out.
       @($out | Where-Object { "$_" -match 'WARNING|EXTRAS LIST|needs a disposition' }) |
         Select-Object -First 5 | ForEach-Object { Say ("    " + $_) }
+      # A sweep that enumerated titles proves the key works, whatever was recorded before.
+      $changed = $fails.units.ContainsKey($name) -or $fails.makemkvKey.expired
+      $fails.units.Remove($name)
+      if ($fails.makemkvKey.expired) { $fails.makemkvKey = @{ expired = $false; checkedAt = (Get-Date).ToString('s'); message = 'a sweep enumerated titles' } }
+      if ($changed) { Write-Failures $fails }
     } elseif ($code -eq 2) {
       # catalogue-disc's own per-disc mutex refused: another sweep of this same disc is live.
       # Its artifact will appear on its own; nothing to record here.
       Say "  another sweep of '$name' already holds the per-disc lock - leaving it to finish; will re-check next pass"
     } else {
       Say ("  SWEEP FAILED for {0} (exit {1}) - NOTHING recorded as done; will retry next pass. Output tail:" -f $name, $code)
-      @($out | Where-Object { "$_" -match '\S' }) | Select-Object -Last 4 | ForEach-Object { Say ("    " + $_) }
+      $tail = @($out | Where-Object { "$_" -match '\S' } | ForEach-Object { "$_".Trim() })
+      $tail | Select-Object -Last 4 | ForEach-Object { Say ("    " + $_) }
+      # The most telling line, not the last: PowerShell's error frame ends in decoration.
+      $reason = @($tail | Where-Object { $_ -match 'enumerated no titles|EXIT \d|refus|not found|error|exception' -and $_ -notmatch '^\s*(Line \||\d+ \||~|\|\s*~)' } | Select-Object -Last 1)
+      $reason = if ($reason.Count) { ($reason[0] -replace '^\|\s*', '') } else { @($tail | Select-Object -Last 1) -join '' }
+      $now = (Get-Date).ToString('s')
+      $prev = $fails.units[$name]
+      $fails.units[$name] = @{ firstFailedAt = $(if ($prev -and $prev.firstFailedAt) { "$($prev.firstFailedAt)" } else { $now })
+                               lastFailedAt = $now; count = $(if ($prev -and $prev.count) { [int]$prev.count + 1 } else { 1 })
+                               exit = [int]$code; reason = "$reason" }
+      # "No titles" from a disc that IS staged and verified is the signature of an expired key, not
+      # of the disc. Ask MakeMKV once per pass rather than once per disc.
+      if (-not $keyCheckedThisPass -and ($tail -join "`n") -match 'enumerated no titles') {
+        $keyCheckedThisPass = $true
+        $k = Test-MakeMkvKey
+        if ($k.known) {
+          $since = if ($fails.makemkvKey.expired -and $fails.makemkvKey.since) { "$($fails.makemkvKey.since)" } else { $now }
+          $fails.makemkvKey = @{ expired = [bool]$k.expired; checkedAt = $now; message = "$($k.message)"; since = $(if ($k.expired) { $since } else { $null }) }
+          if ($k.expired) { Say "  *** MAKEMKV KEY EXPIRED ($($k.message)) - no disc can be catalogued until it is re-registered (MakeMKV: Help > Register)" }
+        }
+      }
+      Write-Failures $fails
     }
     $did = $true
   }
