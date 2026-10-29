@@ -46,6 +46,18 @@ try {
   (Get-Item -LiteralPath $live).LastWriteTime = $staged.CreationTime.AddDays(-60)
   $t = Run
   Check 'skipped' ($t -match 'SKIP\s+Kappa Disk 1 - a manifest references') $t
+  Remove-Item -LiteralPath $live -Force
+
+  Write-Host '4. REAL (Amelie, 2026-10-29): a reclaim artefact from a PREVIOUS copy does not block the release'
+  $art = Join-Path $rq 'confirmed-2026-09-14-0928-kappa.json'
+  @{ works = @('Kappa Disk 1'); units = @('KAPPA-30b8efff') } | ConvertTo-Json | Set-Content -LiteralPath $art
+  (Get-Item -LiteralPath $art).LastWriteTime = $staged.CreationTime.AddDays(-30)
+  $t = Run
+  Check 'would queue' ($t -match 'WOULD QUEUE\s+Kappa Disk 1') $t
+  Write-Host '5. known-negative: an artefact written for THIS staging still means already handled'
+  (Get-Item -LiteralPath $art).LastWriteTime = $staged.CreationTime.AddMinutes(5)
+  $t = Run
+  Check 'not queued again' ($t -notmatch 'WOULD QUEUE\s+Kappa Disk 1') $t
 }
 catch { Write-Host "  FAIL exception: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)"; $fail++ }
 finally { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue }

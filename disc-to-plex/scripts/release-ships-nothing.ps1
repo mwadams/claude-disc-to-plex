@@ -51,7 +51,7 @@ if ($Disc) { $records = @($records | Where-Object { $_.Name -eq ((Split-Path $Di
 
 $manifestText = $null
 $artefactText = @(Get-ChildItem -LiteralPath $ReclaimQueue -Recurse -File -Filter '*.json' -ErrorAction SilentlyContinue |
-                  ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw })
+                  ForEach-Object { [pscustomobject]@{ Text = (Get-Content -LiteralPath $_.FullName -Raw); Time = $_.LastWriteTime } })
 $queued = 0
 foreach ($f in $records) {
   $name = $f.Name -replace '\.ships-nothing\.json$', ''
@@ -81,7 +81,11 @@ foreach ($f in $records) {
   }
 
   $unitRx = '"' + [regex]::Escape(($name | ConvertTo-Json).Trim('"')) + '"'
-  if ($artefactText | Where-Object { $_ -match $unitRx } | Select-Object -First 1) { continue }   # already queued/handled
+  # ...BY AN ARTEFACT WRITTEN FOR THIS STAGING, not one from a previous copy of the disc (2026-10-29,
+  # Amelie: re-fetched 2026-10-15 and closed ships-nothing, but silently skipped every pass because
+  # confirmed-2026-09-14-0928-amelie.json - which released an EARLIER copy, unit 'AMELIE-30b8efff' -
+  # names the work "Amelie" and matched). Same rule as the archive-manifest check above.
+  if ($artefactText | Where-Object { $_.Text -match $unitRx -and $_.Time -ge $stagedAt } | Select-Object -First 1) { continue }   # already queued/handled
 
   $slug = ($name.ToLower() -replace '[^a-z0-9]+', '-').Trim('-')
   $out = Join-Path $ReclaimQueue ("confirmed-{0}-shipsnothing-{1}.json" -f (Get-Date -Format 'yyyy-MM-dd-HHmm'), $slug)
