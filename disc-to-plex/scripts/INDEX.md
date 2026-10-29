@@ -1,8 +1,8 @@
 # Script index - GENERATED, do not edit
 
-Generated 2026-10-29 11:25 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
+Generated 2026-10-29 12:18 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
 
-**188 scripts under `scripts/`, 65 loop scripts under `D:/video/`. 1 with NO usable header, 82 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
+**188 scripts under `scripts/`, 66 loop scripts under `D:/video/`. 2 with NO usable header, 83 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
 
 Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library` = dot-source, defines functions only; `tests` = a test suite, exit 0 = all passed.
 
@@ -254,6 +254,7 @@ Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library
 | `_sync-skill.ps1` | command | Sync the working skill into the public repo, safely. | when: The obvious one-liner is wrong in two ways, and both were paid for on 2026-08-25. | `pwsh -File _sync-skill.ps1` |
 | `_tail.ps1` | command | WHICH LOG IS THIS TRACK ACTUALLY WRITING? Resolve it, don't guess it. | when: `D:\video\_logs` contains two naming conventions and their abandoned predecessors: | `pwsh -File _tail.ps1 publish` |
 | `_transcribe-loop.ps1` | command | TRANSCRIPTION track: generate subtitle sidecars for library files that have NO subtitles. | NO TRIGGER IN HEADER | - |
+| `_ud4probe.ps1` | command | NO HEADER - purpose unknown | NO TRIGGER IN HEADER | - |
 | `_whatsrunning.ps1` | command | Answer "what is running, and is it pipeline-managed?" - in ONE place, from ONE definition. | when: On 2026-08-25 I tried to answer that by hand: I listed `_manifests/`, `_queue/done/` and `_queue/failed/`, found no Grange Hill manifest, and concluded a subagent was hand-running encodes outside t... | `pwsh -File _whatsrunning.ps1` |
 | `audit-archived-open-work.ps1` | command | WHAT OPEN WORK IS SITTING IN ARCHIVED STATUS FILES, INVISIBLE? | when: On 2026-09-05 `D:\video` was tidied and the old `transfer-status<N>.md` files were moved into `_archive/transfer-status/`. | `pwsh -File D:/video/audit-archived-open-work.ps1` |
 | `build-batch-list.ps1` | command | Propose the next batch list for a swept source drive: EVERY disc, each tagged with the re-rip reason(s) that qualify it, ordered by value. Writes a PROPOSAL the fetch loop does not read. | when: Every list so far was composed by hand from the sweep, and each one weighed a different subset of the reasons a disc is worth ripping. | `pwsh -File build-batch-list.ps1 -Sweep D:/video/_sweep-media0.csv` |
@@ -269,9 +270,10 @@ Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library
 | `worklist-remaining.ps1` | command | What is ACTUALLY left to do on a source drive - computed, not remembered. | when: `updates_media2.txt` is a RENDERED REPORT, not a worklist. It was produced on 2026-08-31 by enumerating 201 disc folders with MakeMKV (1816 titles) and matching them by duration against 859 NAS fil... | `pwsh -File worklist-remaining.ps1` |
 | `worklist-status.ps1` | command | WHAT DOES THE WORK LIST SAY IS LEFT, AND IS ANYTHING DRIVING IT? | when: `updates_media2.txt` is the authority for what this drive owes the library: one action per TITLE, in named categories, with explicit do-not-touch exceptions. | `pwsh -File worklist-status.ps1` |
 
-## Scripts with NO usable header (1)
+## Scripts with NO usable header (2)
 
 These are listed, not described. Their purpose is unknown to this index until someone gives them a header comment / docstring.
 
 - `_optical-loop.ps1`
+- `_ud4probe.ps1`
 
