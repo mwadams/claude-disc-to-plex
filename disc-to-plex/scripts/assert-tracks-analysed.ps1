@@ -14,6 +14,7 @@
 # Exit 0 = every audio claim is evidenced.  Exit 2 = refused, with the reason.
 param(
   [Parameter(Mandatory)][string]$Manifest,
+  [string]$Catalogue = 'D:/video/_catalogue',   # where <disc>.evidence.json lives (zero-packet audio, below)
   [switch]$WarnOnly     # report but do not block (use when retro-fitting an old manifest)
 )
 $ErrorActionPreference = 'Stop'
@@ -240,7 +241,30 @@ foreach ($it in $items) {
               $allSilent = ($st.Count -gt 0 -and $quiet.Count -eq $st.Count)
             } catch { $allSilent = $false }
           }
-          if ($allSilent) {
+          # ...OR EVERY ONE OF THOSE STREAMS IS DECLARED BUT CARRIES ZERO PACKETS (2026-10-29,
+          # operator: "Allow the gate to approve zero packet audio streams as no audio evidence").
+          # Big Train Series 1's stills gallery (dvdvideo title 7) DECLARES two AC3 streams and the
+          # evidence pack counted 0 audio packets in each: there is no audio to drop. analyze-tracks.py
+          # cannot measure a stream with nothing in it (role 'analysis-failed', level null), so the
+          # silence branch above could never approve it, and [] was refused while any selection was
+          # refused too - the "no value can pass" deadlock this file already names. The packet count
+          # is a MEASUREMENT of the title, taken by catalogue evidence (capture-evidence) through the
+          # same dvdvideo demuxer transcode.ps1 reads with. Narrow: every probed stream must be
+          # counted, and every count must be exactly 0; one packet anywhere and this refuses as before.
+          $allEmpty = $false
+          if (-not $allSilent -and (Test-Path -LiteralPath "$($it.src)" -PathType Container) -and $null -ne $it.title) {
+            $epack = Join-Path $Catalogue ((Split-Path "$($it.src)" -Leaf) + '.evidence.json')
+            if (Test-Path -LiteralPath $epack) {
+              try {
+                $et = @((Get-Content -LiteralPath $epack -Raw | ConvertFrom-Json).titles | Where-Object { $null -ne $_.dvdvideoTitle -and [int]$_.dvdvideoTitle -eq [int]$it.title }) | Select-Object -First 1
+                if ($et -and $null -ne $et.audioPackets) {
+                  $ap = @($et.audioPackets)
+                  $allEmpty = ($ap.Count -eq $n -and $ap.Count -gt 0 -and @($ap | Where-Object { [long]$_ -ne 0 }).Count -eq 0)
+                }
+              } catch { $allEmpty = $false }
+            }
+          }
+          if ($allSilent -or $allEmpty) {
             $trivial = $true
           } else {
             $problems += "$(Split-Path $out -Leaf): audioTracks [] claims this title has NO audio, " +
