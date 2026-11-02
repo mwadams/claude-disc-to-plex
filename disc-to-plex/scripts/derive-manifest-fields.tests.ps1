@@ -287,6 +287,24 @@ try {
   Check 'a figure that fits ANOTHER title better is left for the numbering guard' ([double]$r.Rows[2].expectSeconds -eq 1501.4 -and $r.Text -match 'D2b\.mkv: LEFT expectSeconds.*title-NUMBERING') $r.Text
   Check 'known-negative: a chapter-limited DVD row is not compared to the whole title' ([double]$r.Rows[3].expectSeconds -eq 300.0 -and $null -eq $r.Rows[3].derived) (J $r.Rows[3])
 
+  # REAL shape (Big Train S1 title 7): 25 stills emit 1.0 s / 25 packets, the IFO plays them 200 s.
+  # A stillsHold row is measured against the DECLARED time and gets expectSeconds x fps frames.
+  Write-Host 'DVD held stills, from evidence.json'
+  $evj.titles += [ordered]@{ dvdvideoTitle = 7; measured = $true; declaredSec = 200.0; expectSeconds = 1.0; expectFrames = 25; fps = 25.0
+    streams = @([ordered]@{ type = 'video'; rFrameRate = '25/1' }) }
+  Set-Content -LiteralPath (Join-Path $catDir 'DVD UNIT.evidence.json') -Value (ConvertTo-Json -InputObject $evj -Depth 6) -Encoding UTF8
+  Write-Manifest @(
+    @{ out = 'x/G.mkv'; src = $dsrc; kind = 'DVD'; title = 7; expectSeconds = 200.0; stillsHold = 8 },                      # frames filled
+    @{ out = 'x/Gc.mkv'; src = $dsrc; kind = 'DVD'; title = 7; expectSeconds = 200.0; stillsHold = 8; expectFrames = 25 },  # still COUNT authored: corrected
+    @{ out = 'x/Gf.mkv'; src = $dsrc; kind = 'DVD'; title = 7; expectSeconds = 200.0; stillsHold = 8; stillsFps = 24 },     # stillsFps wins
+    @{ out = 'x/Gn.mkv'; src = $dsrc; kind = 'DVD'; title = 7; expectSeconds = 1.0 }                                         # no stillsHold: emitted basis
+  )
+  $r = Run @('-CatalogueDir', $catDir)
+  Check 'REAL: a held-still DVD row gets expectSeconds x source fps (5000), and its seconds are not an identity question' ([int]$r.Rows[0].expectFrames -eq 5000 -and $r.Text -notmatch 'G\.mkv: LEFT') $r.Text
+  Check 'an authored still COUNT (25) is corrected to the held frame count' ([int]$r.Rows[1].expectFrames -eq 5000) (J $r.Rows[1])
+  Check 'stillsFps overrides the source rate (200 x 24 = 4800)' ([int]$r.Rows[2].expectFrames -eq 4800) (J $r.Rows[2])
+  Check 'known-negative: the same title with no stillsHold keeps the emitted basis (1.0 s, 25 frames)' ([double]$r.Rows[3].expectSeconds -eq 1.0 -and [int]$r.Rows[3].expectFrames -eq 25) (J $r.Rows[3])
+
   # ============================================================================ idempotence + ledger
   Write-Host 'idempotence and the gate ledger'
   $before = (Get-FileHash -LiteralPath $m -Algorithm SHA256).Hash

@@ -131,10 +131,19 @@ foreach ($fn in 'Get-WorkOutstanding', 'Get-OutstandingFingerprint', 'New-Publis
 $breaker = New-PublishBreaker -MaxNoProgress $MaxNoProgress -MaxNoProgressLifetime $MaxNoProgressLifetime
 Write-PublishBreakerRegister -Breaker $breaker -Path $BreakerRegister
 
+# THE TRACE (follow-up §3u, 2026-11-02). On 2026-10-29 nine works with files missing on the NAS were
+# never published by this loop and it logged NOTHING about them for 40 minutes - no publish, no
+# refusal, no breaker - while a fresh-process Get-WorkOutstanding listed their files and a manual
+# publish shipped them cleanly. The log could not say whether those works were even ITERATED, or
+# what this process's Get-WorkOutstanding answered for them. So: one `[trace]` line per work whenever
+# its outstanding count or this loop's decision about it changes, and one `[pass]` line whenever the
+# pass's shape changes (or every 20th pass). Change-gated so a quiet line stays a quiet log.
+$lastTrace = @{}; $lastPassShape = ''
 $pass = 0
 while ($MaxPasses -le 0 -or $pass -lt $MaxPasses) {
   $pass++
   $published = 0
+  $scanned = 0; $withOutstanding = 0
   foreach ($kind in @('Movies', 'Television Shows')) {
     $root = Join-Path $LocalRoot $kind
     if (-not (Test-Path -LiteralPath $root)) { continue }
@@ -160,13 +169,25 @@ while ($MaxPasses -le 0 -or $pass -lt $MaxPasses) {
       $nas = Join-Path (Join-Path $NasRoot $kind) $w.Name
       $subsOnly = Test-Path -LiteralPath (Join-Path $w.FullName '.subtitles-only')
       $outstanding = @(Get-WorkOutstanding -WorkDir $w.FullName -NasDir $nas)
-      if ($outstanding.Count -eq 0) { continue }
+      $scanned++
+      $traceKey = "$kind/$($w.Name)"
+      if ($outstanding.Count -eq 0) {
+        if ($lastTrace.ContainsKey($traceKey)) { "[trace] {0,-46} now 0 outstanding" -f $w.Name; $lastTrace.Remove($traceKey) }
+        continue
+      }
+      $withOutstanding++
       $before = Get-OutstandingFingerprint $outstanding
 
       # THE BREAKER, CONSULTED BEFORE ANYTHING IS PRINTED OR INVOKED. A refused work prints one
       # throttled reminder rather than a "republishing" line it is not going to act on - the
       # 2,166-line band this guards against was made of exactly such lines.
       $verdict = Get-PublishBreakerVerdict -Breaker $breaker -Work $w.Name -Fingerprint $before
+      $traceNow = '{0}|{1}' -f $outstanding.Count, $(if ($verdict.Allow) { 'publish' } else { "breaker-$($verdict.State)" })
+      if ($lastTrace[$traceKey] -ne $traceNow) {
+        $why = (@($outstanding | Group-Object Reason | ForEach-Object { "$($_.Count) $($_.Name)" }) -join ', ')
+        "[trace] {0,-46} {1} outstanding ({2}) -> {3}" -f $w.Name, $outstanding.Count, $why, ($traceNow -split '\|')[1]
+        $lastTrace[$traceKey] = $traceNow
+      }
       if (-not $verdict.Allow) {
         if ($verdict.Skipped -eq 1 -or ($verdict.Skipped % 20) -eq 0) {
           "{0,-46} BREAKER OPEN ({1}) - NOT re-publishing; {2} pass(es) refused so far, {3} file(s) outstanding and unchanged. See {4}" -f `
@@ -553,6 +574,9 @@ while ($MaxPasses -le 0 -or $pass -lt $MaxPasses) {
   # _nas-superseded-*.txt files) are one-off deliverables from earlier hand investigations
   # (renames, extras re-homing, Season 00 identification) - they are history, not live output,
   # and this loop does not touch them.
+  $passShape = '{0} scanned, {1} with outstanding files, {2} published' -f $scanned, $withOutstanding, $published
+  if ($passShape -ne $lastPassShape -or ($pass % 20) -eq 0) { "[pass {0}] {1}" -f $pass, $passShape; $lastPassShape = $passShape }
+
   if ($published -gt 0 -and -not $NoDownstream) {
     Write-Output '--- refreshing NAS retire list (supersedes -> verified replacement) ---'
     try {

@@ -33,15 +33,22 @@ param(
   # Hand-declared relocations: <superseded path><TAB><replacement path><TAB><why>. See the
   # 'hand relocations' section below for why this exists and what each row is validated against.
   [string]$Manual       = 'D:\video\_nas-retire-manual.tsv',
-  [switch]$IncludeSubtitles
+  [switch]$IncludeSubtitles,
+  # Library roots - parameters only so the tests can stand a share in for the NAS.
+  [string]$NasRoot      = [IO.Path]::Combine('\\NASTEAMV', 'Multimedia'),
+  [string]$LocalRoot    = 'D:\video',
+  # A same-episode .mp4/.mkv twin beside a published replacement is retired only when the two
+  # programmes measure this close (seconds). See 'same-episode twins' below.
+  [double]$TwinToleranceSeconds = 1.0
 )
 
 $ErrorActionPreference = 'Stop'
 
-$NasRoot = [IO.Path]::Combine('\\NASTEAMV', 'Multimedia')
+$NasRoot = $NasRoot.TrimEnd('\')
+$LocalRoot = $LocalRoot.TrimEnd('\')
 $LocalToNas = @{
-  'D:\video\Movies'           = [IO.Path]::Combine($NasRoot, 'Movies')
-  'D:\video\Television Shows' = [IO.Path]::Combine($NasRoot, 'Television Shows')
+  (Join-Path $LocalRoot 'Movies')           = [IO.Path]::Combine($NasRoot, 'Movies')
+  (Join-Path $LocalRoot 'Television Shows') = [IO.Path]::Combine($NasRoot, 'Television Shows')
 }
 
 function To-NasPath($localPath) {
@@ -54,6 +61,17 @@ function To-NasPath($localPath) {
 }
 
 function Under-Nas($p) { return $p -and $p.StartsWith($NasRoot, [StringComparison]::OrdinalIgnoreCase) }
+
+# A UNC PATH THAT LOST ONE OF ITS TWO LEADING BACKSLASHES. In JSON "\\NASTEAMV\..." decodes to ONE
+# backslash, and authors keep writing it that way. 41 supersedes in 9 manifests (Upstairs Downstairs
+# S1 D2-D3 and S2 D2, Black Books, Buffy S4, Yes Prime Minister S2, The Alan Clark Diaries) were all
+# held back as "not on the NAS", so their legacy .mp4s never reached this list - found 2026-11-02
+# only because the operator saw them in Plex. A rooted path that becomes the NAS root with one more
+# backslash has no other reading.
+function Repair-NasPath([string]$p) {
+  if ($p -match '^\\[^\\]' -and ('\' + $p).StartsWith($NasRoot + '\', [StringComparison]::OrdinalIgnoreCase)) { return '\' + $p }
+  return $p
+}
 
 $listed = New-Object System.Collections.Generic.List[object]
 $held   = New-Object System.Collections.Generic.List[object]
@@ -83,6 +101,7 @@ Write-Host "scanning $($manifests.Count) manifest(s) under $ManifestRoot"
 # So collect every path any manifest currently declares as an output, and refuse to retire one.
 # Cheap, and it fails closed: a path we are actively publishing to is never a path to delete.
 $currentOutputs = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+$outputLocal = @{}   # NAS output -> [local path, manifest name], for the twin pass below
 foreach ($mf in $manifests) {
   $its = $null
   try { $its = Get-Content -LiteralPath $mf.FullName -Raw | ConvertFrom-Json } catch { continue }
@@ -90,7 +109,7 @@ foreach ($mf in $manifests) {
     $o = "$($it.out)"
     if (-not $o) { continue }
     $n = To-NasPath ($o -replace '/', '\')
-    if ($n) { [void]$currentOutputs.Add($n) }
+    if ($n) { [void]$currentOutputs.Add($n); $outputLocal[$n] = @(($o -replace '/', '\'), $mf.Name) }
   }
 }
 Write-Host "$($currentOutputs.Count) path(s) are declared outputs of a live manifest - those can never be retired"
@@ -110,7 +129,7 @@ foreach ($mf in $manifests) {
     $nasNew   = To-NasPath $localOut
 
     foreach ($o in $old) {
-      $o = ($o -replace '/', '\').Trim()
+      $o = Repair-NasPath (($o -replace '/', '\').Trim())
       $rec = [pscustomobject]@{ Superseded=$o; Replacement=$nasNew; Source=$mf.Name; Reason='' }
 
       if (-not (Under-Nas $o))      { $rec.Reason = 'superseded path is not on the NAS'; $held.Add($rec); continue }
@@ -164,6 +183,81 @@ foreach ($mf in $manifests) {
   }
 }
 
+# ---------------------------------------------------------------- same-episode twins
+#
+# A SUPERSEDES THAT WAS NEVER WRITTEN LEAVES ITS TWIN IN PLEX FOREVER. Everything above depends on
+# the author having named the old file. A re-rip that publishes "Show - S01E05 - Title.mkv" beside a
+# legacy "Show S01E05.mp4" without saying so leaves both, and Plex shows the episode twice.
+#
+# So look beside every PUBLISHED output for another media file claiming the same single SxxEyy, and
+# MEASURE it: the twin is listed only when its programme length agrees with the replacement's to
+# within -TwinToleranceSeconds. Agreement within a second is the same programme; a wider gap is
+# held back with the figure, because a different cut or a mis-numbered episode is a judgement, not
+# a mechanical retire. Ranges (S01E01-E06) are never twins of anything. Every guard the manifest
+# path applies holds here too: not a current output, not newer than its replacement, replacement
+# verified against the local copy.
+$ffprobeExe = $null
+function Get-ProgrammeSeconds([string]$p) {
+  if (-not $script:ffprobeExe) {
+    $tp = Get-Content 'D:\video\.transcode-tools\tool-paths.json' -Raw | ConvertFrom-Json
+    $script:ffprobeExe = Join-Path (Split-Path $tp.ffmpeg) 'ffprobe.exe'
+  }
+  $s = "$(& $script:ffprobeExe -v error -show_entries format=duration -of csv=p=0 -- $p 2>$null | Select-Object -First 1)".Trim()
+  $d = 0.0
+  if ([double]::TryParse($s, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$d)) { return $d }
+  return 0.0
+}
+function Get-SingleEpisode([string]$leaf) {
+  if ($leaf -match '(?i)S(\d{1,3})E(\d{1,4})(?!\d)(-?E\d|-\d)') { return $null }   # a range; " - 1914" is a title
+  if ($leaf -match '(?i)S(\d{1,3})E(\d{1,4})(?!\d)') { return ('{0}x{1}' -f [int]$Matches[1], [int]$Matches[2]) }
+  return $null
+}
+$alreadyListed = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+foreach ($r in $listed) { [void]$alreadyListed.Add($r.Superseded) }
+$heldPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+foreach ($r in $held) { if ($r.Superseded) { [void]$heldPaths.Add($r.Superseded) } }
+# ONLY A LEGACY CONTAINER IS A TWIN. The pipeline publishes .mkv and nothing else, so an .mp4/.m4v/.avi
+# beside a published .mkv is pre-pipeline. A second .mkv for the same episode is most often a hand
+# RENAME of a pipeline output (copied to the right name; the manifest still names the old one) -
+# Copy-Item keeps the mtime, so the newer-than guard cannot tell them apart and the WANTED copy would
+# be listed. Measured 2026-11-02: the first live run held 27 such .mkv "twins", every one the live file.
+$legacyExt = @('.mp4', '.m4v', '.avi')
+$dirCache = @{}
+$twinOk = 0
+foreach ($nasNew in @($outputLocal.Keys)) {
+  if ([IO.Path]::GetExtension($nasNew) -ne '.mkv') { continue }
+  $ep = Get-SingleEpisode (Split-Path $nasNew -Leaf)
+  if (-not $ep) { continue }
+  $dir = Split-Path $nasNew
+  if (-not $dirCache.ContainsKey($dir)) { $dirCache[$dir] = @(Get-ChildItem -LiteralPath $dir -File -EA SilentlyContinue) }
+  $newItem = $dirCache[$dir] | Where-Object { $_.FullName -eq $nasNew } | Select-Object -First 1
+  if (-not $newItem) { continue }   # this output is not (or no longer) on the NAS - nothing beside it is its twin
+  $twins = @($dirCache[$dir] | Where-Object { $legacyExt -contains $_.Extension.ToLowerInvariant() -and (Get-SingleEpisode $_.Name) -eq $ep })
+  if (-not $twins) { continue }
+  $localOut, $src = $outputLocal[$nasNew]
+  foreach ($tw in $twins) {
+    $o = $tw.FullName
+    if ($alreadyListed.Contains($o)) { continue }
+    $rec = [pscustomobject]@{ Superseded = $o; Replacement = $nasNew; Source = "twin:$src"; Reason = '' }
+    if ($currentOutputs.Contains($o)) { continue }   # two live outputs: the publish slot-collision check owns that
+    $localItem = Get-Item -LiteralPath $localOut -EA SilentlyContinue
+    if ($localItem -and $localItem.Length -ne $newItem.Length) { $rec.Reason = "twin: replacement size mismatch (NAS $($newItem.Length) vs local $($localItem.Length))"; $held.Add($rec); continue }
+    if (-not $localItem -and $newItem.Length -lt 5MB) { $rec.Reason = "twin: replacement suspiciously small ($($newItem.Length) bytes) and no local copy to compare"; $held.Add($rec); continue }
+    if ($tw.LastWriteTime -gt $newItem.LastWriteTime) { $rec.Reason = ("REFUSED: twin written {0:yyyy-MM-dd HH:mm}, after its replacement landed {1:yyyy-MM-dd HH:mm}" -f $tw.LastWriteTime, $newItem.LastWriteTime); $held.Add($rec); continue }
+    $dNew = Get-ProgrammeSeconds $nasNew; $dOld = Get-ProgrammeSeconds $o
+    if ($dNew -le 0 -or $dOld -le 0) { $rec.Reason = "twin: could not measure both durations (replacement $dNew s, twin $dOld s)"; $held.Add($rec); continue }
+    $gap = [math]::Abs($dNew - $dOld)
+    if ($gap -gt $TwinToleranceSeconds) {
+      $rec.Reason = ("twin: same episode number but the programmes differ by {0:N1}s ({1:N1}s vs {2:N1}s) - a different cut or a different episode; judge it by hand" -f $gap, $dNew, $dOld)
+      $held.Add($rec); continue
+    }
+    if ($heldPaths.Contains($o) -and @($held | Where-Object { $_.Superseded -eq $o -and $_.Reason -like 'REFUSED*' }).Count) { continue }
+    $rec.Reason = ("same-episode twin of a verified replacement; programmes agree to {0:N2}s" -f $gap)
+    $listed.Add($rec); [void]$alreadyListed.Add($o); $twinOk++
+  }
+}
+Write-Host "$twinOk same-episode twin(s) listed (programme lengths agree within $TwinToleranceSeconds s)"
+
 # ---------------------------------------------------------------- hand relocations
 #
 # A RELOCATION HAS NO MANIFEST, SO THIS LIST COULD NOT SEE IT.
@@ -198,8 +292,8 @@ if (Test-Path -LiteralPath $Manual) {
       $held.Add([pscustomobject]@{ Superseded=$t; Replacement=''; Source='manual'; Reason='malformed row - expected <superseded><TAB><replacement>[<TAB><why>]' })
       continue
     }
-    $o   = ($f[0] -replace '/', '\').Trim()
-    $new = ($f[1] -replace '/', '\').Trim()
+    $o   = Repair-NasPath (($f[0] -replace '/', '\').Trim())
+    $new = Repair-NasPath (($f[1] -replace '/', '\').Trim())
     $why = if ($f.Count -ge 3) { $f[2].Trim() } else { '' }
     $rec = [pscustomobject]@{ Superseded=$o; Replacement=$new; Source='manual'; Reason='' }
 

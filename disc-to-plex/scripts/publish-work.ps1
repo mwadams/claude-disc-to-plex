@@ -219,6 +219,31 @@ if ($partial.Count) {
 # NAS, Plex would file both into one slot and show only one. Hold the whole folder (the plan gate's
 # unit) rather than guess which claim is right: the register decides, and a human renumbers.
 $slotOf = { param($f) if ($f.Extension -eq '.mkv' -and $f.Name -match '(?i)\bS(\d+)E(\d+)\b') { '{0}|S{1:D2}E{2:D2}' -f $f.DirectoryName, [int]$Matches[1], [int]$Matches[2] } }
+# ...BUT A FILE A MANIFEST SAYS IT REPLACES IS NOT A SECOND CLAIM (2026-11-02, operator: "Go ahead with
+# the shared-script changes"). Noggin the Nog was re-split from three combined files (S01E01-E06 ...)
+# into fifteen episodes; every new row named the combined file in `supersedes`, yet the combined copy
+# still in the local folder "claimed" S01E01 alongside the new E01, and the whole season was held as a
+# collision until the old files were moved aside by hand. A superseded file is history: leave it out
+# of the clash test AND of this publish (it must never be pushed back over its replacement). Same-name
+# in-place replacements are untouched - a leaf that is also some manifest's own `out` is the NEW file.
+$supLeaves = @{}; $outLeaves = @{}
+$supWorkOut = (Resolve-Path -LiteralPath $src).Path.TrimEnd('\')   # $workOut proper is set later, with the plan
+foreach ($qd in @('_queue', '_queue\running', '_queue\done', '_queue\failed', '_pending') | ForEach-Object { Join-Path $LocalRoot $_ } | Where-Object { Test-Path -LiteralPath $_ -PathType Container }) {
+  foreach ($mf in Get-ChildItem -LiteralPath $qd -Filter *.json -File -ErrorAction SilentlyContinue) {
+    try { $mrows = @(Get-Content -LiteralPath $mf.FullName -Raw | ConvertFrom-Json) } catch { continue }
+    foreach ($r in @($mrows | Where-Object { $_ -is [pscustomobject] })) {
+      $o = "$($r.out)" -replace '/', '\'
+      if (-not ($o -and $o.StartsWith($supWorkOut + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase))) { continue }
+      $outLeaves[(Split-Path $o -Leaf).ToLowerInvariant()] = $true
+      foreach ($sp in @($r.supersedes | Where-Object { $_ })) { $supLeaves[(Split-Path ("$sp" -replace '/', '\') -Leaf).ToLowerInvariant()] = $true }
+    }
+  }
+}
+$superseded = @($local | Where-Object { $supLeaves.ContainsKey($_.Name.ToLowerInvariant()) -and -not $outLeaves.ContainsKey($_.Name.ToLowerInvariant()) })
+if ($superseded.Count) {
+  foreach ($f in $superseded) { Write-Output ("NOT PUBLISHING (superseded by a manifest row): {0}" -f $f.Name) }
+  $local = @($local | Where-Object { $superseded.FullName -notcontains $_.FullName })
+}
 $slotClash = @($local | Where-Object { & $slotOf $_ } | Group-Object { & $slotOf $_ } | Where-Object { @($_.Group.Name | Sort-Object -Unique).Count -gt 1 })
 $slotHeldDirs = @()   # joined into robocopy's /XD below - removing them from $local alone does NOT stop /E copying them
 if ($slotClash.Count) {
@@ -618,6 +643,8 @@ if ($partial.Count) { $flags += '/XF'; $flags += @($partial | ForEach-Object { $
 # Same again for non-artefact files (quarantine litter like .wrong-length): dropping them from
 # $local governs only what is reported and verified; this /XF is what keeps them off the NAS.
 if ($nonArtefact.Count) { $flags += '/XF'; $flags += @($nonArtefact | ForEach-Object { $_.FullName }) }
+# Superseded files (see the slot-collision note): history, never pushed back over their replacement.
+if ($superseded.Count) { $flags += '/XF'; $flags += @($superseded | ForEach-Object { $_.FullName }) }
 # Season folders the plan gate is HOLDING (television, per-season rule above). /XD with full paths is
 # what keeps them off the NAS; dropping them from $local only narrows what is reported and verified.
 $xdDirs = @(@($heldDirs) + @($slotHeldDirs) | Where-Object { $_ } | Sort-Object -Unique)

@@ -236,6 +236,19 @@ function Get-UnitEvidenceTitle([string]$src, $title) {
   if (-not $mine) { return $null }
   return [pscustomobject]@{ Title = $mine; Others = @(@($e.titles) | Where-Object { "$($_.dvdvideoTitle)" -ne "$title" -and $_.measured -and $_.expectSeconds }) }
 }
+function Resolve-HoldFps($r, [string]$sourceRate) {
+  # The frame rate transcode.ps1 resamples a `stillsHold` row at: `stillsFps`, else the source's
+  # r_frame_rate when it is 10-60 fps, else 24. Mirrors transcode.ps1 so the two cannot disagree.
+  $hfps = 0.0
+  $sf = Get-Text $r 'stillsFps'
+  if ($sf -match '^(\d+)/(\d+)$' -and [double]$Matches[2] -gt 0) { return @(([double]$Matches[1] / [double]$Matches[2]), "stillsFps $sf") }
+  if ($sf -and [double]::TryParse($sf, [ref]$hfps) -and $hfps -gt 0) { return @($hfps, "stillsFps $sf") }
+  $rv = 0.0
+  if ($sourceRate -match '^(\d+)/(\d+)$' -and [double]$Matches[2] -gt 0) { $rv = [double]$Matches[1] / [double]$Matches[2] }
+  elseif ($sourceRate) { [void][double]::TryParse($sourceRate, [ref]$rv) }
+  if ($rv -ge 10 -and $rv -le 60) { return @($rv, "source frame rate $sourceRate") }
+  return @(24.0, 'transcode.ps1 fallback 24 fps')
+}
 function Get-Entries($v) {
   # commentary / audioDescription: an ordinal, a list of ordinals, or [idx,"Title"] pairs.
   $list = @()
@@ -314,12 +327,19 @@ foreach ($r in $rows) {
     # ---- expectSeconds / expectFrames --------------------------------------------------------
     $secondsSettled = $false
     $measSec = 0.0; $measFrames = 0; $frameBasis = ''
+    $isHold = $false; $holdSec = 0.0
+    if ((Has $r 'stillsHold') -and [double]::TryParse((Get-Text $r 'stillsHold'), [ref]$holdSec) -and $holdSec -gt 0) { $isHold = $true }
     if ($vf -and -not $hasTitle -and $vf.Duration -gt 0) {
       $measSec = $vf.Duration; $frameBasis = 'file'
     } elseif ($isDir -and $hasTitle -and $kind -eq 'DVD' -and -not $partial) {
       $etAll = Get-UnitEvidenceTitle $src (Get-Text $r 'title')
       $et = if ($etAll) { $etAll.Title } else { $null }
-      if ($et -and $et.expectSeconds) { $measSec = [double]$et.expectSeconds; $measFrames = [int]$et.expectFrames; $frameBasis = 'evidence' }
+      if ($et -and $isHold -and [double]$et.declaredSec -gt 0) {
+        # A DVD STILLS TITLE EMITS ONE PACKET PER STILL: Big Train S1 title 7 is 25 stills, 1.0 s of
+        # emitted video, but its IFO plays them for 200 s - the row's real length. The DECLARED
+        # playback time is the measure; the frames follow from the hold, below.
+        $measSec = [double]$et.declaredSec; $frameBasis = 'evidence'
+      } elseif ($et -and $et.expectSeconds) { $measSec = [double]$et.expectSeconds; $measFrames = [int]$et.expectFrames; $frameBasis = 'evidence' }
     }
     if ($measSec -gt 0) {
       $expSec = 0.0
@@ -366,16 +386,9 @@ foreach ($r in $rows) {
           # frames, whatever the still count. 2026-10-01, The Thin Red Line: 11 Melanesian Songs
           # tracks (one CD-cover still each under audio) were given expectFrames 1 here, encoded
           # correctly to exactly hold x 25 frames (722..5518), and all 11 were failed as wrong-length.
-          $isHold = $false; $holdSec = 0.0
-          if ((Has $r 'stillsHold') -and [double]::TryParse((Get-Text $r 'stillsHold'), [ref]$holdSec) -and $holdSec -gt 0) { $isHold = $true }
           $isPaff = $false
           if ($isHold) {
-            $hfps = 0.0; $hfpsWhy = ''
-            $sf = Get-Text $r 'stillsFps'
-            if ($sf -match '^(\d+)/(\d+)$' -and [double]$Matches[2] -gt 0) { $hfps = [double]$Matches[1] / [double]$Matches[2]; $hfpsWhy = "stillsFps $sf" }
-            elseif ($sf -and [double]::TryParse($sf, [ref]$hfps) -and $hfps -gt 0) { $hfpsWhy = "stillsFps $sf" }
-            elseif ($vf.Fps -ge 10 -and $vf.Fps -le 60) { $hfps = $vf.Fps; $hfpsWhy = "source frame rate $($vf.Fps)" }
-            else { $hfps = 24.0; $hfpsWhy = 'transcode.ps1 fallback 24 fps' }
+            $hf = Resolve-HoldFps $r "$($vf.Fps)"; $hfps = [double]$hf[0]; $hfpsWhy = $hf[1]
             $totSec = [double](Get-Text $r 'expectSeconds')
             $pk = [int][math]::Round($totSec * $hfps)
             $measFrames = $pk
@@ -402,6 +415,26 @@ foreach ($r in $rows) {
                 $unsettled++
                 [void]$left.Add([ordered]@{ field = 'expectFrames'; reason = "authored $expF, source measures $measFrames - further apart than the seconds agreement allows; not changed" })
               }
+            }
+          }
+        } elseif ($frameBasis -eq 'evidence' -and $isHold) {
+          # The held-still rule above, on the DVD-folder basis: the source rate is the evidence's.
+          $vsRate = @(@($et.streams) | Where-Object { $_.type -eq 'video' } | ForEach-Object { "$($_.rFrameRate)" })[0]
+          if (-not $vsRate -and $et.fps) { $vsRate = "$($et.fps)" }
+          $hf = Resolve-HoldFps $r $vsRate
+          $totSec = [double](Get-Text $r 'expectSeconds')
+          $measFrames = [int][math]::Round($totSec * [double]$hf[0])
+          $evBasis = ("held still: expectSeconds {0:N3} x {1} - transcode.ps1 resamples a stillsHold row to the total, not to the title's {2} emitted still packet(s)" -f $totSec, $hf[1], [int]$et.expectFrames)
+          $expF = 0; $haveF = (Has $r 'expectFrames') -and [int]::TryParse(((Get-Text $r 'expectFrames') -replace '\.0+$', ''), [ref]$expF) -and $expF -gt 0
+          if ($measFrames -gt 0 -and (-not $haveF -or $expF -ne $measFrames)) {
+            # An authored figure that matches the still COUNT is the very mistake this rule exists for.
+            $slack = [math]::Max(1, [int]($MaxDeltaSeconds * [double]$hf[0]))
+            if (-not $haveF -or [math]::Abs($expF - $measFrames) -le $slack -or $expF -eq [int]$et.expectFrames) {
+              [void]$changes.Add([ordered]@{ field = 'expectFrames'; from = $(if ($haveF) { $expF } else { $null }); to = $measFrames; evidence = $evBasis })
+              Set-Field $r 'expectFrames' $measFrames
+            } else {
+              $unsettled++
+              [void]$left.Add([ordered]@{ field = 'expectFrames'; reason = "authored $expF, held still measures $measFrames; not changed" })
             }
           }
         } elseif ($frameBasis -eq 'evidence' -and $measFrames -gt 0) {

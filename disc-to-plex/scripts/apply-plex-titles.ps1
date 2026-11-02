@@ -38,6 +38,8 @@ param(
   [string]$RatingKey,                               # show ratingKey - only used to report against -Tsv
   [int]$Section = 5,                                # Plex library section (5 = TV programmes here)
   [string]$Pending = 'D:/video/_plex-titles-pending.tsv',
+  [string]$NasRoot = '\\NASTEAMV\Multimedia',        # where a carried TV row's file must still exist (below)
+  [int]$DeadAfterHours = 24,                         # a carried row is only judged dead once this old
   [switch]$Quiet,
   [switch]$WhatIf
 )
@@ -129,6 +131,34 @@ if ($Tsv) {
 $seenLeaf = @{}
 foreach ($w in $want) { $seenLeaf[[IO.Path]::GetFileName("$($w.out)")] = $true }
 $carried = 0
+# A CARRIED ROW WHOSE FILE IS NO LONGER ON THE NAS IS DEAD, NOT "NOT INDEXED YET" (2026-11-02, operator:
+# "Go ahead with the shared-script changes"). Doctor Who's Androids of Tara extras were renumbered
+# S00E320-324 -> S00E325-329 on 2026-09-27; the five old rows were carried for five weeks, logged every
+# pass as "pending over 6 hours - Plex is not simply behind", and twice pruned by hand only to be written
+# back by a run that had read the ledger first. Plex can never index a file that is not there. So a TV
+# row (`<show> - SxxEyy ...`) older than -DeadAfterHours is DROPPED, loudly, when its basename is in
+# neither the show folder its name implies nor that season folder of ANY show (a library folder name is
+# not always the show's title - 27 of 228 differ). Movie-shaped rows are carried as before.
+$tvRoot = Join-Path $NasRoot 'Television Shows'
+$keptPending = @()
+$droppedDead = @()
+foreach ($r in $pendingRows) {
+  $leaf = "$($r.File)".Trim()
+  $first = [datetime]::MinValue; [void][datetime]::TryParse("$($r.FirstSeen)", [ref]$first)
+  if ($leaf -match '^(.+?) - S(\d+)E\d+' -and $first -ne [datetime]::MinValue -and ((Get-Date) - $first).TotalHours -ge $DeadAfterHours -and (Test-Path -LiteralPath $tvRoot)) {
+    $seasonDir = 'Season {0:D2}' -f [int]$Matches[2]
+    $exact = Join-Path (Join-Path (Join-Path $tvRoot $Matches[1]) $seasonDir) $leaf
+    $found = (Test-Path -LiteralPath $exact) -or
+             [bool](@(Get-ChildItem -LiteralPath $tvRoot -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path -LiteralPath (Join-Path (Join-Path $_.FullName $seasonDir) $leaf) } | Select-Object -First 1).Count)
+    if (-not $found) { $droppedDead += $r; continue }
+  }
+  $keptPending += $r
+}
+foreach ($d in $droppedDead) {
+  Say ("    [plex-title] DROPPED dead pending title (file not on the NAS - renamed or removed): {0} - wanted '{1}', pending since {2}" -f $d.File, $d.Title, $d.FirstSeen)
+}
+if ($droppedDead.Count -and -not $WhatIf) { Write-Pending $Pending $keptPending }
+$pendingRows = @($keptPending)
 foreach ($r in $pendingRows) {
   $leaf = "$($r.File)".Trim(); $t = "$($r.Title)".Trim()
   if (-not $leaf -or -not $t -or $seenLeaf.ContainsKey($leaf)) { continue }
