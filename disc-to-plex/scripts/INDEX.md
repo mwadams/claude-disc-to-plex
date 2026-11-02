@@ -1,8 +1,8 @@
 # Script index - GENERATED, do not edit
 
-Generated 2026-11-02 11:54 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
+Generated 2026-11-02 18:45 by `build-script-index.py` from each script's own header. To change a row, edit the script's header (add a `REACH FOR THIS WHEN:` line to improve its trigger); the index regenerates on the next tool call through the PostToolUse hook, or by `python build-script-index.py`.
 
-**191 scripts under `scripts/`, 65 loop scripts under `D:/video/`. 1 with NO usable header, 85 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
+**192 scripts under `scripts/`, 65 loop scripts under `D:/video/`. 1 with NO usable header, 86 with no trigger sentence.** Consult this BEFORE writing any new tooling: if a row already answers the question, use that script.
 
 Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library` = dot-source, defines functions only; `tests` = a test suite, exit 0 = all passed.
 
@@ -149,6 +149,7 @@ Kinds: `command` = run with `pwsh -File`; `python` = run with `python`; `library
 | `mpls-clips.py` | python | List the CLIPS a Blu-ray playlist (.mpls) is made of, with each clip's in/out time. | when: A playlist title is probed through its FIRST CLIP only, because that is the one file ffmpeg can open without libbluray. | `python mpls-clips.py "D:/video/_stage/DISC/BDMV/PLAYLIST/00301.mpls" [--json]` |
 | `ocr-library-batch.ps1` | command | Subtitle OCR campaign runner. | NO TRIGGER IN HEADER | `pwsh -File D:\video\_ocr-batch.ps1 -Kind Film -Format pgs` |
 | `ocr-paddle.ps1` | command | OCR a VOBSUB track to an .eng.srt sidecar using PaddleOCR in BATCH - the fallback for discs the Tesseract path cannot read cleanly. | when: `ocr-subtitles.ps1` (seconv + Tesseract) is the default and stays the default: it is faster and it is right on most discs. | `pwsh -File ocr-paddle.ps1 -Path "D:\video\Television Shows\Pulling (2006)\Season 01\ep.mkv"` |
+| `ocr-subtitles.palette.tests.ps1` | tests | Tests for ocr-subtitles.ps1's Repair-VobSubPalette (2026-11-02). Run: pwsh -File ocr-subtitles.palette.tests.ps1 (exit 0 = all passed) | NO TRIGGER IN HEADER | - |
 | `ocr-subtitles.ps1` | command | Convert an MKV's BITMAP subtitle tracks (PGS / VOBSUB) to text SRT. | see: Bitmap subtitles are pictures of text baked at a fixed size by the disc author. | - |
 | `pin-plex-movie-metadata.ps1` | command | Set AND LOCK a movie's title, summary and release date in Plex, for films whose correct identity no online agent can supply. | when: `apply-plex-titles.ps1` does this for EPISODES and hard-codes `type=4` throughout, so it cannot touch a movie. | `pwsh -File pin-plex-movie-metadata.ps1 -Data D:/video/_pending/led-zeppelin-plex.json -WhatIf` |
 | `playlist-strip.py` | python | Build a contact strip spanning a Blu-ray PLAYLIST's WHOLE runtime, across all its clips. | when: A playlist title is probed through its FIRST CLIP, so everything the catalogue derives about it - geometry, fingerprint, sample frames, head strip - describes only the opening. | `python playlist-strip.py "<...>/PLAYLIST/00301.mpls" -o strip.png [--points 40] [--label t02]` |

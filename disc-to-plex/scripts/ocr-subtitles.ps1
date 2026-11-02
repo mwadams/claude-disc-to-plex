@@ -319,6 +319,17 @@ function Repair-VobSubPalette {
     # Walk the display control sequences for SET_COLOR (0x03) and SET_CONTRAST (0x04). Both pack
     # the four entries HIGHEST INDEX FIRST across two bytes, so index 0 is the LOW nibble of the
     # SECOND byte - getting that backwards silently swaps background for outline.
+    #
+    # COLOUR AND CONTRAST MUST COME FROM THE SAME CUE. They were taken independently - colour from
+    # the first SET_COLOR anywhere, contrast from the first VISIBLE SET_CONTRAST anywhere - and a
+    # disc that authors blank cues (SET_COLOR 0000, SET_CONTRAST 0000) splices the two. Batman
+    # (1989), 2026-11-02: 11 of 400 sampled cues are blank, one of them came first, so the colours
+    # read 0,0,0,0 (every index -> palette entry 0, black) against a real contrast of 0,15,15,15.
+    # Every visible index then had the same luminance, "no anti-alias index" returned $null, and
+    # the real layout - fill entry 9 (b9b9b9), anti-alias entry 8 (818181) at 0.18 of the fill,
+    # outline entry 0 - was never repaired. 988 cues of clean English OCR'd at 1% English words and
+    # the film sat OCR-blocked. Take both from the first cue that makes something visible.
+    $cPal = $null; $cAlpha = $null
     $dcsq = ([int]$s[2] -shl 8) -bor $s[3]; $seen = @{}
     while ($dcsq -gt 0 -and $dcsq -lt $s.Length - 4 -and -not $seen.ContainsKey($dcsq)) {
       $seen[$dcsq] = $true
@@ -329,14 +340,14 @@ function Repair-VobSubPalette {
         if ($c -eq 0xFF) { break }
         elseif ($c -le 0x02) { $i++ }
         elseif ($c -eq 0x03) {
-          if (-not $palIdx) { $palIdx = @(($s[$i+2] -band 15), ($s[$i+2] -shr 4), ($s[$i+1] -band 15), ($s[$i+1] -shr 4)) }
+          if (-not $cPal) { $cPal = @(($s[$i+2] -band 15), ($s[$i+2] -shr 4), ($s[$i+1] -band 15), ($s[$i+1] -shr 4)) }
           $i += 3
         }
         elseif ($c -eq 0x04) {
           # A fade-in authors an all-zero contrast in the FIRST sequence and the real one later, so
           # take the first command that actually makes something visible.
           $a = @(($s[$i+2] -band 15), ($s[$i+2] -shr 4), ($s[$i+1] -band 15), ($s[$i+1] -shr 4))
-          if (-not $alpha -and (@($a | Where-Object { $_ -gt 0 }).Count -gt 0)) { $alpha = $a }
+          if (-not $cAlpha -and (@($a | Where-Object { $_ -gt 0 }).Count -gt 0)) { $cAlpha = $a }
           $i += 3
         }
         elseif ($c -eq 0x05) {
@@ -360,6 +371,7 @@ function Repair-VobSubPalette {
       if ($next -eq $dcsq) { break }
       $dcsq = $next
     }
+    if (-not $alpha -and $cAlpha -and $cPal) { $alpha = $cAlpha; $palIdx = $cPal }
 
     # Decode the 2-bit RLE and COUNT pixels per index. This is what makes the repair targeted
     # rather than blanket: see the ink-weight test further down. Runs are nibble-coded - 1 to 4
