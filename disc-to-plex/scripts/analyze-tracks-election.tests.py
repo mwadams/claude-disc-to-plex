@@ -108,5 +108,23 @@ check('5.1 English beats a stereo French track', at.language_tiebreak(surround, 
 print('11. No tie: the single top language is returned untouched')
 check('single language', at.language_tiebreak(anna, ['en']), 'en')
 
+print('12. Buffy S1 D1 title 2 (2026-11-02): the English programme hits 3 WEAK words in ordinary '
+      'dialogue; the commentary (which carries that dialogue underneath) hits a STRONG one')
+BUFFY_A0 = ("I'm sorry. What are you doing here? Something stupid. I followed you. Take this. "
+            "Well, actually I don't have any of those things. We were going to wait for him.")
+BUFFY_A2 = BUFFY_A0 + (" We shot all this on location in some tunnels way the hell out somewhere. "
+                       "The blacks that she comes in and out of are very rich.")
+def C(a, lang, text):
+    return {'a': a, 'spokenLang': lang, 'samples': [text]}
+buffy = [C(0, 'en', BUFFY_A0), C(1, 'fr', "Alex, mais qu'est-ce que tu fais la ? Je t'ai suivi."), C(2, 'en', BUFFY_A2)]
+ev = {s['a']: at.commentary_talk(' '.join(s['samples'])) for s in buffy}
+check('fixture: a:0 alone would pass the weak >= 3 rule', ev[0][2] and not ev[0][0], True)
+check('only the strong-cue commentary is excluded', [s['a'] for s in at.election_hinted(buffy, ev)], [2])
+
+print('13. NEGATIVE: no strong cue anywhere - the weak >= 3 rule still excludes')
+noStrong = [C(0, 'en', BUFFY_A0), C(1, 'en', 'Hello there. How are you?')]
+ev = {s['a']: at.commentary_talk(' '.join(s['samples'])) for s in noStrong}
+check('weak-only stream excluded', [s['a'] for s in at.election_hinted(noStrong, ev)], [0])
+
 print('%d failure(s)' % fails)
 sys.exit(1 if fails else 0)

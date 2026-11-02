@@ -582,6 +582,23 @@ def language_tiebreak(cand, top):
     return min(top, key=lambda l: min(s['a'] for s in cand if s['spokenLang'] == l))
 
 
+def election_hinted(cand, hintEv):
+    """The candidates that talk ABOUT the film. See "A STREAM THAT TALKS ABOUT THE FILM" in main().
+
+    A STRONG CUE ANYWHERE MAKES WEAK-ONLY CUES IRRELEVANT TO THE ELECTION. Buffy S1 D1 title 2
+    (2026-11-02): the English programme's dialogue hit three WEAK words ("actually", "take",
+    "we were") and was excluded alongside the real commentary (strong: "we shot"), which carries
+    the same dialogue underneath it - so the only stream left was the French dub, elected primary,
+    and the English programme came out `commentary`. When some stream is identified as commentary
+    by production vocabulary, a weak-only stream is judged against it in PASS 2, not excluded here.
+    The weak >= 3 rule still excludes when no stream has a strong cue. Re-scored over every
+    *.tracks.json on disk (45 files): Buffy was the only verdict that changed.
+    """
+    if any(hintEv[s['a']][0] for s in cand):
+        return [s for s in cand if hintEv[s['a']][0]]
+    return [s for s in cand if hintEv[s['a']][2]]
+
+
 def quiet_programme(streams, cand, hinted):
     """The programme track of a near-wordless film, or None. See the call site in main().
 
@@ -963,7 +980,7 @@ def main():
     # soundtrack does not discuss its own screenplay, camera or edit - and it never removes every
     # candidate, because that would leave nothing to elect.
     hintEv = {s['a']: commentary_talk(' '.join(s['samples'])) for s in cand}
-    hinted = [s for s in cand if hintEv[s['a']][2]]
+    hinted = election_hinted(cand, hintEv)
     if hinted and len(hinted) < len(cand):
         for s in hinted:
             strong, weak, _ = hintEv[s['a']]
